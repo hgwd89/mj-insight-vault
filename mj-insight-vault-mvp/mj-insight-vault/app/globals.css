@@ -2,10 +2,76 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: light; }
-body { background:#f7f8fa; color:#111; }
-.card { @apply rounded-2xl bg-white shadow-sm border border-zinc-200; }
-.btn { @apply inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition border border-zinc-300 bg-white hover:bg-zinc-50 disabled:opacity-50 disabled:cursor-not-allowed; }
-.btn-primary { @apply border-ink bg-ink text-white hover:bg-zinc-800; }
-.input { @apply w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-300; }
-.badge { @apply inline-flex items-center rounded-full border border-zinc-300 px-2 py-0.5 text-xs text-zinc-700 bg-zinc-50; }
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: #f7f8fa;
+  color: #111111;
+}
+
+.card {
+  border-radius: 1rem;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  color: #111111;
+}
+
+.btn:hover {
+  background: #fafafa;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  border-color: #111111;
+  background: #111111;
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: #27272a;
+}
+
+.input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.input:focus {
+  box-shadow: 0 0 0 2px #fcd34d;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid #d4d4d8;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  color: #3f3f46;
+  background: #fafafa;
+}

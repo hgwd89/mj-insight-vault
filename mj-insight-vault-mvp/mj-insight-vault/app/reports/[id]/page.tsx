@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
 
@@ -53,6 +53,47 @@ function getInitialAnswer(report: Report) {
   return JSON.stringify(answer, null, 2);
 }
 
+function getReportTitle(report: Report) {
+  const title = report.answer_json?.report_title;
+  return typeof title === 'string' && title.trim() ? title : report.user_query;
+}
+
+function getPinned(report: Report) {
+  return Boolean(report.answer_json?.pinned);
+}
+
+function buildMarkdown(report: Report, articles: Article[], latestAnswer: ReportChatAnswer | null) {
+  const title = getReportTitle(report);
+  const initialAnswer = getInitialAnswer(report);
+  const lines = [
+    `# ${title}`,
+    '',
+    `- 作成日: ${new Date(report.created_at).toLocaleString('ja-JP')}`,
+    `- 元指示: ${report.user_query}`,
+    '',
+    '## 元レポート',
+    '',
+    initialAnswer,
+    ''
+  ];
+
+  if (latestAnswer) {
+    lines.push('## 追加回答', '', getAnswerText(latestAnswer), '');
+  }
+
+  lines.push('## 根拠記事', '');
+
+  if (!articles.length) {
+    lines.push('- 根拠記事なし');
+  } else {
+    for (const article of articles) {
+      lines.push(`- ${article.article_date || '日付不明'}｜${article.headline || '無題の記事'}｜${article.id}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
   const password = useAppPassword();
@@ -61,9 +102,62 @@ export default function ReportDetailPage() {
   const [query, setQuery] = useState('');
   const [model, setModel] = useState<ModelName>('gpt-4.1');
   const [busy, setBusy] = useState(false);
+  const [metaBusy, setMetaBusy] = useState(false);
   const [conversation, setConversation] = useState<ConversationTurn[]>([]);
   const [latestAnswer, setLatestAnswer] = useState<ReportChatAnswer | null>(null);
   const [raw, setRaw] = useState('');
+  const [title, setTitle] = useState('');
+  const [pinned, setPinned] = useState(false);
+
+  const report = data?.report;
+  const articles = useMemo(() => data?.related_articles || [], [data?.related_articles]);
+
+  useEffect(() => {
+    if (!report) return;
+    setTitle(getReportTitle(report));
+    setPinned(getPinned(report));
+  }, [report]);
+
+  async function saveMetadata(nextPinned = pinned) {
+    if (!report) return;
+
+    setMetaBusy(true);
+
+    try {
+      const res = await fetch(`/api/reports/${params.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'x-app-password': password },
+        body: JSON.stringify({ report_title: title, pinned: nextPinned })
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'レポート設定の保存に失敗しました');
+
+      setPinned(Boolean(json.report?.answer_json?.pinned));
+      alert('保存しました');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'レポート設定の保存に失敗しました');
+    } finally {
+      setMetaBusy(false);
+    }
+  }
+
+  async function togglePinned() {
+    const next = !pinned;
+    setPinned(next);
+    await saveMetadata(next);
+  }
+
+  async function copyMarkdown() {
+    if (!report) return;
+
+    try {
+      await navigator.clipboard.writeText(buildMarkdown(report, articles, latestAnswer));
+      alert('Markdownをコピーしました');
+    } catch {
+      alert('コピーに失敗しました。ブラウザの権限を確認してください。');
+    }
+  }
 
   async function send(q = query) {
     const trimmed = q.trim();
@@ -114,9 +208,7 @@ export default function ReportDetailPage() {
 
   if (loading) return <div className="card p-5">読み込み中</div>;
   if (error) return <div className="card p-5 text-red-600">{error}</div>;
-
-  const report = data!.report;
-  const articles = data!.related_articles || [];
+  if (!report) return <div className="card p-5 text-red-600">レポートがありません</div>;
 
   const suggestedQuestions = [
     'この分析の本質仮説をもっと尖らせて',
@@ -131,9 +223,12 @@ export default function ReportDetailPage() {
     <div className="space-y-5">
       <div className="card p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
+          <div className="flex-1">
             <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
-            <h1 className="mt-1 text-xl font-black">レポート対話</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {pinned && <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">Pinned</span>}
+              <h1 className="text-xl font-black">レポート対話</h1>
+            </div>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
               既存レポートと根拠記事を前提に、GPTのように分析観点を追加しながら掘り下げます。
             </p>
@@ -141,6 +236,16 @@ export default function ReportDetailPage() {
           <Link className="btn" href="/reports">分析履歴へ戻る</Link>
         </div>
       </div>
+
+      <section className="card p-5">
+        <h2 className="font-bold">レポート設定</h2>
+        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="レポート名" disabled={metaBusy} />
+          <button className="btn" onClick={() => saveMetadata()} disabled={metaBusy}>名前保存</button>
+          <button className={pinned ? 'btn btn-primary' : 'btn'} onClick={togglePinned} disabled={metaBusy}>{pinned ? 'ピン解除' : 'ピン留め'}</button>
+          <button className="btn" onClick={copyMarkdown}>Markdownコピー</button>
+        </div>
+      </section>
 
       <section className="card p-5">
         <h2 className="font-bold">元の指示</h2>

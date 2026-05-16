@@ -68,7 +68,13 @@ export default function ArticlesPage() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h1 className="text-xl font-black">記事一覧</h1>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-xl font-black">記事一覧</h1>
+            <p className="mt-2 text-sm text-zinc-600">重複・ノイズ記事は「不要記事」で分析対象から外せます。</p>
+          </div>
+          <Link className="btn" href="/articles/deleted">不要記事一覧</Link>
+        </div>
 
         <input
           className="input mt-4"

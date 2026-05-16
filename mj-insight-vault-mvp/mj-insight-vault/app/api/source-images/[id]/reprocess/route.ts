@@ -19,6 +19,38 @@ function getErrorMessage(error: unknown) {
   }
 }
 
+async function updateImage(imageId: string, values: Record<string, unknown>) {
+  const first = await supabaseAdmin
+    .from('source_images')
+    .update({ ...values, updated_at: new Date().toISOString() })
+    .eq('id', imageId);
+
+  if (!first.error) return;
+
+  const fallback = await supabaseAdmin
+    .from('source_images')
+    .update(values)
+    .eq('id', imageId);
+
+  if (fallback.error) throw fallback.error;
+}
+
+async function softDeleteOldArticles(imageId: string) {
+  const first = await supabaseAdmin
+    .from('articles')
+    .update({ status: 'deleted', updated_at: new Date().toISOString() })
+    .eq('source_image_id', imageId);
+
+  if (!first.error) return;
+
+  const fallback = await supabaseAdmin
+    .from('articles')
+    .update({ status: 'deleted' })
+    .eq('source_image_id', imageId);
+
+  if (fallback.error) throw fallback.error;
+}
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
@@ -36,57 +68,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return Response.json({ error: 'source image has no storage_path' }, { status: 400 });
     }
 
-    const downloaded = await supabaseAdmin.storage
-      .from(STORAGE_BUCKET)
-      .download(image.storage_path);
-
+    const downloaded = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(image.storage_path);
     if (downloaded.error) throw downloaded.error;
 
     const arrayBuffer = await downloaded.data.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = image.mime_type || downloaded.data.type || 'image/png';
-    const now = new Date().toISOString();
 
-    await supabaseAdmin
-      .from('source_images')
-      .update({
-        ocr_status: 'processing',
-        error_message: null,
-        updated_at: now
-      })
-      .eq('id', id);
+    await updateImage(id, { ocr_status: 'processing', error_message: null });
 
     try {
       const ocr = await runDocumentOcr(buffer);
       const ocrText = normalizeOcrText(ocr.text);
 
-      await supabaseAdmin
-        .from('source_images')
-        .update({
-          ocr_status: 'done',
-          ocr_text_raw: ocrText,
-          ocr_json: ocr.raw,
-          error_message: null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id);
-
-      const { error: oldArticleError } = await supabaseAdmin
-        .from('articles')
-        .update({
-          status: 'deleted',
-          updated_at: new Date().toISOString()
-        })
-        .eq('source_image_id', id);
-
-      if (oldArticleError) throw oldArticleError;
-
-      const candidates = await segmentArticlesFromImage({
-        ocrText,
-        imageBuffer: buffer,
-        mimeType
+      await updateImage(id, {
+        ocr_status: 'done',
+        ocr_text_raw: ocrText,
+        ocr_json: ocr.raw,
+        error_message: null
       });
 
+      await softDeleteOldArticles(id);
+
+      const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
       const createdArticles: unknown[] = [];
 
       for (let idx = 0; idx < candidates.length; idx++) {
@@ -126,23 +130,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         }
       }
 
-      return Response.json({
-        image,
-        articles: createdArticles,
-        article_count: createdArticles.length
-      });
+      return Response.json({ image: { ...image, ocr_status: 'done' }, articles: createdArticles, article_count: createdArticles.length });
     } catch (error) {
       const errorMessage = getErrorMessage(error);
-
-      await supabaseAdmin
-        .from('source_images')
-        .update({
-          ocr_status: 'failed',
-          error_message: errorMessage || 'Reprocess failed with empty error message',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id);
-
+      await updateImage(id, { ocr_status: 'failed', error_message: errorMessage || 'Reprocess failed with empty error message' });
       throw error;
     }
   } catch (error) {

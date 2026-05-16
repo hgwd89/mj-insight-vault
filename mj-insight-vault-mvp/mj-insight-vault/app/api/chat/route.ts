@@ -25,6 +25,16 @@ type ArticleContext = {
   article_tags?: { tag_type: string; tag_name: string }[];
 };
 
+type EvidenceItem = {
+  insight?: string;
+  claim?: string;
+  article_id?: string;
+  headline?: string | null;
+  article_date?: string | null;
+  excerpt?: string;
+  confidence?: 'high' | 'medium' | 'low' | string;
+};
+
 const ARTICLE_SELECT =
   'id, batch_id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
 
@@ -115,12 +125,7 @@ function extractKeywords(query: string) {
     .split(/\s+/)
     .map((word) => word.trim())
     .filter(Boolean)
-    .map((word) =>
-      word.replace(
-        /(だけ|関連|記事|分析|して|出して|整理|業界|今月分|今月|リサーチ|課題|テーマ|向いている|回すべき|ください)/g,
-        ''
-      )
-    )
+    .map((word) => word.replace(/(だけ|関連|記事|分析|して|出して|整理|業界|今月分|今月|リサーチ|課題|テーマ|向いている|回すべき|ください)/g, ''))
     .filter((word) => word.length >= 2)
     .slice(0, 8)
     .forEach((word) => keywords.add(word));
@@ -173,10 +178,7 @@ async function fetchKeywordArticles(query: string): Promise<ArticleContext[]> {
   const keywords = extractKeywords(query);
   if (!keywords.length) return [];
 
-  const clauses = keywords.flatMap((keyword) => [
-    `headline.ilike.%${keyword}%`,
-    `ocr_text.ilike.%${keyword}%`
-  ]);
+  const clauses = keywords.flatMap((keyword) => [`headline.ilike.%${keyword}%`, `ocr_text.ilike.%${keyword}%`]);
 
   const { data, error } = await supabaseAdmin
     .from('articles')
@@ -207,9 +209,7 @@ async function fetchEmbeddingArticles(query: string): Promise<ArticleContext[]> 
     return [];
   }
 
-  const ids = (data || [])
-    .map((r: { article_id?: string }) => r.article_id)
-    .filter(Boolean) as string[];
+  const ids = (data || []).map((r: { article_id?: string }) => r.article_id).filter(Boolean) as string[];
 
   if (!ids.length) return [];
 
@@ -254,12 +254,61 @@ function templateInstruction(outputTemplate: OutputTemplate) {
   }
 }
 
+function extractExcerpt(article: ArticleContext, query: string) {
+  const text = article.ocr_text || '';
+  if (!text) return '';
+
+  const keywords = extractKeywords(query);
+  const hit = keywords.find((keyword) => text.includes(keyword));
+
+  if (!hit) return text.slice(0, 160);
+
+  const index = text.indexOf(hit);
+  const start = Math.max(0, index - 60);
+  return text.slice(start, start + 180);
+}
+
 function fallbackCards(articles: ArticleContext[]) {
   return articles.slice(0, 12).map((a) => ({
     article_id: a.id,
     headline: a.headline,
     article_date: a.article_date,
     reason: '分析対象候補'
+  }));
+}
+
+function normalizeEvidence(value: unknown, articles: ArticleContext[], query: string): EvidenceItem[] {
+  const byId = new Map(articles.map((article) => [article.id, article]));
+  const rawItems = Array.isArray(value) ? value : [];
+  const normalized: EvidenceItem[] = [];
+
+  for (const raw of rawItems) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as EvidenceItem;
+    const article = item.article_id ? byId.get(item.article_id) : undefined;
+    if (!article) continue;
+
+    normalized.push({
+      insight: String(item.insight || item.claim || '').slice(0, 220),
+      claim: String(item.claim || item.insight || '').slice(0, 220),
+      article_id: article.id,
+      headline: article.headline,
+      article_date: article.article_date || '日付不明',
+      excerpt: String(item.excerpt || extractExcerpt(article, query)).slice(0, 240),
+      confidence: item.confidence || 'medium'
+    });
+  }
+
+  if (normalized.length) return normalized.slice(0, 20);
+
+  return articles.slice(0, 8).map((article) => ({
+    insight: '分析対象候補',
+    claim: 'この回答の根拠候補として参照',
+    article_id: article.id,
+    headline: article.headline,
+    article_date: article.article_date || '日付不明',
+    excerpt: extractExcerpt(article, query),
+    confidence: 'low'
   }));
 }
 
@@ -278,6 +327,8 @@ async function analyze(
       answer_text: '指定範囲に分析対象の記事がありません。対象範囲を「全記事」に変えるか、不要記事化されていないか確認してください。',
       table: [],
       cards: [],
+      evidence: [],
+      insights: [],
       target_scope: targetScope,
       output_template: outputTemplate,
       model_used: model,
@@ -292,6 +343,8 @@ async function analyze(
       answer_text: `OPENAI_API_KEYが未設定のため、関連候補${articles.length}件のみ返します。`,
       table: [],
       cards,
+      evidence: normalizeEvidence([], articles, query),
+      insights: [],
       target_scope: targetScope,
       output_template: outputTemplate,
       model_used: model,
@@ -317,8 +370,11 @@ async function analyze(
     '直前までの会話がある場合は、その文脈を踏まえて追加質問に答えてください。',
     templateInstruction(outputTemplate),
     '回答は必ずJSONで返します。',
-    '必ず answer_text, table, cards を含めてください。',
+    '必ず answer_text, table, cards, evidence, insights を含めてください。',
     'cardsには根拠記事IDを必ず含めてください。',
+    'evidenceは配列です。各要素は insight, claim, article_id, headline, article_date, excerpt, confidence を必ず含めてください。',
+    'insightsは配列です。各要素は title, finding, why_it_matters, evidence_article_ids を含めてください。',
+    '各重要主張には必ず根拠記事IDを紐づけてください。根拠のない主張は「仮説」と明記してください。',
     '記事日付が article_date にある場合は必ず使い、ない場合は「日付不明」と明記してください。',
     '記事にない内容を断定しないでください。',
     '不確かな点は「仮説」と明記してください。',
@@ -335,17 +391,7 @@ async function analyze(
         ...conversation,
         {
           role: 'user',
-          content: JSON.stringify(
-            {
-              user_query: query,
-              target_scope: targetScope,
-              output_template: outputTemplate,
-              article_count: articleContext.length,
-              articles: articleContext
-            },
-            null,
-            2
-          )
+          content: JSON.stringify({ user_query: query, target_scope: targetScope, output_template: outputTemplate, article_count: articleContext.length, articles: articleContext }, null, 2)
         }
       ]
     });
@@ -354,31 +400,21 @@ async function analyze(
 
     try {
       const parsed = JSON.parse(raw);
+      const evidence = normalizeEvidence(parsed.evidence, articles, query);
       return {
-        answer_text:
-          typeof parsed.answer_text === 'string'
-            ? parsed.answer_text
-            : typeof parsed.summary === 'string'
-              ? parsed.summary
-              : raw,
+        answer_text: typeof parsed.answer_text === 'string' ? parsed.answer_text : typeof parsed.summary === 'string' ? parsed.summary : raw,
         table: Array.isArray(parsed.table) ? parsed.table : [],
         cards: Array.isArray(parsed.cards) ? parsed.cards : cards,
+        insights: Array.isArray(parsed.insights) ? parsed.insights : [],
         ...parsed,
+        evidence,
         target_scope: targetScope,
         output_template: outputTemplate,
         model_used: model,
         related_article_count: articles.length
       };
     } catch {
-      return {
-        answer_text: raw,
-        table: [],
-        cards,
-        target_scope: targetScope,
-        output_template: outputTemplate,
-        model_used: model,
-        related_article_count: articles.length
-      };
+      return { answer_text: raw, table: [], cards, evidence: normalizeEvidence([], articles, query), insights: [], target_scope: targetScope, output_template: outputTemplate, model_used: model, related_article_count: articles.length };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI analysis failed';
@@ -387,6 +423,8 @@ async function analyze(
       answer_text: `OpenAI分析でエラーが出ました。関連候補${articles.length}件は取得できています。エラー: ${message}`,
       table: [],
       cards,
+      evidence: normalizeEvidence([], articles, query),
+      insights: [],
       target_scope: targetScope,
       output_template: outputTemplate,
       model_used: model,
@@ -435,13 +473,7 @@ export async function POST(req: NextRequest) {
       console.error('chat_reports insert failed:', error);
     }
 
-    return Response.json({
-      report,
-      report_error,
-      related_articles: related,
-      selectable_models: getSelectableModels(),
-      answer
-    });
+    return Response.json({ report, report_error, related_articles: related, selectable_models: getSelectableModels(), answer });
   } catch (error) {
     return jsonError(error);
   }

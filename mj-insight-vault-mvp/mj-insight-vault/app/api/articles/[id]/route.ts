@@ -57,11 +57,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     requireAppPassword(req);
 
     const { id } = await params;
+    const action = new URL(req.url).searchParams.get('action');
+    const nextStatus = action === 'restore' ? 'ocr_done' : 'deleted';
 
     const { data, error } = await supabaseAdmin
       .from('articles')
       .update({
-        status: 'deleted',
+        status: nextStatus,
         updated_at: new Date().toISOString()
       })
       .eq('id', id)

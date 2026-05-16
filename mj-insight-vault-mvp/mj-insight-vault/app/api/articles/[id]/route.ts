@@ -29,6 +29,14 @@ function normalizeTags(value: unknown) {
   return tags.slice(0, 50);
 }
 
+function mergeManualAnalysis(current: unknown, patch: Record<string, unknown>) {
+  const base = current && typeof current === 'object' && !Array.isArray(current)
+    ? current as Record<string, unknown>
+    : {};
+
+  return { ...base, ...patch };
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
@@ -61,6 +69,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     };
 
     if ('headline' in body) update.headline = body.headline;
+    if ('article_date' in body) update.article_date = body.article_date || null;
     if ('status' in body) update.status = body.status;
     if ('manual_analysis' in body) update.manual_analysis = body.manual_analysis;
 
@@ -109,13 +118,33 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     requireAppPassword(req);
 
     const { id } = await params;
-    const action = new URL(req.url).searchParams.get('action');
+    const url = new URL(req.url);
+    const action = url.searchParams.get('action');
+    const reason = url.searchParams.get('reason') || '';
     const nextStatus = action === 'restore' ? 'ocr_done' : 'deleted';
+
+    const { data: currentArticle, error: currentError } = await supabaseAdmin
+      .from('articles')
+      .select('manual_analysis')
+      .eq('id', id)
+      .single();
+
+    if (currentError) throw currentError;
+
+    const manualAnalysis = action === 'restore'
+      ? mergeManualAnalysis(currentArticle.manual_analysis, {
+          restored_at: new Date().toISOString()
+        })
+      : mergeManualAnalysis(currentArticle.manual_analysis, {
+          deletion_reason: reason || '未指定',
+          deleted_at: new Date().toISOString()
+        });
 
     const { data, error } = await supabaseAdmin
       .from('articles')
       .update({
         status: nextStatus,
+        manual_analysis: manualAnalysis,
         updated_at: new Date().toISOString()
       })
       .eq('id', id)

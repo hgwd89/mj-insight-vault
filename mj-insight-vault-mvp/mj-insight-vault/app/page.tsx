@@ -2,9 +2,9 @@ import Link from 'next/link';
 import { Upload, MessageSquare, Tags, Newspaper } from 'lucide-react';
 
 const tiles = [
-  { href: '/upload', title: '画像アップロード', body: '最大20枚までまとめて投入し、OCRまで実行します。', icon: Upload },
-  { href: '/batches', title: 'バッチ一覧', body: '投入単位ごとに画像・OCR・記事候補を確認します。', icon: Newspaper },
-  { href: '/chat', title: 'チャット分析', body: '蓄積記事から業界課題・手法適性・類似記事を分析します。', icon: MessageSquare },
+  { href: '/upload', title: '画像アップロード', body: 'MJ画像を投入し、OCRと記事候補化を実行します。', icon: Upload },
+  { href: '/articles', title: '記事一覧', body: '蓄積した記事を確認し、不要記事・重複候補を整理します。', icon: Newspaper },
+  { href: '/chat', title: 'チャット分析', body: '蓄積記事から生活者変化・業界課題・手法適性を分析します。', icon: MessageSquare },
   { href: '/tags', title: 'タグ管理', body: '業界、生活者圧力、行動変化、手法タグを追加・編集します。', icon: Tags }
 ];
 
@@ -15,8 +15,8 @@ export default function HomePage() {
         <p className="text-sm font-semibold text-zinc-500">MJ Insight Vault</p>
         <h1 className="mt-2 text-2xl font-black tracking-tight">MJ記事をリサーチ仮説DBに変換する</h1>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-600">
-          キャプチャ画像を保存し、Google Vision OCRで記事候補化。分析はチャットで指示した時だけ実行し、
-          回答は本文・表・根拠記事カードで返します。
+          キャプチャ画像を保存し、OCRで記事候補化。通常は「記事一覧」で整理し、
+          チャットで生活者変化・リサーチ課題・提案書ネタへ変換します。
         </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">

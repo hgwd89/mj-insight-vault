@@ -4,6 +4,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 import { useApi } from '@/components/DataHooks';
+import { ArticleInsightMemo } from '@/components/ArticleInsightMemo';
 
 type ArticleTag = {
   id?: string;
@@ -338,6 +339,8 @@ export default function ArticleDetailPage() {
         </div>
       </section>
 
+      <ArticleInsightMemo value={analysisText} onChange={setAnalysisText} />
+
       {imageUrl && (
         <div className="card p-5">
           <h2 className="font-bold">元画像</h2>
@@ -359,7 +362,7 @@ export default function ArticleDetailPage() {
       <section className="card p-5">
         <h2 className="font-bold">手修正用 分析メモJSON</h2>
         <p className="mt-1 text-sm text-zinc-600">
-          チャット分析結果から転記・修正したい内容を保存できます。
+          上の引用・示唆メモと同じ内容です。直接JSON編集もできます。
         </p>
 
         <textarea

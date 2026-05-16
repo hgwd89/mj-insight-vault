@@ -6,6 +6,8 @@ import { embedText, getOpenAI, TEXT_MODEL } from '@/lib/openai';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+type AnalysisMode = 'standard' | 'deep' | 'fast' | 'retrieval_only';
+
 type ArticleContext = {
   id: string;
   headline: string | null;
@@ -31,6 +33,23 @@ function uniqueArticles(articles: ArticleContext[]) {
     seen.add(article.id);
     return true;
   });
+}
+
+function normalizeAnalysisMode(value: unknown): AnalysisMode {
+  if (value === 'deep' || value === 'fast' || value === 'retrieval_only') return value;
+  return 'standard';
+}
+
+function getAnalysisModel(mode: AnalysisMode) {
+  if (mode === 'deep') {
+    return process.env.OPENAI_DEEP_ANALYSIS_MODEL || process.env.OPENAI_TEXT_MODEL || TEXT_MODEL;
+  }
+
+  if (mode === 'fast') {
+    return process.env.OPENAI_FAST_ANALYSIS_MODEL || process.env.OPENAI_TEXT_MODEL || TEXT_MODEL;
+  }
+
+  return process.env.OPENAI_TEXT_MODEL || TEXT_MODEL;
 }
 
 function escapeLike(value: string) {
@@ -143,13 +162,16 @@ export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
 
-    const { query } = await req.json();
+    const body = await req.json();
+    const { query } = body;
+    const analysisMode = normalizeAnalysisMode(body.analysis_mode);
+
     if (!query || typeof query !== 'string') {
       return Response.json({ error: 'query is required' }, { status: 400 });
     }
 
     const related = await retrieveArticles(query);
-    const answer = await analyze(query, related);
+    const answer = await analyze(query, related, analysisMode);
 
     let report = null;
     let report_error = '';
@@ -192,14 +214,18 @@ async function retrieveArticles(query: string): Promise<ArticleContext[]> {
   return uniqueArticles([...keywordArticles, ...embeddingArticles, ...recentArticles]).slice(0, 40);
 }
 
-async function analyze(query: string, articles: ArticleContext[]) {
+async function analyze(query: string, articles: ArticleContext[], analysisMode: AnalysisMode) {
   const openai = getOpenAI();
+  const model = getAnalysisModel(analysisMode);
 
   if (!articles.length) {
     return {
       answer_text: '分析対象の記事がDBにありません。記事一覧に有効記事があるか、status が deleted/excluded/rejected になっていないか確認してください。',
       table: [],
-      cards: []
+      cards: [],
+      analysis_mode: analysisMode,
+      model_used: analysisMode === 'retrieval_only' ? 'none' : model,
+      related_article_count: 0
     };
   }
 
@@ -209,11 +235,25 @@ async function analyze(query: string, articles: ArticleContext[]) {
     reason: '分析対象候補'
   }));
 
+  if (analysisMode === 'retrieval_only') {
+    return {
+      answer_text: `記事候補のみ表示します。関連候補${articles.length}件を取得しました。`,
+      table: [],
+      cards: fallbackCards,
+      analysis_mode: analysisMode,
+      model_used: 'none',
+      related_article_count: articles.length
+    };
+  }
+
   if (!openai) {
     return {
       answer_text: `OPENAI_API_KEYが未設定のため、関連候補${articles.length}件のみ返します。`,
       table: [],
-      cards: fallbackCards
+      cards: fallbackCards,
+      analysis_mode: analysisMode,
+      model_used: model,
+      related_article_count: articles.length
     };
   }
 
@@ -224,12 +264,19 @@ async function analyze(query: string, articles: ArticleContext[]) {
     status: a.status || 'active',
     created_at: a.created_at,
     tags: (a.article_tags || []).map((t) => `${t.tag_type}:${t.tag_name}`),
-    text: (a.ocr_text || '').slice(0, 3000)
+    text: (a.ocr_text || '').slice(0, analysisMode === 'deep' ? 4500 : 2500)
   }));
+
+  const depthInstruction = analysisMode === 'deep'
+    ? 'WHYを深く掘り、生活者変化、背後欲求、調査仮説、提案示唆まで厚めに出してください。'
+    : analysisMode === 'fast'
+      ? '短く、実務上使える要点に絞ってください。'
+      : '根拠と示唆のバランスを取り、実務で使える粒度で出してください。';
 
   const system = [
     'あなたはマーケティングリサーチの上級コンサルタントです。',
     '蓄積されたMJ記事候補を根拠に、生活者トレンド、業界課題、リサーチ課題、手法適性を分析します。',
+    depthInstruction,
     '回答は必ずJSONで返します。',
     '必ず answer_text, table, cards を含めてください。',
     'cardsには根拠記事IDを必ず含めてください。',
@@ -242,8 +289,8 @@ async function analyze(query: string, articles: ArticleContext[]) {
 
   try {
     const completion = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      temperature: 0.2,
+      model,
+      temperature: analysisMode === 'deep' ? 0.25 : 0.15,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
@@ -252,6 +299,7 @@ async function analyze(query: string, articles: ArticleContext[]) {
           content: JSON.stringify(
             {
               user_query: query,
+              analysis_mode: analysisMode,
               article_count: articleContext.length,
               articles: articleContext
             },
@@ -275,10 +323,20 @@ async function analyze(query: string, articles: ArticleContext[]) {
               : raw,
         table: Array.isArray(parsed.table) ? parsed.table : [],
         cards: Array.isArray(parsed.cards) ? parsed.cards : fallbackCards,
-        ...parsed
+        ...parsed,
+        analysis_mode: analysisMode,
+        model_used: model,
+        related_article_count: articles.length
       };
     } catch {
-      return { answer_text: raw, table: [], cards: fallbackCards };
+      return {
+        answer_text: raw,
+        table: [],
+        cards: fallbackCards,
+        analysis_mode: analysisMode,
+        model_used: model,
+        related_article_count: articles.length
+      };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI analysis failed';
@@ -286,7 +344,10 @@ async function analyze(query: string, articles: ArticleContext[]) {
     return {
       answer_text: `OpenAI分析でエラーが出ました。関連候補${articles.length}件は取得できています。エラー: ${message}`,
       table: [],
-      cards: fallbackCards
+      cards: fallbackCards,
+      analysis_mode: analysisMode,
+      model_used: model,
+      related_article_count: articles.length
     };
   }
 }

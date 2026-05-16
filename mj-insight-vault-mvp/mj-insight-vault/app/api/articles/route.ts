@@ -2,10 +2,10 @@ import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
-const EXCLUDED_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
+const HIDDEN_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
 
-function isActiveArticle(article: { status?: string | null }) {
-  return !article.status || !EXCLUDED_STATUSES.has(article.status);
+function isVisibleArticle(article: { status?: string | null }) {
+  return !article.status || !HIDDEN_STATUSES.has(article.status);
 }
 
 export async function GET(req: NextRequest) {
@@ -15,12 +15,13 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const q = url.searchParams.get('q') || '';
     const tag = url.searchParams.get('tag') || '';
+    const status = url.searchParams.get('status') || 'active';
 
     let query = supabaseAdmin
       .from('articles')
       .select('*, article_tags(tag_type, tag_name)')
       .order('created_at', { ascending: false })
-      .limit(200);
+      .limit(300);
 
     if (q) {
       query = query.or(`headline.ilike.%${q}%,ocr_text.ilike.%${q}%`);
@@ -30,11 +31,13 @@ export async function GET(req: NextRequest) {
 
     if (error) throw error;
 
-    let filtered = (data || []).filter(isActiveArticle);
+    let filtered = status === 'deleted'
+      ? (data || []).filter((article) => article.status === 'deleted')
+      : (data || []).filter(isVisibleArticle);
 
     if (tag) {
-      filtered = filtered.filter((a) =>
-        (a.article_tags || []).some((t: { tag_name: string }) => t.tag_name === tag)
+      filtered = filtered.filter((article) =>
+        (article.article_tags || []).some((t: { tag_name: string }) => t.tag_name === tag)
       );
     }
 

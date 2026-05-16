@@ -4,16 +4,21 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { embedText, getOpenAI, TEXT_MODEL } from '@/lib/openai';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
-type AnalysisMode = 'standard' | 'deep' | 'fast' | 'retrieval_only';
 type TargetScope = 'all' | 'recent_30d' | 'latest_batch';
 type OutputTemplate = 'auto' | 'trend' | 'why' | 'research' | 'proposal' | 'method' | 'news_list';
+
+type ConversationTurn = {
+  role: 'user' | 'assistant';
+  content: string;
+};
 
 type ArticleContext = {
   id: string;
   batch_id?: string | null;
   headline: string | null;
+  article_date?: string | null;
   ocr_text: string | null;
   status?: string | null;
   created_at?: string | null;
@@ -21,26 +26,23 @@ type ArticleContext = {
 };
 
 const ARTICLE_SELECT =
-  'id, batch_id, headline, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
+  'id, batch_id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
 
 const HIDDEN_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
+const DEFAULT_CHAT_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 
-function isActiveArticle(article: ArticleContext) {
-  return !article.status || !HIDDEN_STATUSES.has(article.status);
+function getSelectableModels() {
+  const fromEnv = (process.env.OPENAI_CHAT_MODELS || '')
+    .split(',')
+    .map((model) => model.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set([TEXT_MODEL, ...fromEnv, ...DEFAULT_CHAT_MODELS].filter(Boolean)));
 }
 
-function uniqueArticles(articles: ArticleContext[]) {
-  const seen = new Set<string>();
-  return articles.filter((article) => {
-    if (!article.id || seen.has(article.id)) return false;
-    seen.add(article.id);
-    return true;
-  });
-}
-
-function normalizeAnalysisMode(value: unknown): AnalysisMode {
-  if (value === 'deep' || value === 'fast' || value === 'retrieval_only') return value;
-  return 'standard';
+function normalizeModel(value: unknown) {
+  const models = getSelectableModels();
+  return typeof value === 'string' && models.includes(value) ? value : TEXT_MODEL;
 }
 
 function normalizeTargetScope(value: unknown): TargetScope {
@@ -60,16 +62,33 @@ function normalizeOutputTemplate(value: unknown): OutputTemplate {
   return 'auto';
 }
 
-function getAnalysisModel(mode: AnalysisMode) {
-  if (mode === 'deep') {
-    return process.env.OPENAI_DEEP_ANALYSIS_MODEL || process.env.OPENAI_TEXT_MODEL || TEXT_MODEL;
-  }
+function normalizeConversation(value: unknown): ConversationTurn[] {
+  if (!Array.isArray(value)) return [];
 
-  if (mode === 'fast') {
-    return process.env.OPENAI_FAST_ANALYSIS_MODEL || process.env.OPENAI_TEXT_MODEL || TEXT_MODEL;
-  }
+  return value
+    .map((turn) => {
+      if (!turn || typeof turn !== 'object') return null;
+      const record = turn as Record<string, unknown>;
+      const role = record.role === 'assistant' ? 'assistant' : record.role === 'user' ? 'user' : null;
+      const content = typeof record.content === 'string' ? record.content.trim() : '';
+      if (!role || !content) return null;
+      return { role, content: content.slice(0, 6000) };
+    })
+    .filter(Boolean)
+    .slice(-8) as ConversationTurn[];
+}
 
-  return process.env.OPENAI_TEXT_MODEL || TEXT_MODEL;
+function isActiveArticle(article: ArticleContext) {
+  return !article.status || !HIDDEN_STATUSES.has(article.status);
+}
+
+function uniqueArticles(articles: ArticleContext[]) {
+  const seen = new Set<string>();
+  return articles.filter((article) => {
+    if (!article.id || seen.has(article.id)) return false;
+    seen.add(article.id);
+    return true;
+  });
 }
 
 function escapeLike(value: string) {
@@ -117,7 +136,7 @@ async function getLatestBatchId() {
     .limit(20);
 
   if (error) {
-    console.error('Latest batch lookup failed:', error);
+    console.error('Latest upload lookup failed:', error);
     return null;
   }
 
@@ -207,56 +226,6 @@ async function fetchEmbeddingArticles(query: string): Promise<ArticleContext[]> 
   return ids.map((id) => byId.get(id)).filter(Boolean) as ArticleContext[];
 }
 
-export async function POST(req: NextRequest) {
-  try {
-    requireAppPassword(req);
-
-    const body = await req.json();
-    const { query } = body;
-    const analysisMode = normalizeAnalysisMode(body.analysis_mode);
-    const targetScope = normalizeTargetScope(body.target_scope);
-    const outputTemplate = normalizeOutputTemplate(body.output_template);
-
-    if (!query || typeof query !== 'string') {
-      return Response.json({ error: 'query is required' }, { status: 400 });
-    }
-
-    const related = await retrieveArticles(query, targetScope);
-    const answer = await analyze(query, related, analysisMode, targetScope, outputTemplate);
-
-    let report = null;
-    let report_error = '';
-
-    try {
-      const { data, error } = await supabaseAdmin
-        .from('chat_reports')
-        .insert({
-          user_query: query,
-          answer_text: answer.answer_text,
-          answer_json: answer,
-          related_article_ids: related.map((a) => a.id)
-        })
-        .select('*')
-        .single();
-
-      if (error) throw error;
-      report = data;
-    } catch (error) {
-      report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
-      console.error('chat_reports insert failed:', error);
-    }
-
-    return Response.json({
-      report,
-      report_error,
-      related_articles: related,
-      answer
-    });
-  } catch (error) {
-    return jsonError(error);
-  }
-}
-
 async function retrieveArticles(query: string, targetScope: TargetScope): Promise<ArticleContext[]> {
   const latestBatchId = targetScope === 'latest_batch' ? await getLatestBatchId() : null;
   const keywordArticles = filterByScope(await fetchKeywordArticles(query), targetScope, latestBatchId);
@@ -285,54 +254,44 @@ function templateInstruction(outputTemplate: OutputTemplate) {
   }
 }
 
+function fallbackCards(articles: ArticleContext[]) {
+  return articles.slice(0, 12).map((a) => ({
+    article_id: a.id,
+    headline: a.headline,
+    article_date: a.article_date,
+    reason: '分析対象候補'
+  }));
+}
+
 async function analyze(
   query: string,
   articles: ArticleContext[],
-  analysisMode: AnalysisMode,
+  model: string,
   targetScope: TargetScope,
-  outputTemplate: OutputTemplate
+  outputTemplate: OutputTemplate,
+  conversation: ConversationTurn[]
 ) {
   const openai = getOpenAI();
-  const model = getAnalysisModel(analysisMode);
 
   if (!articles.length) {
     return {
       answer_text: '指定範囲に分析対象の記事がありません。対象範囲を「全記事」に変えるか、不要記事化されていないか確認してください。',
       table: [],
       cards: [],
-      analysis_mode: analysisMode,
       target_scope: targetScope,
       output_template: outputTemplate,
-      model_used: analysisMode === 'retrieval_only' ? 'none' : model,
+      model_used: model,
       related_article_count: 0
     };
   }
 
-  const fallbackCards = articles.slice(0, 12).map((a) => ({
-    article_id: a.id,
-    headline: a.headline,
-    reason: '分析対象候補'
-  }));
-
-  if (analysisMode === 'retrieval_only') {
-    return {
-      answer_text: `記事候補のみ表示します。指定範囲から関連候補${articles.length}件を取得しました。`,
-      table: [],
-      cards: fallbackCards,
-      analysis_mode: analysisMode,
-      target_scope: targetScope,
-      output_template: outputTemplate,
-      model_used: 'none',
-      related_article_count: articles.length
-    };
-  }
+  const cards = fallbackCards(articles);
 
   if (!openai) {
     return {
       answer_text: `OPENAI_API_KEYが未設定のため、関連候補${articles.length}件のみ返します。`,
       table: [],
-      cards: fallbackCards,
-      analysis_mode: analysisMode,
+      cards,
       target_scope: targetScope,
       output_template: outputTemplate,
       model_used: model,
@@ -345,28 +304,22 @@ async function analyze(
     article_id: a.id,
     batch_id: a.batch_id,
     headline: a.headline,
+    article_date: a.article_date || '日付不明',
     status: a.status || 'active',
     created_at: a.created_at,
     tags: (a.article_tags || []).map((t) => `${t.tag_type}:${t.tag_name}`),
-    text: (a.ocr_text || '').slice(0, analysisMode === 'deep' ? 4500 : 2500)
+    text: (a.ocr_text || '').slice(0, 3000)
   }));
-
-  const depthInstruction = analysisMode === 'deep'
-    ? 'WHYを深く掘り、生活者変化、背後欲求、調査仮説、提案示唆まで厚めに出してください。'
-    : analysisMode === 'fast'
-      ? '短く、実務上使える要点に絞ってください。'
-      : '根拠と示唆のバランスを取り、実務で使える粒度で出してください。';
 
   const system = [
     'あなたはマーケティングリサーチの上級コンサルタントです。',
     '蓄積されたMJ記事候補を根拠に、生活者トレンド、業界課題、リサーチ課題、手法適性を分析します。',
-    depthInstruction,
+    '直前までの会話がある場合は、その文脈を踏まえて追加質問に答えてください。',
     templateInstruction(outputTemplate),
     '回答は必ずJSONで返します。',
     '必ず answer_text, table, cards を含めてください。',
     'cardsには根拠記事IDを必ず含めてください。',
-    '対象手法は N1探索 / ビジュアル投影 / BOT調査 / リフレクション / 定量調査 の5つです。',
-    'ユーザーの指定カテゴリに完全一致する記事が少ない場合は、近い記事を使った上で「該当記事は少ない」と明記してください。',
+    '記事日付が article_date にある場合は必ず使い、ない場合は「日付不明」と明記してください。',
     '記事にない内容を断定しないでください。',
     '不確かな点は「仮説」と明記してください。',
     '回答は日本語で、実務で使える粒度にしてください。'
@@ -375,16 +328,16 @@ async function analyze(
   try {
     const completion = await openai.chat.completions.create({
       model,
-      temperature: analysisMode === 'deep' ? 0.25 : 0.15,
+      temperature: 0.2,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
+        ...conversation,
         {
           role: 'user',
           content: JSON.stringify(
             {
               user_query: query,
-              analysis_mode: analysisMode,
               target_scope: targetScope,
               output_template: outputTemplate,
               article_count: articleContext.length,
@@ -409,9 +362,8 @@ async function analyze(
               ? parsed.summary
               : raw,
         table: Array.isArray(parsed.table) ? parsed.table : [],
-        cards: Array.isArray(parsed.cards) ? parsed.cards : fallbackCards,
+        cards: Array.isArray(parsed.cards) ? parsed.cards : cards,
         ...parsed,
-        analysis_mode: analysisMode,
         target_scope: targetScope,
         output_template: outputTemplate,
         model_used: model,
@@ -421,8 +373,7 @@ async function analyze(
       return {
         answer_text: raw,
         table: [],
-        cards: fallbackCards,
-        analysis_mode: analysisMode,
+        cards,
         target_scope: targetScope,
         output_template: outputTemplate,
         model_used: model,
@@ -435,12 +386,63 @@ async function analyze(
     return {
       answer_text: `OpenAI分析でエラーが出ました。関連候補${articles.length}件は取得できています。エラー: ${message}`,
       table: [],
-      cards: fallbackCards,
-      analysis_mode: analysisMode,
+      cards,
       target_scope: targetScope,
       output_template: outputTemplate,
       model_used: model,
       related_article_count: articles.length
     };
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    requireAppPassword(req);
+
+    const body = await req.json();
+    const { query } = body;
+    const model = normalizeModel(body.model);
+    const targetScope = normalizeTargetScope(body.target_scope);
+    const outputTemplate = normalizeOutputTemplate(body.output_template);
+    const conversation = normalizeConversation(body.conversation);
+
+    if (!query || typeof query !== 'string') {
+      return Response.json({ error: 'query is required' }, { status: 400 });
+    }
+
+    const related = await retrieveArticles(query, targetScope);
+    const answer = await analyze(query, related, model, targetScope, outputTemplate, conversation);
+
+    let report = null;
+    let report_error = '';
+
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('chat_reports')
+        .insert({
+          user_query: query,
+          answer_text: answer.answer_text,
+          answer_json: answer,
+          related_article_ids: related.map((a) => a.id)
+        })
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      report = data;
+    } catch (error) {
+      report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
+      console.error('chat_reports insert failed:', error);
+    }
+
+    return Response.json({
+      report,
+      report_error,
+      related_articles: related,
+      selectable_models: getSelectableModels(),
+      answer
+    });
+  } catch (error) {
+    return jsonError(error);
   }
 }

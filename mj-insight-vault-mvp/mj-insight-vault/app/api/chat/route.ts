@@ -18,16 +18,10 @@ type ArticleContext = {
 const ARTICLE_SELECT =
   'id, headline, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
 
-const EXCLUDED_STATUSES = ['deleted', 'excluded', 'rejected'];
+const EXCLUDED_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
 
-function activeArticleQuery() {
-  let query = supabaseAdmin.from('articles').select(ARTICLE_SELECT);
-
-  for (const status of EXCLUDED_STATUSES) {
-    query = query.neq('status', status);
-  }
-
-  return query;
+function isActiveArticle(article: ArticleContext) {
+  return !article.status || !EXCLUDED_STATUSES.has(article.status);
 }
 
 function uniqueArticles(articles: ArticleContext[]) {
@@ -50,8 +44,8 @@ function extractKeywords(query: string) {
 
   const categoryMap: Array<[RegExp, string[]]> = [
     [
-      /食品|飲料|外食|冷食|スーパー|コンビニ|菓子|ヨーグルト|惣菜|弁当/,
-      ['食品', '飲料', '外食', '冷食', 'スーパー', 'コンビニ', '菓子', 'ヨーグルト', '惣菜', '弁当']
+      /食品|飲料|外食|冷食|スーパー|コンビニ|菓子|ヨーグルト|惣菜|弁当|ポッポ|ローソン|飲むヨーグレット/,
+      ['食品', '飲料', '外食', '冷食', 'スーパー', 'コンビニ', '菓子', 'ヨーグルト', '惣菜', '弁当', 'ローソン']
     ],
     [
       /化粧品|美容|コスメ|スキンケア|ヘアケア|メイク/,
@@ -62,8 +56,8 @@ function extractKeywords(query: string) {
       ['AI', '人工知能', '生成AI', 'ChatGPT']
     ],
     [
-      /推し|オタク|ファン|投げ銭|匿名|相談|SNS|Z世代/,
-      ['推し', 'オタク', 'ファン', '投げ銭', '匿名', '相談', 'SNS', 'Z世代']
+      /推し|オタク|ファン|投げ銭|匿名|相談|SNS|Z世代|mond|モンド/,
+      ['推し', 'オタク', 'ファン', '投げ銭', '匿名', '相談', 'SNS', 'Z世代', 'mond', 'モンド']
     ],
     [
       /N1|探索|投影|BOT|リフレクション|定量|調査/,
@@ -83,7 +77,7 @@ function extractKeywords(query: string) {
     .filter(Boolean)
     .map((word) =>
       word.replace(
-        /(だけ|関連|記事|分析|して|出して|整理|業界|今月分|今月|リサーチ|課題|テーマ|向いている|回すべき)/g,
+        /(だけ|関連|記事|分析|して|出して|整理|業界|今月分|今月|リサーチ|課題|テーマ|向いている|回すべき|ください)/g,
         ''
       )
     )
@@ -94,14 +88,18 @@ function extractKeywords(query: string) {
   return Array.from(keywords).map(escapeLike).filter(Boolean).slice(0, 12);
 }
 
-async function fetchRecentArticles(limit = 32): Promise<ArticleContext[]> {
-  const { data, error } = await activeArticleQuery()
+async function fetchRecentArticles(limit = 40): Promise<ArticleContext[]> {
+  const { data, error } = await supabaseAdmin
+    .from('articles')
+    .select(ARTICLE_SELECT)
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(200);
 
   if (error) throw error;
 
-  return (data || []) as ArticleContext[];
+  return ((data || []) as ArticleContext[])
+    .filter(isActiveArticle)
+    .slice(0, limit);
 }
 
 async function fetchKeywordArticles(query: string): Promise<ArticleContext[]> {
@@ -114,17 +112,19 @@ async function fetchKeywordArticles(query: string): Promise<ArticleContext[]> {
     `ocr_text.ilike.%${keyword}%`
   ]);
 
-  const { data, error } = await activeArticleQuery()
+  const { data, error } = await supabaseAdmin
+    .from('articles')
+    .select(ARTICLE_SELECT)
     .or(clauses.join(','))
     .order('created_at', { ascending: false })
-    .limit(32);
+    .limit(100);
 
   if (error) {
     console.error('Keyword article retrieval failed:', error);
     return [];
   }
 
-  return (data || []) as ArticleContext[];
+  return ((data || []) as ArticleContext[]).filter(isActiveArticle);
 }
 
 async function fetchEmbeddingArticles(query: string): Promise<ArticleContext[]> {
@@ -134,7 +134,7 @@ async function fetchEmbeddingArticles(query: string): Promise<ArticleContext[]> 
 
   const { data, error } = await supabaseAdmin.rpc('match_articles', {
     query_embedding: embedding,
-    match_count: 24
+    match_count: 30
   });
 
   if (error) {
@@ -148,11 +148,15 @@ async function fetchEmbeddingArticles(query: string): Promise<ArticleContext[]> 
 
   if (!ids.length) return [];
 
-  const { data: articles, error: articleError } = await activeArticleQuery().in('id', ids);
+  const { data: articles, error: articleError } = await supabaseAdmin
+    .from('articles')
+    .select(ARTICLE_SELECT)
+    .in('id', ids);
 
   if (articleError) throw articleError;
 
-  const byId = new Map((articles || []).map((article) => [article.id, article as ArticleContext]));
+  const active = ((articles || []) as ArticleContext[]).filter(isActiveArticle);
+  const byId = new Map(active.map((article) => [article.id, article]));
 
   return ids.map((id) => byId.get(id)).filter(Boolean) as ArticleContext[];
 }
@@ -183,7 +187,11 @@ export async function POST(req: NextRequest) {
 
     if (error) throw error;
 
-    return Response.json({ report, related_articles: related, answer });
+    return Response.json({
+      report,
+      related_articles: related,
+      answer
+    });
   } catch (error) {
     return jsonError(error);
   }
@@ -192,11 +200,14 @@ export async function POST(req: NextRequest) {
 async function retrieveArticles(query: string): Promise<ArticleContext[]> {
   const keywordArticles = await fetchKeywordArticles(query);
   const embeddingArticles = await fetchEmbeddingArticles(query);
+
   const combined = uniqueArticles([...keywordArticles, ...embeddingArticles]);
 
-  if (combined.length) return combined.slice(0, 32);
+  if (combined.length) {
+    return combined.slice(0, 40);
+  }
 
-  return fetchRecentArticles(32);
+  return fetchRecentArticles(40);
 }
 
 async function analyze(query: string, articles: ArticleContext[]) {
@@ -205,7 +216,7 @@ async function analyze(query: string, articles: ArticleContext[]) {
   if (!articles.length) {
     return {
       answer_text:
-        '分析対象の記事がDBにありません。まず記事をアップロードしてください。不要記事を削除済みの場合は、残っている記事が0件です。',
+        '分析対象の記事がDBにありません。記事一覧に有効記事があるか、status が deleted/excluded/rejected になっていないか確認してください。',
       table: [],
       cards: []
     };
@@ -213,7 +224,7 @@ async function analyze(query: string, articles: ArticleContext[]) {
 
   if (!openai) {
     return {
-      answer_text: 'OPENAI_API_KEYが未設定のため、関連候補のみ返します。',
+      answer_text: `OPENAI_API_KEYが未設定のため、関連候補${articles.length}件のみ返します。`,
       table: [],
       cards: articles.map((a) => ({
         article_id: a.id,
@@ -227,21 +238,23 @@ async function analyze(query: string, articles: ArticleContext[]) {
     no: i + 1,
     article_id: a.id,
     headline: a.headline,
-    status: a.status,
+    status: a.status || 'active',
     created_at: a.created_at,
     tags: (a.article_tags || []).map((t) => `${t.tag_type}:${t.tag_name}`),
-    text: (a.ocr_text || '').slice(0, 3000)
+    text: (a.ocr_text || '').slice(0, 3500)
   }));
 
   const system = [
     'あなたはマーケティングリサーチの上級コンサルタントです。',
     '蓄積されたMJ記事候補を根拠に、生活者トレンド、業界課題、リサーチ課題、手法適性を分析します。',
-    '回答は必ずJSONで返します。answer_text, table, cards を必ず含めます。',
-    'cardsには根拠記事IDを必ず含めます。',
-    '対象手法は N1探索 / ビジュアル投影 / BOT調査 / リフレクション / 定量調査 の5つだけです。',
-    'ユーザーの指定カテゴリに該当する記事がない場合は、無理に分析せず「該当記事なし」と明記してください。',
-    '記事にない内容を補完しないでください。不確かな点は断定しないでください。',
-    '元記事確認が必要な場合はcardsのnoteに入れてください。'
+    '回答は必ずJSONで返します。',
+    '必ず answer_text, table, cards を含めてください。',
+    'cardsには根拠記事IDを必ず含めてください。',
+    '対象手法は N1探索 / ビジュアル投影 / BOT調査 / リフレクション / 定量調査 の5つです。',
+    'ユーザーの指定カテゴリに完全一致する記事が少ない場合は、近い記事を使った上で「該当記事は少ない」と明記してください。',
+    '記事にない内容を断定しないでください。',
+    '不確かな点は「仮説」と明記してください。',
+    '回答は日本語で、実務で使える粒度にしてください。'
   ].join('\n');
 
   const completion = await openai.chat.completions.create({
@@ -255,6 +268,7 @@ async function analyze(query: string, articles: ArticleContext[]) {
         content: JSON.stringify(
           {
             user_query: query,
+            article_count: articleContext.length,
             articles: articleContext
           },
           null,

@@ -7,7 +7,7 @@ import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
 import { embedText } from '@/lib/openai';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -51,6 +51,23 @@ async function softDeleteOldArticles(imageId: string) {
   if (fallback.error) throw fallback.error;
 }
 
+async function getFallbackArticleDate(imageId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('articles')
+    .select('article_date')
+    .eq('source_image_id', imageId)
+    .not('article_date', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.error('Fallback article_date lookup failed:', error.message);
+    return null;
+  }
+
+  return data?.[0]?.article_date || null;
+}
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
@@ -74,6 +91,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const arrayBuffer = await downloaded.data.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = image.mime_type || downloaded.data.type || 'image/png';
+    const fallbackArticleDate = await getFallbackArticleDate(id);
 
     await updateImage(id, { ocr_status: 'processing', error_message: null });
 
@@ -95,6 +113,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
       for (let idx = 0; idx < candidates.length; idx++) {
         const candidate = candidates[idx];
+        const articleDate = candidate.article_date || fallbackArticleDate || null;
 
         const { data: article, error: articleError } = await supabaseAdmin
           .from('articles')
@@ -102,7 +121,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             batch_id: image.batch_id,
             source_image_id: id,
             headline: candidate.headline,
-            article_date: candidate.article_date || null,
+            article_date: articleDate,
             article_index: idx,
             ocr_text: candidate.ocr_text,
             article_type: candidate.article_type,
@@ -122,11 +141,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         const embedding = await embedText(embeddingText);
 
         if (embedding) {
-          await supabaseAdmin.from('article_embeddings').insert({
+          const { error: embeddingError } = await supabaseAdmin.from('article_embeddings').insert({
             article_id: article.id,
             embedding_text: embeddingText,
             embedding_vector: embedding
           });
+
+          if (embeddingError) console.error('Embedding insert failed:', embeddingError.message);
         }
       }
 

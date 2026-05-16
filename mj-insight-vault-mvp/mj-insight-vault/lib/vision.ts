@@ -1,20 +1,19 @@
 import { ImageAnnotatorClient } from '@google-cloud/vision';
+import { inspect } from 'node:util';
 
 let visionClient: ImageAnnotatorClient | null = null;
 
 function stringifyVisionError(error: unknown) {
   if (error instanceof Error) {
-    const anyError = error as Error & {
-      code?: unknown;
-      details?: unknown;
-      metadata?: unknown;
-      statusDetails?: unknown;
-    };
+    const props = Object.getOwnPropertyNames(error).reduce<Record<string, unknown>>((acc, key) => {
+      acc[key] = (error as unknown as Record<string, unknown>)[key];
+      return acc;
+    }, {});
 
     return [
-      anyError.code ? `code=${String(anyError.code)}` : null,
-      anyError.message ? `message=${anyError.message}` : null,
-      anyError.details ? `details=${String(anyError.details)}` : null
+      error.message ? `message=${error.message}` : null,
+      Object.keys(props).length ? `props=${JSON.stringify(props)}` : null,
+      `inspect=${inspect(error, { depth: 5 })}`
     ]
       .filter(Boolean)
       .join(' | ');
@@ -65,8 +64,9 @@ function getVisionClient() {
     credentials: {
       client_email: credentials.client_email,
       private_key: credentials.private_key.replace(/\\n/g, '\n')
-    }
-  });
+    },
+    fallback: true
+  } as ConstructorParameters<typeof ImageAnnotatorClient>[0]);
 
   return visionClient;
 }
@@ -77,7 +77,7 @@ export async function runDocumentOcr(buffer: Buffer) {
 
     const [result] = await client.documentTextDetection({
       image: {
-        content: buffer
+        content: buffer.toString('base64')
       }
     });
 
@@ -90,7 +90,7 @@ export async function runDocumentOcr(buffer: Buffer) {
     };
   } catch (error) {
     const message = stringifyVisionError(error);
-    console.error('Google Vision OCR failed:', error);
+    console.error('Google Vision OCR failed:', message);
     throw new Error(`Google Vision OCR failed: ${message}`);
   }
 }

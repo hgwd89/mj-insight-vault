@@ -22,6 +22,7 @@ type Article = {
   id: string;
   batch_id: string;
   headline: string | null;
+  article_date?: string | null;
   ocr_text: string | null;
   status: string;
   article_type: string;
@@ -47,6 +48,7 @@ export default function ArticleDetailPage() {
   const { data, error, loading } = useApi<{ article: Article }>(`/api/articles/${params.id}`);
 
   const [headline, setHeadline] = useState('');
+  const [articleDate, setArticleDate] = useState('');
   const [analysisText, setAnalysisText] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [status, setStatus] = useState('');
@@ -60,6 +62,7 @@ export default function ArticleDetailPage() {
   useEffect(() => {
     if (data?.article) {
       setHeadline(data.article.headline || '');
+      setArticleDate(data.article.article_date || '');
       setStatus(data.article.status);
       setSelectedTags(data.article.article_tags || []);
       setAnalysisText(
@@ -132,6 +135,7 @@ export default function ArticleDetailPage() {
       },
       body: JSON.stringify({
         headline,
+        article_date: articleDate.trim() || null,
         status,
         manual_analysis,
         article_tags: selectedTags.map((tag) => ({ tag_type: tag.tag_type, tag_name: tag.tag_name }))
@@ -230,8 +234,19 @@ export default function ArticleDetailPage() {
           onChange={(e) => setHeadline(e.target.value)}
         />
 
+        <label className="mt-3 block max-w-sm">
+          <span className="text-sm font-bold text-zinc-700">記事日付</span>
+          <input
+            className="input mt-2"
+            value={articleDate}
+            onChange={(e) => setArticleDate(e.target.value)}
+            placeholder="例: 2026-05-13 / 5月13日 / 日付不明"
+          />
+        </label>
+
         <div className="mt-3 flex flex-wrap gap-2">
           <span className="badge">{article.article_type}</span>
+          <span className="badge">{articleDate || '日付不明'}</span>
           {article.has_table && <span className="badge">表</span>}
           {article.has_chart && <span className="badge">図表</span>}
           {article.has_image && <span className="badge">画像</span>}

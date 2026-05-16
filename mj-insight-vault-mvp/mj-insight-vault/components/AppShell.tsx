@@ -3,13 +3,12 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { BarChart3, ClipboardList, Database, MessageSquare, Newspaper, Settings, Tags, Upload } from 'lucide-react';
+import { BarChart3, ClipboardList, MessageSquare, Newspaper, Settings, Tags, Upload } from 'lucide-react';
 import { useClearAppPassword } from '@/components/PasswordGate';
 
 const nav = [
   { href: '/', label: 'Home', icon: BarChart3 },
   { href: '/upload', label: 'Upload', icon: Upload },
-  { href: '/batches', label: 'Batches', icon: Database },
   { href: '/articles', label: 'Articles', icon: Newspaper },
   { href: '/chat', label: 'Chat', icon: MessageSquare },
   { href: '/reports', label: 'Reports', icon: ClipboardList },

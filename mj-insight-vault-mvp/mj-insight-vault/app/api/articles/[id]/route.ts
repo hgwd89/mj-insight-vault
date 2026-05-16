@@ -37,6 +37,29 @@ function mergeManualAnalysis(current: unknown, patch: Record<string, unknown>) {
   return { ...base, ...patch };
 }
 
+async function updateArticle(id: string, values: Record<string, unknown>) {
+  const withTimestamp = { ...values, updated_at: new Date().toISOString() };
+
+  const first = await supabaseAdmin
+    .from('articles')
+    .update(withTimestamp)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (!first.error) return first.data;
+
+  const fallback = await supabaseAdmin
+    .from('articles')
+    .update(values)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (fallback.error) throw fallback.error;
+  return fallback.data;
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
@@ -64,21 +87,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const { id } = await params;
     const body = await req.json();
 
-    const update: Record<string, unknown> = {
-      updated_at: new Date().toISOString()
-    };
+    const update: Record<string, unknown> = {};
 
     if ('headline' in body) update.headline = body.headline;
     if ('article_date' in body) update.article_date = body.article_date || null;
     if ('status' in body) update.status = body.status;
     if ('manual_analysis' in body) update.manual_analysis = body.manual_analysis;
 
-    const { error } = await supabaseAdmin
-      .from('articles')
-      .update(update)
-      .eq('id', id);
-
-    if (error) throw error;
+    if (Object.keys(update).length > 0) {
+      await updateArticle(id, update);
+    }
 
     if ('article_tags' in body) {
       const tags = normalizeTags(body.article_tags);
@@ -140,18 +158,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
           deleted_at: new Date().toISOString()
         });
 
-    const { data, error } = await supabaseAdmin
-      .from('articles')
-      .update({
-        status: nextStatus,
-        manual_analysis: manualAnalysis,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select('*')
-      .single();
-
-    if (error) throw error;
+    const data = await updateArticle(id, {
+      status: nextStatus,
+      manual_analysis: manualAnalysis
+    });
 
     return Response.json({ article: data });
   } catch (error) {

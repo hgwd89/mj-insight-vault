@@ -21,6 +21,7 @@ type Article = {
 type FilterKind = 'all' | 'duplicate' | 'date_unknown' | 'needs_review' | 'has_table_chart';
 
 const deleteReasons = ['重複', 'OCR崩れ', '広告', '対象外', '誤抽出', 'その他'];
+const bulkTagTypes = ['industry', 'consumer_pressure', 'behavior_change', 'method_fit', 'custom_theme'];
 
 function duplicateKey(article: Article) {
   const base = `${article.headline || ''} ${(article.ocr_text || '').slice(0, 500)}`
@@ -45,11 +46,18 @@ export default function ArticlesPage() {
 
   const [articles, setArticles] = useState<Article[]>([]);
   const [busyId, setBusyId] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [reasonById, setReasonById] = useState<Record<string, string>>({});
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkReason, setBulkReason] = useState('重複');
+  const [bulkDate, setBulkDate] = useState('');
+  const [bulkTagType, setBulkTagType] = useState('custom_theme');
+  const [bulkTagName, setBulkTagName] = useState('');
 
   useEffect(() => {
     if (data?.articles) {
       setArticles(data.articles.filter((a) => a.status !== 'deleted'));
+      setSelectedIds(new Set());
     }
   }, [data]);
 
@@ -79,6 +87,84 @@ export default function ArticlesPage() {
       return true;
     });
   }, [articles, duplicateIds, filterKind]);
+
+  const visibleIds = useMemo(() => visibleArticles.map((a) => a.id), [visibleArticles]);
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
+
+  function toggleSelected(articleId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(articleId)) next.delete(articleId);
+      else next.add(articleId);
+      return next;
+    });
+  }
+
+  function selectVisible() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  async function runBulk(action: 'delete' | 'set_date' | 'set_status' | 'add_tags', extra: Record<string, unknown> = {}) {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+
+    const ok = window.confirm(`${ids.length}件に一括処理します。実行してよいですか。`);
+    if (!ok) return;
+
+    setBulkBusy(true);
+
+    try {
+      const res = await fetch('/api/articles/bulk', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-app-password': password },
+        body: JSON.stringify({ action, article_ids: ids, ...extra })
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || '一括処理に失敗しました');
+
+      if (action === 'delete') {
+        setArticles((prev) => prev.filter((a) => !selectedIds.has(a.id)));
+      }
+
+      if (action === 'set_date') {
+        const nextDate = String(extra.article_date || '');
+        setArticles((prev) => prev.map((a) => selectedIds.has(a.id) ? { ...a, article_date: nextDate || null } : a));
+      }
+
+      if (action === 'set_status') {
+        const nextStatus = String(extra.status || 'ocr_done');
+        setArticles((prev) => prev.map((a) => selectedIds.has(a.id) ? { ...a, status: nextStatus } : a));
+      }
+
+      if (action === 'add_tags') {
+        const tags = Array.isArray(extra.tags) ? extra.tags as { tag_type: string; tag_name: string }[] : [];
+        setArticles((prev) => prev.map((a) => {
+          if (!selectedIds.has(a.id)) return a;
+          const current = a.article_tags || [];
+          const merged = [...current];
+          for (const tag of tags) {
+            if (!merged.some((t) => t.tag_type === tag.tag_type && t.tag_name === tag.tag_name)) merged.push(tag);
+          }
+          return { ...a, article_tags: merged };
+        }));
+      }
+
+      clearSelection();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '一括処理に失敗しました');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   async function deleteArticle(articleId: string) {
     const reason = reasonById[articleId] || '重複';
@@ -118,7 +204,7 @@ export default function ArticlesPage() {
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-xl font-black">記事一覧</h1>
-            <p className="mt-2 text-sm text-zinc-600">重複・ノイズ記事は「不要記事」で分析対象から外せます。日付不明や図表ありの記事も絞り込めます。</p>
+            <p className="mt-2 text-sm text-zinc-600">重複・ノイズ記事は「不要記事」で分析対象から外せます。複数選択して一括整理できます。</p>
           </div>
           <Link className="btn" href="/articles/deleted">不要記事一覧</Link>
         </div>
@@ -145,6 +231,33 @@ export default function ArticlesPage() {
           <span className="badge">全体 {articles.length}</span>
           <span className="badge">重複候補 {duplicateIds.size}</span>
           <span className="badge">日付不明 {articles.filter(isDateUnknown).length}</span>
+          <span className="badge">選択 {selectedIds.size}</span>
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <div className="flex flex-wrap gap-2">
+          <button className="btn" type="button" onClick={selectVisible} disabled={!visibleArticles.length || bulkBusy}>表示中を全選択</button>
+          <button className="btn" type="button" onClick={clearSelection} disabled={!selectedIds.size || bulkBusy}>選択解除</button>
+          <button className="btn border-amber-300 text-amber-700 hover:bg-amber-50" type="button" onClick={() => runBulk('set_status', { status: 'needs_review' })} disabled={!selectedIds.size || bulkBusy}>要確認にする</button>
+        </div>
+
+        <div className="mt-3 grid gap-3 md:grid-cols-[160px_auto_1fr_auto]">
+          <select className="input" value={bulkReason} onChange={(e) => setBulkReason(e.target.value)} disabled={bulkBusy}>
+            {deleteReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}
+          </select>
+          <button className="btn border-red-300 text-red-600 hover:bg-red-50" type="button" onClick={() => runBulk('delete', { reason: bulkReason })} disabled={!selectedIds.size || bulkBusy}>一括不要化</button>
+
+          <input className="input" value={bulkDate} onChange={(e) => setBulkDate(e.target.value)} placeholder="一括日付補正：例 2026-05-13" disabled={bulkBusy} />
+          <button className="btn" type="button" onClick={() => runBulk('set_date', { article_date: bulkDate })} disabled={!selectedIds.size || bulkBusy}>日付反映</button>
+        </div>
+
+        <div className="mt-3 grid gap-3 md:grid-cols-[180px_1fr_auto]">
+          <select className="input" value={bulkTagType} onChange={(e) => setBulkTagType(e.target.value)} disabled={bulkBusy}>
+            {bulkTagTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+          <input className="input" value={bulkTagName} onChange={(e) => setBulkTagName(e.target.value)} placeholder="一括タグ名：例 推し活 / 食品 / N1向き" disabled={bulkBusy} />
+          <button className="btn" type="button" onClick={() => runBulk('add_tags', { tags: [{ tag_type: bulkTagType, tag_name: bulkTagName }] })} disabled={!selectedIds.size || !bulkTagName.trim() || bulkBusy}>タグ付与</button>
         </div>
       </div>
 
@@ -161,36 +274,42 @@ export default function ArticlesPage() {
         {visibleArticles.map((a) => (
           <div key={a.id} className="card p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <Link
-                href={`/articles/${a.id}`}
-                className="min-w-0 flex-1 hover:opacity-80"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-bold">
-                    {a.headline || '無題の記事候補'}
+              <div className="flex min-w-0 flex-1 gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 shrink-0"
+                  checked={selectedIds.has(a.id)}
+                  onChange={() => toggleSelected(a.id)}
+                  aria-label="記事を選択"
+                />
+                <Link href={`/articles/${a.id}`} className="min-w-0 flex-1 hover:opacity-80">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-bold">
+                      {a.headline || '無題の記事候補'}
+                    </p>
+                    <span className="badge">{a.article_date || '日付不明'}</span>
+                    {duplicateIds.has(a.id) && (
+                      <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">重複候補</span>
+                    )}
+                  </div>
+
+                  <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-600">
+                    {a.ocr_text}
                   </p>
-                  <span className="badge">{a.article_date || '日付不明'}</span>
-                  {duplicateIds.has(a.id) && (
-                    <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">重複候補</span>
-                  )}
-                </div>
 
-                <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-600">
-                  {a.ocr_text}
-                </p>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <span className="badge">{a.article_type}</span>
-                  <span className="badge">{a.status || 'ocr_done'}</span>
-                  {a.has_table && <span className="badge">表</span>}
-                  {a.has_chart && <span className="badge">図表</span>}
-                  {(a.article_tags || []).map((t) => (
-                    <span key={`${t.tag_type}-${t.tag_name}`} className="badge">
-                      {t.tag_name}
-                    </span>
-                  ))}
-                </div>
-              </Link>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="badge">{a.article_type}</span>
+                    <span className="badge">{a.status || 'ocr_done'}</span>
+                    {a.has_table && <span className="badge">表</span>}
+                    {a.has_chart && <span className="badge">図表</span>}
+                    {(a.article_tags || []).map((t) => (
+                      <span key={`${t.tag_type}-${t.tag_name}`} className="badge">
+                        {t.tag_name}
+                      </span>
+                    ))}
+                  </div>
+                </Link>
+              </div>
 
               <div className="flex shrink-0 flex-col gap-2 md:w-40">
                 <select

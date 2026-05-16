@@ -16,6 +16,7 @@ type Image = {
 
 type Article = {
   id: string;
+  source_image_id?: string | null;
   headline: string | null;
   article_index: number;
   article_type: string;
@@ -42,12 +43,17 @@ export default function BatchDetailPage() {
 
   const { data, error, loading } = useApi<BatchResponse>(`/api/batches/${params.id}`);
   const [articles, setArticles] = useState<Article[]>([]);
+  const [images, setImages] = useState<Image[]>([]);
   const [busyId, setBusyId] = useState('');
+  const [imageBusyId, setImageBusyId] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
 
   useEffect(() => {
     if (data?.articles) {
       setArticles(data.articles.filter((a) => a.status !== 'deleted'));
+    }
+    if (data?.images) {
+      setImages(data.images.filter((img) => img.ocr_status !== 'deleted'));
     }
   }, [data]);
 
@@ -77,9 +83,36 @@ export default function BatchDetailPage() {
     }
   }
 
+  async function deleteImage(imageId: string) {
+    const ok = window.confirm(
+      'この画像を削除します。Storage上の画像を削除し、この画像から作った記事候補も不要記事化します。'
+    );
+
+    if (!ok) return;
+
+    setImageBusyId(imageId);
+
+    try {
+      const res = await fetch(`/api/images/${imageId}`, {
+        method: 'DELETE',
+        headers: { 'x-app-password': password }
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || '画像削除に失敗しました');
+
+      setImages((prev) => prev.filter((img) => img.id !== imageId));
+      setArticles((prev) => prev.filter((article) => article.source_image_id !== imageId));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '画像削除に失敗しました');
+    } finally {
+      setImageBusyId('');
+    }
+  }
+
   async function deleteBatch() {
     const ok = window.confirm(
-      'このバッチを不要にします。バッチ内の記事も一覧・分析対象から外します。元画像ファイルはStorageに残します。'
+      'このアップロード履歴を不要にします。含まれる記事も一覧・分析対象から外します。元画像ファイルはStorageに残します。'
     );
 
     if (!ok) return;
@@ -93,11 +126,11 @@ export default function BatchDetailPage() {
       });
 
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'バッチ削除に失敗しました');
+      if (!res.ok) throw new Error(json.error || 'アップロード履歴の削除に失敗しました');
 
       router.push('/batches');
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'バッチ削除に失敗しました');
+      alert(error instanceof Error ? error.message : 'アップロード履歴の削除に失敗しました');
     } finally {
       setBatchBusy(false);
     }
@@ -117,15 +150,15 @@ export default function BatchDetailPage() {
               {new Date(batch.created_at).toLocaleString('ja-JP')}
             </p>
 
-            <h1 className="mt-1 text-xl font-black">バッチ詳細</h1>
+            <h1 className="mt-1 text-xl font-black">アップロード詳細</h1>
 
             <p className="mt-2 text-sm text-zinc-600">
               {batch.memo || 'メモなし'}
             </p>
 
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <span className="badge">状態 {batch.status}</span>
-              <span className="badge">画像 {data!.images.length}</span>
+              <span className="badge">画像 {images.length}</span>
               <span className="badge">記事候補 {articles.length}</span>
             </div>
           </div>
@@ -135,7 +168,7 @@ export default function BatchDetailPage() {
             onClick={deleteBatch}
             disabled={batchBusy}
           >
-            {batchBusy ? '処理中' : 'バッチ不要'}
+            {batchBusy ? '処理中' : 'アップロード履歴を不要化'}
           </button>
         </div>
       </div>
@@ -182,15 +215,31 @@ export default function BatchDetailPage() {
       </section>
 
       <section className="card p-5">
-        <h2 className="font-bold">画像</h2>
+        <h2 className="font-bold">アップロード画像</h2>
+        <p className="mt-2 text-sm leading-6 text-zinc-600">
+          失敗画像や重複画像はここで削除できます。画像を削除すると、その画像から作られた記事候補も不要記事になります。
+        </p>
 
         <div className="mt-3 grid gap-2">
-          {data!.images.map((img) => (
-            <div key={img.id} className="rounded-xl border border-zinc-200 p-3 text-sm">
-              <b>{img.file_name}</b>
-              <span className="badge ml-2">{img.ocr_status}</span>
+          {images.length === 0 && <p className="text-sm text-zinc-500">表示できる画像がありません。</p>}
 
-              {img.error_message && <p className="mt-1 text-red-600">{img.error_message}</p>}
+          {images.map((img) => (
+            <div key={img.id} className="rounded-xl border border-zinc-200 p-3 text-sm">
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <b>{img.file_name}</b>
+                  <span className="badge ml-2">{img.ocr_status}</span>
+                  {img.error_message && <p className="mt-1 text-red-600">{img.error_message}</p>}
+                </div>
+
+                <button
+                  className="btn shrink-0 border-red-300 text-red-600 hover:bg-red-50"
+                  onClick={() => deleteImage(img.id)}
+                  disabled={imageBusyId === img.id}
+                >
+                  {imageBusyId === img.id ? '削除中' : '画像削除'}
+                </button>
+              </div>
             </div>
           ))}
         </div>

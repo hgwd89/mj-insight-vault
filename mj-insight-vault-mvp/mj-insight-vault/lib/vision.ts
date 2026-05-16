@@ -1,13 +1,13 @@
 import { ImageAnnotatorClient } from '@google-cloud/vision';
 
-let client: ImageAnnotatorClient | null = null;
+let visionClient: ImageAnnotatorClient | null = null;
 
 function getVisionClient() {
-  if (client) return client;
+  if (visionClient) return visionClient;
 
-  const rawCredentials = process.env.GOOGLE_CLOUD_CREDENTIALS;
+  const raw = process.env.GOOGLE_CLOUD_CREDENTIALS;
 
-  if (!rawCredentials) {
+  if (!raw) {
     throw new Error('GOOGLE_CLOUD_CREDENTIALS is not configured.');
   }
 
@@ -15,48 +15,51 @@ function getVisionClient() {
     project_id?: string;
     client_email?: string;
     private_key?: string;
-    [key: string]: unknown;
   };
 
   try {
-    credentials = JSON.parse(rawCredentials);
+    credentials = JSON.parse(raw);
   } catch {
     throw new Error('GOOGLE_CLOUD_CREDENTIALS is not valid JSON.');
   }
 
-  if (!credentials.client_email || !credentials.private_key) {
-    throw new Error('GOOGLE_CLOUD_CREDENTIALS must include client_email and private_key.');
+  if (!credentials.project_id) {
+    throw new Error('GOOGLE_CLOUD_CREDENTIALS is missing project_id.');
   }
 
-  const privateKey = credentials.private_key.replace(/\\n/g, '\n');
+  if (!credentials.client_email) {
+    throw new Error('GOOGLE_CLOUD_CREDENTIALS is missing client_email.');
+  }
 
-  client = new ImageAnnotatorClient({
+  if (!credentials.private_key) {
+    throw new Error('GOOGLE_CLOUD_CREDENTIALS is missing private_key.');
+  }
+
+  visionClient = new ImageAnnotatorClient({
     projectId: credentials.project_id,
     credentials: {
       client_email: credentials.client_email,
-      private_key: privateKey
+      private_key: credentials.private_key.replace(/\\n/g, '\n')
     }
   });
 
-  return client;
+  return visionClient;
 }
 
 export async function runDocumentOcr(buffer: Buffer) {
-  const visionClient = getVisionClient();
+  const client = getVisionClient();
 
-  const [result] = await visionClient.documentTextDetection({
+  const [result] = await client.documentTextDetection({
     image: {
       content: buffer
     }
   });
 
-  const text =
-    result.fullTextAnnotation?.text ||
-    result.textAnnotations?.[0]?.description ||
-    '';
-
   return {
-    text,
+    text:
+      result.fullTextAnnotation?.text ||
+      result.textAnnotations?.[0]?.description ||
+      '',
     raw: result
   };
 }

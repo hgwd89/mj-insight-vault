@@ -18,15 +18,14 @@ type ArticleContext = {
 const ARTICLE_SELECT =
   'id, headline, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
 
-const EXCLUDED_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
+const HIDDEN_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
 
 function isActiveArticle(article: ArticleContext) {
-  return !article.status || !EXCLUDED_STATUSES.has(article.status);
+  return !article.status || !HIDDEN_STATUSES.has(article.status);
 }
 
 function uniqueArticles(articles: ArticleContext[]) {
   const seen = new Set<string>();
-
   return articles.filter((article) => {
     if (!article.id || seen.has(article.id)) return false;
     seen.add(article.id);
@@ -43,32 +42,15 @@ function extractKeywords(query: string) {
   const normalized = query.replace(/[、。・「」『』（）()]/g, ' ');
 
   const categoryMap: Array<[RegExp, string[]]> = [
-    [
-      /食品|飲料|外食|冷食|スーパー|コンビニ|菓子|ヨーグルト|惣菜|弁当|ポッポ|ローソン|飲むヨーグレット/,
-      ['食品', '飲料', '外食', '冷食', 'スーパー', 'コンビニ', '菓子', 'ヨーグルト', '惣菜', '弁当', 'ローソン']
-    ],
-    [
-      /化粧品|美容|コスメ|スキンケア|ヘアケア|メイク/,
-      ['化粧品', '美容', 'コスメ', 'スキンケア', 'ヘアケア', 'メイク']
-    ],
-    [
-      /AI|人工知能|生成AI|ChatGPT|チャットGPT/,
-      ['AI', '人工知能', '生成AI', 'ChatGPT']
-    ],
-    [
-      /推し|オタク|ファン|投げ銭|匿名|相談|SNS|Z世代|mond|モンド/,
-      ['推し', 'オタク', 'ファン', '投げ銭', '匿名', '相談', 'SNS', 'Z世代', 'mond', 'モンド']
-    ],
-    [
-      /N1|探索|投影|BOT|リフレクション|定量|調査/,
-      ['N1', '探索', '投影', 'BOT', 'リフレクション', '定量', '調査']
-    ]
+    [/食品|飲料|外食|冷食|スーパー|コンビニ|菓子|ヨーグルト|惣菜|弁当|ポッポ|ローソン|飲むヨーグレット/, ['食品', '飲料', '外食', '冷食', 'スーパー', 'コンビニ', '菓子', 'ヨーグルト', '惣菜', '弁当', 'ローソン']],
+    [/化粧品|美容|コスメ|スキンケア|ヘアケア|メイク/, ['化粧品', '美容', 'コスメ', 'スキンケア', 'ヘアケア', 'メイク']],
+    [/AI|人工知能|生成AI|ChatGPT|チャットGPT/, ['AI', '人工知能', '生成AI', 'ChatGPT']],
+    [/推し|オタク|ファン|投げ銭|匿名|相談|SNS|Z世代|mond|モンド/, ['推し', 'オタク', 'ファン', '投げ銭', '匿名', '相談', 'SNS', 'Z世代', 'mond', 'モンド']],
+    [/N1|探索|投影|BOT|リフレクション|定量|調査/, ['N1', '探索', '投影', 'BOT', 'リフレクション', '定量', '調査']]
   ];
 
   for (const [pattern, words] of categoryMap) {
-    if (pattern.test(query)) {
-      words.forEach((word) => keywords.add(word));
-    }
+    if (pattern.test(query)) words.forEach((word) => keywords.add(word));
   }
 
   normalized
@@ -93,18 +75,15 @@ async function fetchRecentArticles(limit = 40): Promise<ArticleContext[]> {
     .from('articles')
     .select(ARTICLE_SELECT)
     .order('created_at', { ascending: false })
-    .limit(200);
+    .limit(300);
 
   if (error) throw error;
 
-  return ((data || []) as ArticleContext[])
-    .filter(isActiveArticle)
-    .slice(0, limit);
+  return ((data || []) as ArticleContext[]).filter(isActiveArticle).slice(0, limit);
 }
 
 async function fetchKeywordArticles(query: string): Promise<ArticleContext[]> {
   const keywords = extractKeywords(query);
-
   if (!keywords.length) return [];
 
   const clauses = keywords.flatMap((keyword) => [
@@ -117,7 +96,7 @@ async function fetchKeywordArticles(query: string): Promise<ArticleContext[]> {
     .select(ARTICLE_SELECT)
     .or(clauses.join(','))
     .order('created_at', { ascending: false })
-    .limit(100);
+    .limit(150);
 
   if (error) {
     console.error('Keyword article retrieval failed:', error);
@@ -129,7 +108,6 @@ async function fetchKeywordArticles(query: string): Promise<ArticleContext[]> {
 
 async function fetchEmbeddingArticles(query: string): Promise<ArticleContext[]> {
   const embedding = await embedText(query);
-
   if (!embedding) return [];
 
   const { data, error } = await supabaseAdmin.rpc('match_articles', {
@@ -166,7 +144,6 @@ export async function POST(req: NextRequest) {
     requireAppPassword(req);
 
     const { query } = await req.json();
-
     if (!query || typeof query !== 'string') {
       return Response.json({ error: 'query is required' }, { status: 400 });
     }
@@ -174,21 +151,31 @@ export async function POST(req: NextRequest) {
     const related = await retrieveArticles(query);
     const answer = await analyze(query, related);
 
-    const { data: report, error } = await supabaseAdmin
-      .from('chat_reports')
-      .insert({
-        user_query: query,
-        answer_text: answer.answer_text,
-        answer_json: answer,
-        related_article_ids: related.map((a) => a.id)
-      })
-      .select('*')
-      .single();
+    let report = null;
+    let report_error = '';
 
-    if (error) throw error;
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('chat_reports')
+        .insert({
+          user_query: query,
+          answer_text: answer.answer_text,
+          answer_json: answer,
+          related_article_ids: related.map((a) => a.id)
+        })
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      report = data;
+    } catch (error) {
+      report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
+      console.error('chat_reports insert failed:', error);
+    }
 
     return Response.json({
       report,
+      report_error,
       related_articles: related,
       answer
     });
@@ -200,14 +187,9 @@ export async function POST(req: NextRequest) {
 async function retrieveArticles(query: string): Promise<ArticleContext[]> {
   const keywordArticles = await fetchKeywordArticles(query);
   const embeddingArticles = await fetchEmbeddingArticles(query);
+  const recentArticles = await fetchRecentArticles(40);
 
-  const combined = uniqueArticles([...keywordArticles, ...embeddingArticles]);
-
-  if (combined.length) {
-    return combined.slice(0, 40);
-  }
-
-  return fetchRecentArticles(40);
+  return uniqueArticles([...keywordArticles, ...embeddingArticles, ...recentArticles]).slice(0, 40);
 }
 
 async function analyze(query: string, articles: ArticleContext[]) {
@@ -215,22 +197,23 @@ async function analyze(query: string, articles: ArticleContext[]) {
 
   if (!articles.length) {
     return {
-      answer_text:
-        '分析対象の記事がDBにありません。記事一覧に有効記事があるか、status が deleted/excluded/rejected になっていないか確認してください。',
+      answer_text: '分析対象の記事がDBにありません。記事一覧に有効記事があるか、status が deleted/excluded/rejected になっていないか確認してください。',
       table: [],
       cards: []
     };
   }
 
+  const fallbackCards = articles.slice(0, 12).map((a) => ({
+    article_id: a.id,
+    headline: a.headline,
+    reason: '分析対象候補'
+  }));
+
   if (!openai) {
     return {
       answer_text: `OPENAI_API_KEYが未設定のため、関連候補${articles.length}件のみ返します。`,
       table: [],
-      cards: articles.map((a) => ({
-        article_id: a.id,
-        headline: a.headline,
-        reason: '関連候補'
-      }))
+      cards: fallbackCards
     };
   }
 
@@ -241,7 +224,7 @@ async function analyze(query: string, articles: ArticleContext[]) {
     status: a.status || 'active',
     created_at: a.created_at,
     tags: (a.article_tags || []).map((t) => `${t.tag_type}:${t.tag_name}`),
-    text: (a.ocr_text || '').slice(0, 3500)
+    text: (a.ocr_text || '').slice(0, 3000)
   }));
 
   const system = [
@@ -257,48 +240,53 @@ async function analyze(query: string, articles: ArticleContext[]) {
     '回答は日本語で、実務で使える粒度にしてください。'
   ].join('\n');
 
-  const completion = await openai.chat.completions.create({
-    model: TEXT_MODEL,
-    temperature: 0.2,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      {
-        role: 'user',
-        content: JSON.stringify(
-          {
-            user_query: query,
-            article_count: articleContext.length,
-            articles: articleContext
-          },
-          null,
-          2
-        )
-      }
-    ]
-  });
-
-  const raw = completion.choices[0]?.message.content || '{}';
-
   try {
-    const parsed = JSON.parse(raw);
+    const completion = await openai.chat.completions.create({
+      model: TEXT_MODEL,
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        {
+          role: 'user',
+          content: JSON.stringify(
+            {
+              user_query: query,
+              article_count: articleContext.length,
+              articles: articleContext
+            },
+            null,
+            2
+          )
+        }
+      ]
+    });
 
+    const raw = completion.choices[0]?.message.content || '{}';
+
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        answer_text:
+          typeof parsed.answer_text === 'string'
+            ? parsed.answer_text
+            : typeof parsed.summary === 'string'
+              ? parsed.summary
+              : raw,
+        table: Array.isArray(parsed.table) ? parsed.table : [],
+        cards: Array.isArray(parsed.cards) ? parsed.cards : fallbackCards,
+        ...parsed
+      };
+    } catch {
+      return { answer_text: raw, table: [], cards: fallbackCards };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'OpenAI analysis failed';
+    console.error('OpenAI analysis failed:', error);
     return {
-      answer_text:
-        typeof parsed.answer_text === 'string'
-          ? parsed.answer_text
-          : typeof parsed.summary === 'string'
-            ? parsed.summary
-            : raw,
-      table: Array.isArray(parsed.table) ? parsed.table : [],
-      cards: Array.isArray(parsed.cards) ? parsed.cards : [],
-      ...parsed
-    };
-  } catch {
-    return {
-      answer_text: raw,
+      answer_text: `OpenAI分析でエラーが出ました。関連候補${articles.length}件は取得できています。エラー: ${message}`,
       table: [],
-      cards: []
+      cards: fallbackCards
     };
   }
 }

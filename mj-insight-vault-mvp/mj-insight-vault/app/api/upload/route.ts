@@ -48,23 +48,14 @@ function getExtension(mimeType: string) {
 }
 
 function validateFiles(files: File[]) {
-  if (!files.length) {
-    return 'No files uploaded.';
-  }
-
-  if (files.length > MAX_FILES) {
-    return `Upload limit is ${MAX_FILES} files.`;
-  }
+  if (!files.length) return 'No files uploaded.';
+  if (files.length > MAX_FILES) return `Upload limit is ${MAX_FILES} files.`;
 
   const heic = files.find(isHeicFile);
-  if (heic) {
-    return `HEIC/HEIF files are not supported in this app. Please convert to JPG or PNG first: ${heic.name}`;
-  }
+  if (heic) return `HEIC/HEIF files are not supported in this app. Please convert to JPG or PNG first: ${heic.name}`;
 
   const oversized = files.find((file) => file.size > MAX_FILE_BYTES);
-  if (oversized) {
-    return `File is too large. Each image must be 4MB or less: ${oversized.name}`;
-  }
+  if (oversized) return `File is too large. Each image must be 4MB or less: ${oversized.name}`;
 
   return '';
 }
@@ -75,46 +66,36 @@ export async function POST(req: NextRequest) {
 
     const form = await req.formData();
     const memo = String(form.get('memo') || '').trim();
-    const files = form
-      .getAll('files')
-      .filter((f): f is File => f instanceof File);
+    const fallbackArticleDate = String(form.get('article_date') || '').trim();
+    const files = form.getAll('files').filter((f): f is File => f instanceof File);
 
     const validationError = validateFiles(files);
-    if (validationError) {
-      return Response.json({ error: validationError }, { status: 400 });
-    }
+    if (validationError) return Response.json({ error: validationError }, { status: 400 });
 
     const { data: batch, error: batchError } = await supabaseAdmin
       .from('upload_batches')
-      .insert({
-        memo,
-        image_count: files.length,
-        status: 'processing'
-      })
+      .insert({ memo, image_count: files.length, status: 'processing' })
       .select('*')
       .single();
 
     if (batchError) throw batchError;
 
-    const createdArticles: unknown[] = [];
-    const createdImages: unknown[] = [];
+    const createdArticles: any[] = [];
+    const createdImages: any[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-
       const mimeType = getMimeType(file);
       const ext = getExtension(mimeType);
       const displayFileName = file.name || `${String(i + 1).padStart(2, '0')}.${ext}`;
       const storagePath = `${batch.id}/${String(i + 1).padStart(2, '0')}_${crypto.randomUUID()}.${ext}`;
 
-      const upload = await supabaseAdmin.storage
-        .from(STORAGE_BUCKET)
-        .upload(storagePath, buffer, {
-          contentType: mimeType,
-          upsert: false
-        });
+      const upload = await supabaseAdmin.storage.from(STORAGE_BUCKET).upload(storagePath, buffer, {
+        contentType: mimeType,
+        upsert: false
+      });
 
       if (upload.error) throw upload.error;
 
@@ -131,7 +112,6 @@ export async function POST(req: NextRequest) {
         .single();
 
       if (imageError) throw imageError;
-
       createdImages.push(image);
 
       try {
@@ -140,22 +120,14 @@ export async function POST(req: NextRequest) {
 
         await supabaseAdmin
           .from('source_images')
-          .update({
-            ocr_status: 'done',
-            ocr_text_raw: ocrText,
-            ocr_json: ocr.raw,
-            error_message: null
-          })
+          .update({ ocr_status: 'done', ocr_text_raw: ocrText, ocr_json: ocr.raw, error_message: null })
           .eq('id', image.id);
 
-        const candidates = await segmentArticlesFromImage({
-          ocrText,
-          imageBuffer: buffer,
-          mimeType
-        });
+        const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
 
         for (let idx = 0; idx < candidates.length; idx++) {
           const candidate = candidates[idx];
+          const articleDate = candidate.article_date || fallbackArticleDate || null;
 
           const { data: article, error: articleError } = await supabaseAdmin
             .from('articles')
@@ -163,7 +135,7 @@ export async function POST(req: NextRequest) {
               batch_id: batch.id,
               source_image_id: image.id,
               headline: candidate.headline,
-              article_date: candidate.article_date || null,
+              article_date: articleDate,
               article_index: idx,
               ocr_text: candidate.ocr_text,
               article_type: candidate.article_type,
@@ -192,31 +164,39 @@ export async function POST(req: NextRequest) {
         }
       } catch (error) {
         const errorMessage = getErrorMessage(error);
-
         console.error('OCR/article pipeline failed:', errorMessage, error);
 
         await supabaseAdmin
           .from('source_images')
-          .update({
-            ocr_status: 'failed',
-            error_message: errorMessage || 'OCR/article pipeline failed with empty error message'
-          })
+          .update({ ocr_status: 'failed', error_message: errorMessage || 'OCR/article pipeline failed with empty error message' })
           .eq('id', image.id);
+
+        const idx = createdImages.findIndex((img) => img.id === image.id);
+        if (idx >= 0) createdImages[idx] = { ...createdImages[idx], ocr_status: 'failed', error_message: errorMessage };
       }
     }
 
     await supabaseAdmin
       .from('upload_batches')
-      .update({
-        status: 'ocr_done',
-        updated_at: new Date().toISOString()
-      })
+      .update({ status: 'ocr_done', updated_at: new Date().toISOString() })
       .eq('id', batch.id);
+
+    const successImageCount = createdImages.filter((img) => img.ocr_status === 'done').length;
+    const failedImageCount = createdImages.filter((img) => img.ocr_status === 'failed').length;
+    const dateUnknownCount = createdArticles.filter((article) => !article.article_date).length;
 
     return Response.json({
       batch,
       images: createdImages,
-      articles: createdArticles
+      articles: createdArticles,
+      summary: {
+        batch_id: batch.id,
+        image_count: files.length,
+        success_image_count: successImageCount,
+        failed_image_count: failedImageCount,
+        article_count: createdArticles.length,
+        date_unknown_count: dateUnknownCount
+      }
     });
   } catch (error) {
     return jsonError(error);

@@ -7,9 +7,12 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 type AnalysisMode = 'standard' | 'deep' | 'fast' | 'retrieval_only';
+type TargetScope = 'all' | 'recent_30d' | 'latest_batch';
+type OutputTemplate = 'auto' | 'trend' | 'why' | 'research' | 'proposal' | 'method' | 'news_list';
 
 type ArticleContext = {
   id: string;
+  batch_id?: string | null;
   headline: string | null;
   ocr_text: string | null;
   status?: string | null;
@@ -18,7 +21,7 @@ type ArticleContext = {
 };
 
 const ARTICLE_SELECT =
-  'id, headline, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
+  'id, batch_id, headline, ocr_text, status, created_at, article_tags(tag_type, tag_name)';
 
 const HIDDEN_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
 
@@ -38,6 +41,23 @@ function uniqueArticles(articles: ArticleContext[]) {
 function normalizeAnalysisMode(value: unknown): AnalysisMode {
   if (value === 'deep' || value === 'fast' || value === 'retrieval_only') return value;
   return 'standard';
+}
+
+function normalizeTargetScope(value: unknown): TargetScope {
+  if (value === 'recent_30d' || value === 'latest_batch') return value;
+  return 'all';
+}
+
+function normalizeOutputTemplate(value: unknown): OutputTemplate {
+  if (
+    value === 'trend' ||
+    value === 'why' ||
+    value === 'research' ||
+    value === 'proposal' ||
+    value === 'method' ||
+    value === 'news_list'
+  ) return value;
+  return 'auto';
 }
 
 function getAnalysisModel(mode: AnalysisMode) {
@@ -87,6 +107,35 @@ function extractKeywords(query: string) {
     .forEach((word) => keywords.add(word));
 
   return Array.from(keywords).map(escapeLike).filter(Boolean).slice(0, 12);
+}
+
+async function getLatestBatchId() {
+  const { data, error } = await supabaseAdmin
+    .from('upload_batches')
+    .select('id, status, created_at')
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error('Latest batch lookup failed:', error);
+    return null;
+  }
+
+  return (data || []).find((batch) => !HIDDEN_STATUSES.has(batch.status))?.id || null;
+}
+
+function filterByScope(articles: ArticleContext[], targetScope: TargetScope, latestBatchId: string | null) {
+  if (targetScope === 'recent_30d') {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return articles.filter((article) => article.created_at && new Date(article.created_at).getTime() >= cutoff);
+  }
+
+  if (targetScope === 'latest_batch') {
+    if (!latestBatchId) return [];
+    return articles.filter((article) => article.batch_id === latestBatchId);
+  }
+
+  return articles;
 }
 
 async function fetchRecentArticles(limit = 40): Promise<ArticleContext[]> {
@@ -165,13 +214,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { query } = body;
     const analysisMode = normalizeAnalysisMode(body.analysis_mode);
+    const targetScope = normalizeTargetScope(body.target_scope);
+    const outputTemplate = normalizeOutputTemplate(body.output_template);
 
     if (!query || typeof query !== 'string') {
       return Response.json({ error: 'query is required' }, { status: 400 });
     }
 
-    const related = await retrieveArticles(query);
-    const answer = await analyze(query, related, analysisMode);
+    const related = await retrieveArticles(query, targetScope);
+    const answer = await analyze(query, related, analysisMode, targetScope, outputTemplate);
 
     let report = null;
     let report_error = '';
@@ -206,24 +257,52 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function retrieveArticles(query: string): Promise<ArticleContext[]> {
-  const keywordArticles = await fetchKeywordArticles(query);
-  const embeddingArticles = await fetchEmbeddingArticles(query);
-  const recentArticles = await fetchRecentArticles(40);
+async function retrieveArticles(query: string, targetScope: TargetScope): Promise<ArticleContext[]> {
+  const latestBatchId = targetScope === 'latest_batch' ? await getLatestBatchId() : null;
+  const keywordArticles = filterByScope(await fetchKeywordArticles(query), targetScope, latestBatchId);
+  const embeddingArticles = filterByScope(await fetchEmbeddingArticles(query), targetScope, latestBatchId);
+  const recentArticles = filterByScope(await fetchRecentArticles(80), targetScope, latestBatchId);
 
   return uniqueArticles([...keywordArticles, ...embeddingArticles, ...recentArticles]).slice(0, 40);
 }
 
-async function analyze(query: string, articles: ArticleContext[], analysisMode: AnalysisMode) {
+function templateInstruction(outputTemplate: OutputTemplate) {
+  switch (outputTemplate) {
+    case 'trend':
+      return '生活者トレンド整理として、変化の兆し、背景、生活者心理、企業への示唆、調査仮説を分けてください。';
+    case 'why':
+      return 'WHY分析として、表層事象から最低5段階で理由を掘り下げ、最後に本質仮説を出してください。';
+    case 'research':
+      return 'リサーチ課題化として、調査目的、検証仮説、対象者条件、聞くべき論点、適した手法を出してください。';
+    case 'proposal':
+      return '提案書ネタとして、提案タイトル、クライアント課題、使える記事根拠、提案骨子、勝ち筋を出してください。';
+    case 'method':
+      return '手法適性評価として、N1探索、ビジュアル投影、BOT調査、リフレクション、定量調査のどれに向くかを根拠付きで評価してください。';
+    case 'news_list':
+      return 'ニュース一覧として、記事ごとに日付、見出し、主要事実、生活者変化の読み、使い道を表形式で出してください。';
+    default:
+      return '質問内容に最も合う形式で、実務で使える分析にしてください。';
+  }
+}
+
+async function analyze(
+  query: string,
+  articles: ArticleContext[],
+  analysisMode: AnalysisMode,
+  targetScope: TargetScope,
+  outputTemplate: OutputTemplate
+) {
   const openai = getOpenAI();
   const model = getAnalysisModel(analysisMode);
 
   if (!articles.length) {
     return {
-      answer_text: '分析対象の記事がDBにありません。記事一覧に有効記事があるか、status が deleted/excluded/rejected になっていないか確認してください。',
+      answer_text: '指定範囲に分析対象の記事がありません。対象範囲を「全記事」に変えるか、不要記事化されていないか確認してください。',
       table: [],
       cards: [],
       analysis_mode: analysisMode,
+      target_scope: targetScope,
+      output_template: outputTemplate,
       model_used: analysisMode === 'retrieval_only' ? 'none' : model,
       related_article_count: 0
     };
@@ -237,10 +316,12 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
 
   if (analysisMode === 'retrieval_only') {
     return {
-      answer_text: `記事候補のみ表示します。関連候補${articles.length}件を取得しました。`,
+      answer_text: `記事候補のみ表示します。指定範囲から関連候補${articles.length}件を取得しました。`,
       table: [],
       cards: fallbackCards,
       analysis_mode: analysisMode,
+      target_scope: targetScope,
+      output_template: outputTemplate,
       model_used: 'none',
       related_article_count: articles.length
     };
@@ -252,6 +333,8 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
       table: [],
       cards: fallbackCards,
       analysis_mode: analysisMode,
+      target_scope: targetScope,
+      output_template: outputTemplate,
       model_used: model,
       related_article_count: articles.length
     };
@@ -260,6 +343,7 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
   const articleContext = articles.map((a, i) => ({
     no: i + 1,
     article_id: a.id,
+    batch_id: a.batch_id,
     headline: a.headline,
     status: a.status || 'active',
     created_at: a.created_at,
@@ -277,6 +361,7 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
     'あなたはマーケティングリサーチの上級コンサルタントです。',
     '蓄積されたMJ記事候補を根拠に、生活者トレンド、業界課題、リサーチ課題、手法適性を分析します。',
     depthInstruction,
+    templateInstruction(outputTemplate),
     '回答は必ずJSONで返します。',
     '必ず answer_text, table, cards を含めてください。',
     'cardsには根拠記事IDを必ず含めてください。',
@@ -300,6 +385,8 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
             {
               user_query: query,
               analysis_mode: analysisMode,
+              target_scope: targetScope,
+              output_template: outputTemplate,
               article_count: articleContext.length,
               articles: articleContext
             },
@@ -325,6 +412,8 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
         cards: Array.isArray(parsed.cards) ? parsed.cards : fallbackCards,
         ...parsed,
         analysis_mode: analysisMode,
+        target_scope: targetScope,
+        output_template: outputTemplate,
         model_used: model,
         related_article_count: articles.length
       };
@@ -334,6 +423,8 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
         table: [],
         cards: fallbackCards,
         analysis_mode: analysisMode,
+        target_scope: targetScope,
+        output_template: outputTemplate,
         model_used: model,
         related_article_count: articles.length
       };
@@ -346,6 +437,8 @@ async function analyze(query: string, articles: ArticleContext[], analysisMode: 
       table: [],
       cards: fallbackCards,
       analysis_mode: analysisMode,
+      target_scope: targetScope,
+      output_template: outputTemplate,
       model_used: model,
       related_article_count: articles.length
     };

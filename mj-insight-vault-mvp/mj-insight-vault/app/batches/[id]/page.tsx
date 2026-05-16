@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
@@ -37,11 +37,13 @@ type BatchResponse = {
 
 export default function BatchDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const password = useAppPassword();
 
   const { data, error, loading } = useApi<BatchResponse>(`/api/batches/${params.id}`);
   const [articles, setArticles] = useState<Article[]>([]);
   const [busyId, setBusyId] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
 
   useEffect(() => {
     if (data?.articles) {
@@ -61,22 +63,43 @@ export default function BatchDetailPage() {
     try {
       const res = await fetch(`/api/articles/${articleId}`, {
         method: 'DELETE',
-        headers: {
-          'x-app-password': password
-        }
+        headers: { 'x-app-password': password }
       });
 
       const json = await res.json();
-
-      if (!res.ok) {
-        throw new Error(json.error || '削除に失敗しました');
-      }
+      if (!res.ok) throw new Error(json.error || '削除に失敗しました');
 
       setArticles((prev) => prev.filter((a) => a.id !== articleId));
     } catch (error) {
       alert(error instanceof Error ? error.message : '削除に失敗しました');
     } finally {
       setBusyId('');
+    }
+  }
+
+  async function deleteBatch() {
+    const ok = window.confirm(
+      'このバッチを不要にします。バッチ内の記事も一覧・分析対象から外します。元画像ファイルはStorageに残します。'
+    );
+
+    if (!ok) return;
+
+    setBatchBusy(true);
+
+    try {
+      const res = await fetch(`/api/batches/${params.id}`, {
+        method: 'DELETE',
+        headers: { 'x-app-password': password }
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'バッチ削除に失敗しました');
+
+      router.push('/batches');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'バッチ削除に失敗しました');
+    } finally {
+      setBatchBusy(false);
     }
   }
 
@@ -88,20 +111,32 @@ export default function BatchDetailPage() {
   return (
     <div className="space-y-5">
       <div className="card p-5">
-        <p className="text-sm text-zinc-500">
-          {new Date(batch.created_at).toLocaleString('ja-JP')}
-        </p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="text-sm text-zinc-500">
+              {new Date(batch.created_at).toLocaleString('ja-JP')}
+            </p>
 
-        <h1 className="mt-1 text-xl font-black">バッチ詳細</h1>
+            <h1 className="mt-1 text-xl font-black">バッチ詳細</h1>
 
-        <p className="mt-2 text-sm text-zinc-600">
-          {batch.memo || 'メモなし'}
-        </p>
+            <p className="mt-2 text-sm text-zinc-600">
+              {batch.memo || 'メモなし'}
+            </p>
 
-        <div className="mt-3 flex gap-2">
-          <span className="badge">状態 {batch.status}</span>
-          <span className="badge">画像 {data!.images.length}</span>
-          <span className="badge">記事候補 {articles.length}</span>
+            <div className="mt-3 flex gap-2">
+              <span className="badge">状態 {batch.status}</span>
+              <span className="badge">画像 {data!.images.length}</span>
+              <span className="badge">記事候補 {articles.length}</span>
+            </div>
+          </div>
+
+          <button
+            className="btn shrink-0 border-red-300 text-red-600 hover:bg-red-50"
+            onClick={deleteBatch}
+            disabled={batchBusy}
+          >
+            {batchBusy ? '処理中' : 'バッチ不要'}
+          </button>
         </div>
       </div>
 
@@ -116,15 +151,10 @@ export default function BatchDetailPage() {
           )}
 
           {articles.map((a) => (
-            <div
-              key={a.id}
-              className="rounded-xl border border-zinc-200 p-3"
-            >
+            <div key={a.id} className="rounded-xl border border-zinc-200 p-3">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <p className="font-semibold">
-                    {a.headline || '無題の記事候補'}
-                  </p>
+                  <p className="font-semibold">{a.headline || '無題の記事候補'}</p>
 
                   <div className="mt-2 flex flex-wrap gap-2 text-xs">
                     <span className="badge">{a.article_type}</span>
@@ -135,9 +165,7 @@ export default function BatchDetailPage() {
                 </div>
 
                 <div className="flex shrink-0 gap-2">
-                  <Link className="btn" href={`/articles/${a.id}`}>
-                    詳細
-                  </Link>
+                  <Link className="btn" href={`/articles/${a.id}`}>詳細</Link>
 
                   <button
                     className="btn border-red-300 text-red-600 hover:bg-red-50"
@@ -158,16 +186,11 @@ export default function BatchDetailPage() {
 
         <div className="mt-3 grid gap-2">
           {data!.images.map((img) => (
-            <div
-              key={img.id}
-              className="rounded-xl border border-zinc-200 p-3 text-sm"
-            >
+            <div key={img.id} className="rounded-xl border border-zinc-200 p-3 text-sm">
               <b>{img.file_name}</b>
               <span className="badge ml-2">{img.ocr_status}</span>
 
-              {img.error_message && (
-                <p className="mt-1 text-red-600">{img.error_message}</p>
-              )}
+              {img.error_message && <p className="mt-1 text-red-600">{img.error_message}</p>}
             </div>
           ))}
         </div>

@@ -7,7 +7,7 @@ import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
 import { embedText } from '@/lib/openai';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MAX_FILES = 20;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -58,6 +58,48 @@ function validateFiles(files: File[]) {
   if (oversized) return `File is too large. Each image must be 4MB or less: ${oversized.name}`;
 
   return '';
+}
+
+async function updateSourceImage(imageId: string, values: Record<string, unknown>) {
+  const first = await supabaseAdmin
+    .from('source_images')
+    .update({ ...values, updated_at: new Date().toISOString() })
+    .eq('id', imageId)
+    .select('*')
+    .single();
+
+  if (!first.error) return first.data;
+
+  const fallback = await supabaseAdmin
+    .from('source_images')
+    .update(values)
+    .eq('id', imageId)
+    .select('*')
+    .single();
+
+  if (fallback.error) throw fallback.error;
+  return fallback.data;
+}
+
+async function updateBatchStatus(batchId: string, status: string) {
+  const first = await supabaseAdmin
+    .from('upload_batches')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', batchId)
+    .select('*')
+    .single();
+
+  if (!first.error) return first.data;
+
+  const fallback = await supabaseAdmin
+    .from('upload_batches')
+    .update({ status })
+    .eq('id', batchId)
+    .select('*')
+    .single();
+
+  if (fallback.error) throw fallback.error;
+  return fallback.data;
 }
 
 export async function POST(req: NextRequest) {
@@ -118,10 +160,15 @@ export async function POST(req: NextRequest) {
         const ocr = await runDocumentOcr(buffer);
         const ocrText = normalizeOcrText(ocr.text);
 
-        await supabaseAdmin
-          .from('source_images')
-          .update({ ocr_status: 'done', ocr_text_raw: ocrText, ocr_json: ocr.raw, error_message: null })
-          .eq('id', image.id);
+        const doneImage = await updateSourceImage(image.id, {
+          ocr_status: 'done',
+          ocr_text_raw: ocrText,
+          ocr_json: ocr.raw,
+          error_message: null
+        });
+
+        const imageIndex = createdImages.findIndex((img) => img.id === image.id);
+        if (imageIndex >= 0) createdImages[imageIndex] = doneImage;
 
         const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
 
@@ -155,38 +202,38 @@ export async function POST(req: NextRequest) {
           const embedding = await embedText(embeddingText);
 
           if (embedding) {
-            await supabaseAdmin.from('article_embeddings').insert({
+            const { error: embeddingError } = await supabaseAdmin.from('article_embeddings').insert({
               article_id: article.id,
               embedding_text: embeddingText,
               embedding_vector: embedding
             });
+
+            if (embeddingError) console.error('Embedding insert failed:', embeddingError.message);
           }
         }
       } catch (error) {
         const errorMessage = getErrorMessage(error);
         console.error('OCR/article pipeline failed:', errorMessage, error);
 
-        await supabaseAdmin
-          .from('source_images')
-          .update({ ocr_status: 'failed', error_message: errorMessage || 'OCR/article pipeline failed with empty error message' })
-          .eq('id', image.id);
+        const failedImage = await updateSourceImage(image.id, {
+          ocr_status: 'failed',
+          error_message: errorMessage || 'OCR/article pipeline failed with empty error message'
+        });
 
         const idx = createdImages.findIndex((img) => img.id === image.id);
-        if (idx >= 0) createdImages[idx] = { ...createdImages[idx], ocr_status: 'failed', error_message: errorMessage };
+        if (idx >= 0) createdImages[idx] = failedImage;
       }
     }
 
-    await supabaseAdmin
-      .from('upload_batches')
-      .update({ status: 'ocr_done', updated_at: new Date().toISOString() })
-      .eq('id', batch.id);
+    const finalBatchStatus = createdArticles.length > 0 ? 'ocr_done' : 'failed';
+    const updatedBatch = await updateBatchStatus(batch.id, finalBatchStatus);
 
     const successImageCount = createdImages.filter((img) => img.ocr_status === 'done').length;
     const failedImageCount = createdImages.filter((img) => img.ocr_status === 'failed').length;
     const dateUnknownCount = createdArticles.filter((article) => !article.article_date).length;
 
     return Response.json({
-      batch,
+      batch: updatedBatch || batch,
       images: createdImages,
       articles: createdArticles,
       summary: {

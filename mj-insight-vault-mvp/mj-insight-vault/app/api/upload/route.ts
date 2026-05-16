@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
 import { runDocumentOcr } from '@/lib/vision';
-import { segmentArticles } from '@/lib/articleSegmentation';
+import { segmentArticlesFromImage } from '@/lib/articleSegmentation';
 import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
 import { embedText } from '@/lib/openai';
 
@@ -40,8 +40,6 @@ function getExtension(mimeType: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    console.log('UPLOAD_ROUTE_ACTIVE_20260516_1215');
-
     requireAppPassword(req);
 
     const form = await req.formData();
@@ -122,7 +120,11 @@ export async function POST(req: NextRequest) {
           })
           .eq('id', image.id);
 
-        const candidates = await segmentArticles(ocrText);
+        const candidates = await segmentArticlesFromImage({
+          ocrText,
+          imageBuffer: buffer,
+          mimeType
+        });
 
         for (let idx = 0; idx < candidates.length; idx++) {
           const candidate = candidates[idx];
@@ -163,13 +165,13 @@ export async function POST(req: NextRequest) {
       } catch (error) {
         const errorMessage = getErrorMessage(error);
 
-        console.error('OCR pipeline failed:', errorMessage, error);
+        console.error('OCR/article pipeline failed:', errorMessage, error);
 
         await supabaseAdmin
           .from('source_images')
           .update({
             ocr_status: 'failed',
-            error_message: errorMessage || 'OCR failed with empty error message'
+            error_message: errorMessage || 'OCR/article pipeline failed with empty error message'
           })
           .eq('id', image.id);
       }

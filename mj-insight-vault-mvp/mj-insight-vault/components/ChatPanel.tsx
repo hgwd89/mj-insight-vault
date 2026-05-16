@@ -20,17 +20,17 @@ const presets = [
   'この記事に似た記事を探して'
 ];
 
-const analysisModes = [
-  { value: 'standard', label: '標準', description: '通常の分析。' },
-  { value: 'deep', label: '高精度', description: '精度優先の分析。' },
-  { value: 'fast', label: '軽量', description: '速度優先の分析。' },
-  { value: 'retrieval_only', label: '記事候補のみ', description: '分析生成をせず、根拠記事だけ確認。' }
+const modelOptions = [
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4o',
+  'gpt-4o-mini'
 ] as const;
 
 const targetScopes = [
   { value: 'all', label: '全記事', description: '不要記事を除く全記事から検索。' },
   { value: 'recent_30d', label: '直近30日', description: '直近30日の記事だけから検索。' },
-  { value: 'latest_batch', label: '最新バッチ', description: '最新アップロード分だけから検索。' }
+  { value: 'latest_batch', label: '最新アップロード', description: '最新アップロード分だけから検索。' }
 ] as const;
 
 const outputTemplates = [
@@ -43,13 +43,14 @@ const outputTemplates = [
   { value: 'news_list', label: 'ニュース一覧', description: '元記事を一覧として確認する。' }
 ] as const;
 
-type AnalysisMode = typeof analysisModes[number]['value'];
+type ModelName = typeof modelOptions[number];
 type TargetScope = typeof targetScopes[number]['value'];
 type OutputTemplate = typeof outputTemplates[number]['value'];
 
 type ArticleCard = {
   article_id?: string;
   headline?: string;
+  article_date?: string;
   reason?: string;
   note?: string;
 };
@@ -59,12 +60,16 @@ type ChatAnswer = {
   summary?: string;
   table?: Record<string, unknown>[];
   cards?: ArticleCard[];
-  analysis_mode?: string;
   target_scope?: string;
   output_template?: string;
   model_used?: string;
   related_article_count?: number;
   [key: string]: unknown;
+};
+
+type ConversationTurn = {
+  role: 'user' | 'assistant';
+  content: string;
 };
 
 function getAnswerText(answer: ChatAnswer): string {
@@ -76,23 +81,25 @@ function getAnswerText(answer: ChatAnswer): string {
 export function ChatPanel() {
   const password = useAppPassword();
   const [query, setQuery] = useState('');
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('standard');
+  const [model, setModel] = useState<ModelName>('gpt-4.1');
   const [targetScope, setTargetScope] = useState<TargetScope>('all');
   const [outputTemplate, setOutputTemplate] = useState<OutputTemplate>('auto');
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState<ChatAnswer | null>(null);
   const [raw, setRaw] = useState('');
+  const [conversation, setConversation] = useState<ConversationTurn[]>([]);
 
-  const selectedMode = analysisModes.find((mode) => mode.value === analysisMode) || analysisModes[0];
   const selectedScope = targetScopes.find((scope) => scope.value === targetScope) || targetScopes[0];
   const selectedTemplate = outputTemplates.find((template) => template.value === outputTemplate) || outputTemplates[0];
 
   async function send(q = query) {
-    if (!q.trim()) return;
+    const trimmed = q.trim();
+    if (!trimmed) return;
 
     setBusy(true);
-    setAnswer(null);
     setRaw('');
+
+    const nextConversation: ConversationTurn[] = [...conversation, { role: 'user', content: trimmed }];
 
     try {
       const res = await fetch('/api/chat', {
@@ -102,10 +109,11 @@ export function ChatPanel() {
           'x-app-password': password
         },
         body: JSON.stringify({
-          query: q,
-          analysis_mode: analysisMode,
+          query: trimmed,
+          model,
           target_scope: targetScope,
-          output_template: outputTemplate
+          output_template: outputTemplate,
+          conversation
         })
       });
 
@@ -113,13 +121,26 @@ export function ChatPanel() {
 
       if (!res.ok) throw new Error(json.error || 'Chat failed');
 
-      setAnswer(json.answer as ChatAnswer);
+      const nextAnswer = json.answer as ChatAnswer;
+      const answerText = getAnswerText(nextAnswer);
+
+      setAnswer(nextAnswer);
       setRaw(JSON.stringify(json, null, 2));
+      setConversation([...nextConversation, { role: 'assistant', content: answerText || JSON.stringify(nextAnswer) }].slice(-10));
+      setQuery('');
     } catch (error) {
       setRaw(error instanceof Error ? error.message : 'エラーが発生しました');
+      setConversation(conversation);
     } finally {
       setBusy(false);
     }
+  }
+
+  function resetConversation() {
+    setConversation([]);
+    setAnswer(null);
+    setRaw('');
+    setQuery('');
   }
 
   return (
@@ -129,19 +150,22 @@ export function ChatPanel() {
           <div>
             <h1 className="text-xl font-black">チャット分析</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              DBから関連する記事だけを抽出し、本文＋表＋記事カードで返します。回答はchat_reportsに保存されます。
+              記事DBを根拠に分析し、続けて追加質問できます。回答はchat_reportsに保存されます。
             </p>
           </div>
-          <Link className="btn" href="/reports">分析履歴</Link>
+          <div className="flex gap-2">
+            <button className="btn" type="button" onClick={resetConversation} disabled={busy}>会話リセット</button>
+            <Link className="btn" href="/reports">分析履歴</Link>
+          </div>
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <label className="block">
-            <span className="text-sm font-bold text-zinc-700">分析タイプ</span>
-            <select className="input mt-2" value={analysisMode} onChange={(e) => setAnalysisMode(e.target.value as AnalysisMode)} disabled={busy}>
-              {analysisModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+            <span className="text-sm font-bold text-zinc-700">APIモデル</span>
+            <select className="input mt-2" value={model} onChange={(e) => setModel(e.target.value as ModelName)} disabled={busy}>
+              {modelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">{selectedMode.description}</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">OpenAI APIへ渡すモデル名です。</p>
           </label>
 
           <label className="block">
@@ -167,8 +191,22 @@ export function ChatPanel() {
           ))}
         </div>
 
+        {conversation.length > 0 && (
+          <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600">
+            継続中の会話：{conversation.filter((turn) => turn.role === 'user').length}問
+          </div>
+        )}
+
         <div className="mt-4 flex gap-2">
-          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="分析指示を入力" />
+          <input
+            className="input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={conversation.length ? 'この分析結果について追加質問' : '分析指示を入力'}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) send();
+            }}
+          />
           <button className="btn btn-primary" onClick={() => send()} disabled={busy}>{busy ? '分析中' : '送信'}</button>
         </div>
       </div>
@@ -178,7 +216,6 @@ export function ChatPanel() {
           <section>
             <h2 className="font-bold">回答</h2>
             <div className="mt-2 flex flex-wrap gap-2 text-xs">
-              {answer.analysis_mode && <span className="badge">mode: {answer.analysis_mode}</span>}
               {answer.target_scope && <span className="badge">scope: {answer.target_scope}</span>}
               {answer.output_template && <span className="badge">template: {answer.output_template}</span>}
               {answer.model_used && <span className="badge">model: {answer.model_used}</span>}
@@ -203,7 +240,10 @@ export function ChatPanel() {
               <div className="grid gap-3">
                 {answer.cards.map((c, i) => (
                   <div key={i} className="rounded-xl border border-zinc-200 p-3">
-                    <p className="font-semibold">{c.headline || c.article_id || '記事'}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold">{c.headline || c.article_id || '記事'}</p>
+                      {c.article_date && <span className="badge">{c.article_date}</span>}
+                    </div>
                     <p className="mt-1 text-sm leading-6 text-zinc-600">{c.reason || c.note || ''}</p>
                     {c.article_id && <Link className="btn mt-2" href={`/articles/${c.article_id}`}>記事詳細を開く</Link>}
                   </div>

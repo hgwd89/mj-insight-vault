@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
 
@@ -47,6 +47,8 @@ export default function BatchDetailPage() {
   const [busyId, setBusyId] = useState('');
   const [imageBusyId, setImageBusyId] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
+  const [processingAll, setProcessingAll] = useState(false);
+  const [processLog, setProcessLog] = useState('');
 
   useEffect(() => {
     if (data?.articles) {
@@ -56,6 +58,23 @@ export default function BatchDetailPage() {
       setImages(data.images.filter((img) => img.ocr_status !== 'deleted'));
     }
   }, [data]);
+
+  const counts = useMemo(() => {
+    return images.reduce<Record<string, number>>((acc, img) => {
+      acc[img.ocr_status] = (acc[img.ocr_status] || 0) + 1;
+      return acc;
+    }, {});
+  }, [images]);
+
+  const pendingImages = useMemo(
+    () => images.filter((img) => ['queued', 'failed'].includes(img.ocr_status)),
+    [images]
+  );
+
+  function extractFallbackDate(image: Image) {
+    const match = (image.error_message || '').match(/article_date=([^;]+)/);
+    return match?.[1]?.trim() || '';
+  }
 
   async function deleteArticle(articleId: string) {
     const ok = window.confirm(
@@ -81,6 +100,49 @@ export default function BatchDetailPage() {
     } finally {
       setBusyId('');
     }
+  }
+
+  async function processImage(image: Image) {
+    setImageBusyId(image.id);
+    setProcessLog(`${image.file_name} を処理中`);
+    setImages((prev) => prev.map((img) => img.id === image.id ? { ...img, ocr_status: 'processing', error_message: null } : img));
+
+    try {
+      const res = await fetch(`/api/source-images/${image.id}/process`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-app-password': password },
+        body: JSON.stringify({ article_date: extractFallbackDate(image) })
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'OCR処理に失敗しました');
+
+      setImages((prev) => prev.map((img) => img.id === image.id ? { ...img, ocr_status: 'done', error_message: null } : img));
+      setArticles((prev) => [...prev, ...(json.articles || [])]);
+      setProcessLog(`${image.file_name}: 記事候補 ${json.article_count || 0} 件`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'OCR処理に失敗しました';
+      setImages((prev) => prev.map((img) => img.id === image.id ? { ...img, ocr_status: 'failed', error_message: message } : img));
+      setProcessLog(`${image.file_name}: ${message}`);
+    } finally {
+      setImageBusyId('');
+    }
+  }
+
+  async function processPendingImages() {
+    if (!pendingImages.length) return;
+
+    const ok = window.confirm(`${pendingImages.length}枚の未処理・失敗画像を順番にOCRします。`);
+    if (!ok) return;
+
+    setProcessingAll(true);
+
+    for (const image of pendingImages) {
+      await processImage(image);
+    }
+
+    setProcessingAll(false);
+    setProcessLog('未処理画像の処理が完了しました。');
   }
 
   async function deleteImage(imageId: string) {
@@ -159,18 +221,32 @@ export default function BatchDetailPage() {
             <div className="mt-3 flex flex-wrap gap-2">
               <span className="badge">状態 {batch.status}</span>
               <span className="badge">画像 {images.length}</span>
+              <span className="badge">処理待ち {counts.queued || 0}</span>
+              <span className="badge">処理中 {counts.processing || 0}</span>
+              <span className="badge">成功 {counts.done || 0}</span>
+              <span className="badge">失敗 {counts.failed || 0}</span>
               <span className="badge">記事候補 {articles.length}</span>
             </div>
           </div>
 
-          <button
-            className="btn shrink-0 border-red-300 text-red-600 hover:bg-red-50"
-            onClick={deleteBatch}
-            disabled={batchBusy}
-          >
-            {batchBusy ? '処理中' : 'アップロード履歴を不要化'}
-          </button>
+          <div className="flex shrink-0 flex-col gap-2">
+            <button
+              className="btn btn-primary"
+              onClick={processPendingImages}
+              disabled={processingAll || imageBusyId !== '' || pendingImages.length === 0}
+            >
+              {processingAll ? '順番に処理中' : `未処理画像を順番にOCR (${pendingImages.length})`}
+            </button>
+            <button
+              className="btn border-red-300 text-red-600 hover:bg-red-50"
+              onClick={deleteBatch}
+              disabled={batchBusy || processingAll}
+            >
+              {batchBusy ? '処理中' : 'アップロード履歴を不要化'}
+            </button>
+          </div>
         </div>
+        {processLog && <p className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">{processLog}</p>}
       </div>
 
       <section className="card p-5">
@@ -179,7 +255,7 @@ export default function BatchDetailPage() {
         <div className="mt-3 grid gap-3">
           {articles.length === 0 && (
             <p className="text-sm text-zinc-500">
-              表示できる記事候補がありません。
+              表示できる記事候補がありません。未処理画像をOCRしてください。
             </p>
           )}
 
@@ -203,7 +279,7 @@ export default function BatchDetailPage() {
                   <button
                     className="btn border-red-300 text-red-600 hover:bg-red-50"
                     onClick={() => deleteArticle(a.id)}
-                    disabled={busyId === a.id}
+                    disabled={busyId === a.id || processingAll}
                   >
                     {busyId === a.id ? '処理中' : '不要記事'}
                   </button>
@@ -217,7 +293,7 @@ export default function BatchDetailPage() {
       <section className="card p-5">
         <h2 className="font-bold">アップロード画像</h2>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          失敗画像や重複画像はここで削除できます。画像を削除すると、その画像から作られた記事候補も不要記事になります。
+          画像は1枚ずつOCRできます。失敗した画像だけ再処理できます。画像を削除すると、その画像から作られた記事候補も不要記事になります。
         </p>
 
         <div className="mt-3 grid gap-2">
@@ -229,16 +305,27 @@ export default function BatchDetailPage() {
                 <div>
                   <b>{img.file_name}</b>
                   <span className="badge ml-2">{img.ocr_status}</span>
-                  {img.error_message && <p className="mt-1 text-red-600">{img.error_message}</p>}
+                  {img.error_message && img.ocr_status !== 'queued' && <p className="mt-1 text-red-600">{img.error_message}</p>}
                 </div>
 
-                <button
-                  className="btn shrink-0 border-red-300 text-red-600 hover:bg-red-50"
-                  onClick={() => deleteImage(img.id)}
-                  disabled={imageBusyId === img.id}
-                >
-                  {imageBusyId === img.id ? '削除中' : '画像削除'}
-                </button>
+                <div className="flex shrink-0 gap-2">
+                  {['queued', 'failed'].includes(img.ocr_status) && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => processImage(img)}
+                      disabled={Boolean(imageBusyId) || processingAll}
+                    >
+                      {imageBusyId === img.id ? 'OCR中' : 'OCR'}
+                    </button>
+                  )}
+                  <button
+                    className="btn border-red-300 text-red-600 hover:bg-red-50"
+                    onClick={() => deleteImage(img.id)}
+                    disabled={imageBusyId === img.id || processingAll}
+                  >
+                    {imageBusyId === img.id ? '処理中' : '画像削除'}
+                  </button>
+                </div>
               </div>
             </div>
           ))}

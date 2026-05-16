@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
 
@@ -16,6 +16,14 @@ type Article = {
   status?: string | null;
   article_tags?: { tag_type: string; tag_name: string }[];
 };
+
+function duplicateKey(article: Article) {
+  const base = `${article.headline || ''} ${(article.ocr_text || '').slice(0, 500)}`
+    .replace(/[\s\n\r\t　、。・「」『』（）()【】\[\]{}]/g, '')
+    .toLowerCase();
+
+  return base.slice(0, 160);
+}
 
 export default function ArticlesPage() {
   const password = useAppPassword();
@@ -33,6 +41,23 @@ export default function ArticlesPage() {
       setArticles(data.articles.filter((a) => a.status !== 'deleted'));
     }
   }, [data]);
+
+  const duplicateIds = useMemo(() => {
+    const groups = new Map<string, string[]>();
+
+    for (const article of articles) {
+      const key = duplicateKey(article);
+      if (key.length < 40) continue;
+      groups.set(key, [...(groups.get(key) || []), article.id]);
+    }
+
+    const ids = new Set<string>();
+    for (const group of groups.values()) {
+      if (group.length > 1) group.forEach((id) => ids.add(id));
+    }
+
+    return ids;
+  }, [articles]);
 
   async function deleteArticle(articleId: string) {
     const ok = window.confirm(
@@ -71,7 +96,7 @@ export default function ArticlesPage() {
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-xl font-black">記事一覧</h1>
-            <p className="mt-2 text-sm text-zinc-600">重複・ノイズ記事は「不要記事」で分析対象から外せます。</p>
+            <p className="mt-2 text-sm text-zinc-600">重複・ノイズ記事は「不要記事」で分析対象から外せます。完全一致に近いものは「重複候補」と表示します。</p>
           </div>
           <Link className="btn" href="/articles/deleted">不要記事一覧</Link>
         </div>
@@ -101,9 +126,14 @@ export default function ArticlesPage() {
                 href={`/articles/${a.id}`}
                 className="min-w-0 flex-1 hover:opacity-80"
               >
-                <p className="font-bold">
-                  {a.headline || '無題の記事候補'}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-bold">
+                    {a.headline || '無題の記事候補'}
+                  </p>
+                  {duplicateIds.has(a.id) && (
+                    <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">重複候補</span>
+                  )}
+                </div>
 
                 <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-600">
                   {a.ocr_text}

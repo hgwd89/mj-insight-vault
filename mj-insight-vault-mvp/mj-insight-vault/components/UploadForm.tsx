@@ -14,6 +14,8 @@ type UploadSummary = {
   failed_image_count: number;
   article_count: number;
   date_unknown_count: number;
+  queued_image_count?: number;
+  mode?: string;
 };
 
 export function UploadForm() {
@@ -69,7 +71,7 @@ export function UploadForm() {
 
     setBusy(true);
     setSummary(null);
-    setStatus('アップロード・OCR処理中です。枚数が多い場合は時間がかかります。');
+    setStatus('画像を保存しています。OCRはアップロード詳細画面で順番に処理します。');
 
     try {
       const form = new FormData();
@@ -89,14 +91,16 @@ export function UploadForm() {
       const nextSummary: UploadSummary = json.summary || {
         batch_id: json.batch.id,
         image_count: json.images?.length || files.length,
-        success_image_count: json.images?.filter((img: { ocr_status?: string }) => img.ocr_status === 'done').length || 0,
-        failed_image_count: json.images?.filter((img: { ocr_status?: string }) => img.ocr_status === 'failed').length || 0,
-        article_count: json.articles?.length || 0,
-        date_unknown_count: 0
+        success_image_count: 0,
+        failed_image_count: 0,
+        article_count: 0,
+        date_unknown_count: 0,
+        queued_image_count: json.images?.length || files.length,
+        mode: 'queued'
       };
 
       setSummary(nextSummary);
-      setStatus('完了しました。下のサマリーを確認してください。');
+      setStatus('画像保存が完了しました。アップロード詳細で「未処理画像を順番にOCR」を押してください。');
       setFiles([]);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'エラーが発生しました。');
@@ -109,7 +113,7 @@ export function UploadForm() {
     <div className="card p-5">
       <h1 className="text-xl font-black">MJ画像アップロード</h1>
       <p className="mt-2 text-sm leading-6 text-zinc-600">
-        最大{MAX_FILES}枚。画像は1枚あたり{MAX_FILE_MB}MB以下。日付を入れると、OCRで日付が取れない記事にも継承します。
+        最大{MAX_FILES}枚。画像は1枚あたり{MAX_FILE_MB}MB以下。まず画像だけ保存し、OCRは詳細画面で順番に処理します。
       </p>
 
       <div className="mt-5 space-y-4">
@@ -171,24 +175,24 @@ export function UploadForm() {
         )}
 
         <button className="btn btn-primary" onClick={upload} disabled={!files.length || busy || oversizedFiles.length > 0 || heicFiles.length > 0}>
-          {busy ? '処理中' : 'アップロードしてOCR'}
+          {busy ? '保存中' : '画像を保存して処理待ちにする'}
         </button>
 
         {status && <p className="text-sm leading-6 text-zinc-700">{status}</p>}
 
         {summary && (
           <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-            <h2 className="font-bold">アップロード完了サマリー</h2>
+            <h2 className="font-bold">アップロード保存サマリー</h2>
             <div className="mt-3 grid gap-2 text-sm md:grid-cols-5">
               <div className="rounded-xl bg-white p-3"><b>{summary.image_count}</b><br />画像</div>
+              <div className="rounded-xl bg-white p-3"><b>{summary.queued_image_count ?? summary.image_count}</b><br />処理待ち</div>
               <div className="rounded-xl bg-white p-3"><b>{summary.success_image_count}</b><br />成功</div>
               <div className="rounded-xl bg-white p-3"><b>{summary.failed_image_count}</b><br />失敗</div>
               <div className="rounded-xl bg-white p-3"><b>{summary.article_count}</b><br />記事候補</div>
-              <div className="rounded-xl bg-white p-3"><b>{summary.date_unknown_count}</b><br />日付不明</div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Link className="btn btn-primary" href="/articles">記事一覧へ</Link>
-              <Link className="btn" href={`/batches/${summary.batch_id}`}>アップロード詳細へ</Link>
+              <Link className="btn btn-primary" href={`/batches/${summary.batch_id}`}>アップロード詳細でOCR開始</Link>
+              <Link className="btn" href="/articles">記事一覧へ</Link>
               <Link className="btn" href="/chat">Chatで分析する</Link>
             </div>
           </div>

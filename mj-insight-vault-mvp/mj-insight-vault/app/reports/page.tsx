@@ -32,10 +32,10 @@ export default function ReportsPage() {
           <div>
             <h1 className="text-xl font-black">分析履歴</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              Chatで実行した分析結果を新しい順に表示します。
+              保存された分析レポートです。各レポートを開くと、結果について追加質問しながら分析を掘り下げられます。
             </p>
           </div>
-          <Link className="btn" href="/chat">Chatへ戻る</Link>
+          <Link className="btn" href="/chat">新しく分析する</Link>
         </div>
       </div>
 
@@ -45,28 +45,25 @@ export default function ReportsPage() {
 
       {reports.map((report) => {
         const answer = report.answer_json || {};
-        const analysisMode = typeof answer.analysis_mode === 'string' ? answer.analysis_mode : '';
         const targetScope = typeof answer.target_scope === 'string' ? answer.target_scope : '';
         const outputTemplate = typeof answer.output_template === 'string' ? answer.output_template : '';
         const modelUsed = typeof answer.model_used === 'string' ? answer.model_used : '';
 
         return (
-          <div key={report.id} className="card p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div className="min-w-0 flex-1">
-                <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
-                <h2 className="mt-1 font-bold">{report.user_query}</h2>
-                <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                  {analysisMode && <span className="badge">mode: {analysisMode}</span>}
-                  {targetScope && <span className="badge">scope: {targetScope}</span>}
-                  {outputTemplate && <span className="badge">template: {outputTemplate}</span>}
-                  {modelUsed && <span className="badge">model: {modelUsed}</span>}
-                  <span className="badge">記事 {report.related_article_ids?.length || 0}</span>
-                </div>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{shortText(report.answer_text)}</p>
+          <Link key={report.id} href={`/reports/${report.id}`} className="card block p-4 hover:opacity-80">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
+              <h2 className="mt-1 font-bold">{report.user_query}</h2>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                {targetScope && <span className="badge">scope: {targetScope}</span>}
+                {outputTemplate && <span className="badge">template: {outputTemplate}</span>}
+                {modelUsed && <span className="badge">model: {modelUsed}</span>}
+                <span className="badge">記事 {report.related_article_ids?.length || 0}</span>
               </div>
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{shortText(report.answer_text)}</p>
+              <p className="mt-3 text-sm font-semibold text-zinc-900">開いて対話する →</p>
             </div>
-          </div>
+          </Link>
         );
       })}
     </div>

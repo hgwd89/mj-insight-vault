@@ -46,12 +46,17 @@ const VisionArticleSchema = z.object({
       summary: z.string(),
       confidence: z.enum(['high', 'medium', 'low'])
     })),
+    quotes_or_claims: z.array(z.object({
+      text: z.string(),
+      speaker: z.string(),
+      confidence: z.enum(['high', 'medium', 'low'])
+    })),
     noise: z.array(z.string()),
     confidence: z.enum(['high', 'medium', 'low']),
     has_table: z.boolean(),
     has_chart: z.boolean(),
     has_image: z.boolean()
-  })).min(1).max(8)
+  })).min(1).max(6)
 });
 
 const ARTICLE_RESPONSE_FORMAT = {
@@ -66,7 +71,7 @@ const ARTICLE_RESPONSE_FORMAT = {
       articles: {
         type: 'array',
         minItems: 1,
-        maxItems: 8,
+        maxItems: 6,
         items: {
           type: 'object',
           additionalProperties: false,
@@ -82,6 +87,7 @@ const ARTICLE_RESPONSE_FORMAT = {
             'people',
             'numbers',
             'figures',
+            'quotes_or_claims',
             'noise',
             'confidence',
             'has_table',
@@ -139,6 +145,22 @@ const ARTICLE_RESPONSE_FORMAT = {
                 properties: {
                   title: { type: 'string' },
                   summary: { type: 'string' },
+                  confidence: {
+                    type: 'string',
+                    enum: ['high', 'medium', 'low']
+                  }
+                }
+              }
+            },
+            quotes_or_claims: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['text', 'speaker', 'confidence'],
+                properties: {
+                  text: { type: 'string' },
+                  speaker: { type: 'string' },
                   confidence: {
                     type: 'string',
                     enum: ['high', 'medium', 'low']
@@ -215,6 +237,7 @@ function formatArticleText(input: {
   people: string[];
   numbers: Array<{ label: string; value: string; note: string; confidence: string }>;
   figures: Array<{ title: string; summary: string; confidence: string }>;
+  quotes_or_claims: Array<{ text: string; speaker: string; confidence: string }>;
   noise: string[];
   confidence: string;
 }) {
@@ -223,11 +246,9 @@ function formatArticleText(input: {
   lines.push('【GPT記事構造化】');
   lines.push('');
 
-  if (input.body_reconstructed.trim()) {
-    lines.push('【本文再構成】');
-    lines.push(input.body_reconstructed.trim());
-    lines.push('');
-  }
+  lines.push('【本文再構成】');
+  lines.push(input.body_reconstructed.trim() || '本文再構成なし');
+  lines.push('');
 
   if (input.facts.length) {
     lines.push('【主要事実】');
@@ -265,6 +286,14 @@ function formatArticleText(input: {
     lines.push('');
   }
 
+  if (input.quotes_or_claims.length) {
+    lines.push('【発言・記事内主張】');
+    input.quotes_or_claims.forEach((q) => {
+      lines.push(`- ${q.text}（${q.speaker || '話者不明'}） [confidence: ${q.confidence}]`);
+    });
+    lines.push('');
+  }
+
   if (input.noise.length) {
     lines.push('【除外ノイズ】');
     input.noise.forEach((n) => lines.push(`- ${n}`));
@@ -287,17 +316,21 @@ async function structureArticlesWithResponsesAPI(input: SegmentFromImageInput) {
 
   const instructions = [
     'あなたは日経MJ紙面をニュースDB化する編集者です。',
-    '目的は生活者インサイトの生成ではありません。',
-    '目的は、後から生活者変化・市場変化・リサーチテーマを再分析できるように、ニュース事実をできるだけ忠実に保存することです。',
+    '目的は生活者インサイトの生成ではない。',
+    '目的は、後から生活者変化・市場変化・リサーチテーマを再分析できるように、ニュース記事の事実関係をできるだけ忠実に保存することである。',
     '',
-    '重要方針:',
-    '- 画像を主情報として読み、Google Vision OCRテキストを補助情報として照合する。',
-    '- OCRテキストは崩れている前提で扱い、丸写ししない。',
-    '- 見出し、サブ見出し、媒体日付、企業名、サービス名、人物名、数字、図表、主要事実を優先して拾う。',
+    '最重要方針:',
+    '- 画像を主情報として読む。',
+    '- Google Vision OCRテキストは補助情報として使う。ただしOCRテキストをそのまま貼り付けてはいけない。',
+    '- OCRテキストは段組み崩れ・誤字・広告混入がある前提で扱う。',
+    '- 見出し、サブ見出し、日付、媒体名、企業名、サービス名、人物名、数字、図表、利用者の声、関係者発言を優先して拾う。',
+    '- 記事本文は、紙面の読み順を推定して自然な順序に再構成する。',
+    '- body_reconstructed は短すぎてはいけない。主記事なら最低600字、可能なら1000〜1800字程度で、記事内容を厚めに再構成する。',
+    '- 記事にない解釈、マーケティング示唆、生活者インサイト、提案ネタは入れない。',
     '- 広告、購読案内、発行所情報、紙面下部広告、無関係な別記事見出しはnoiseに分離する。',
-    '- 記事にない解釈、マーケティング示唆、生活者インサイトは入れない。',
     '- 不確かな数字・固有名詞はconfidenceをmediumまたはlowにする。',
-    '- 本文再構成は自然な読み順に整える。ただし推測で補いすぎない。',
+    '- 推測で数字を作らない。',
+    '- 画像上で読めないものは空文字またはlow confidenceにする。',
     '- 出力は必ず指定JSONスキーマに従う。'
   ].join('\n');
 
@@ -305,7 +338,12 @@ async function structureArticlesWithResponsesAPI(input: SegmentFromImageInput) {
     '以下は日経MJ紙面画像とGoogle Vision OCRの生テキストです。',
     '画像を優先しつつ、OCRテキストも照合して、ニュース記事候補を構造化してください。',
     '',
-    'OCRテキスト:',
+    '重要:',
+    '- OCRテキストを出力本文にそのまま貼らない。',
+    '- 主記事はできるだけ厚く再構成する。',
+    '- 広告・購読案内・別記事・紙面下部の情報は本文に混ぜない。',
+    '',
+    'Google Vision OCRテキスト:',
     normalizedOcr.slice(0, 12000)
   ].join('\n');
 
@@ -319,7 +357,7 @@ async function structureArticlesWithResponsesAPI(input: SegmentFromImageInput) {
       model: VISION_MODEL,
       store: false,
       temperature: 0.1,
-      max_output_tokens: 5000,
+      max_output_tokens: 8000,
       instructions,
       input: [
         {
@@ -400,6 +438,7 @@ export async function segmentArticlesFromImage(input: SegmentFromImageInput): Pr
           people: article.people,
           numbers: article.numbers,
           figures: article.figures,
+          quotes_or_claims: article.quotes_or_claims,
           noise: article.noise,
           confidence: article.confidence
         });

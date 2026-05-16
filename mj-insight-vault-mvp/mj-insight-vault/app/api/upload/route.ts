@@ -9,6 +9,9 @@ import { embedText } from '@/lib/openai';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+const MAX_FILES = 20;
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
 
@@ -17,6 +20,12 @@ function getErrorMessage(error: unknown) {
   } catch {
     return String(error);
   }
+}
+
+function isHeicFile(file: File) {
+  const lowerName = (file.name || '').toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  return type.includes('heic') || type.includes('heif') || lowerName.endsWith('.heic') || lowerName.endsWith('.heif');
 }
 
 function getMimeType(file: File) {
@@ -38,6 +47,28 @@ function getExtension(mimeType: string) {
   return 'png';
 }
 
+function validateFiles(files: File[]) {
+  if (!files.length) {
+    return 'No files uploaded.';
+  }
+
+  if (files.length > MAX_FILES) {
+    return `Upload limit is ${MAX_FILES} files.`;
+  }
+
+  const heic = files.find(isHeicFile);
+  if (heic) {
+    return `HEIC/HEIF files are not supported in this app. Please convert to JPG or PNG first: ${heic.name}`;
+  }
+
+  const oversized = files.find((file) => file.size > MAX_FILE_BYTES);
+  if (oversized) {
+    return `File is too large. Each image must be 4MB or less: ${oversized.name}`;
+  }
+
+  return '';
+}
+
 export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
@@ -48,12 +79,9 @@ export async function POST(req: NextRequest) {
       .getAll('files')
       .filter((f): f is File => f instanceof File);
 
-    if (!files.length) {
-      return Response.json({ error: 'No files uploaded.' }, { status: 400 });
-    }
-
-    if (files.length > 20) {
-      return Response.json({ error: 'Upload limit is 20 files.' }, { status: 400 });
+    const validationError = validateFiles(files);
+    if (validationError) {
+      return Response.json({ error: validationError }, { status: 400 });
     }
 
     const { data: batch, error: batchError } = await supabaseAdmin

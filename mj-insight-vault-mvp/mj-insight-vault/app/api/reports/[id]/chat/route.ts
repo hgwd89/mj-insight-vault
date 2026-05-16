@@ -56,6 +56,40 @@ function getReportAnswerText(report: Record<string, unknown>) {
   return '';
 }
 
+async function saveFollowupReport(args: {
+  parentReportId: string;
+  originalQuery: string;
+  followupQuery: string;
+  answer: Record<string, unknown>;
+  articleIds: string[];
+}) {
+  const answerText = typeof args.answer.answer_text === 'string' ? args.answer.answer_text : JSON.stringify(args.answer);
+
+  const { data, error } = await supabaseAdmin
+    .from('chat_reports')
+    .insert({
+      user_query: `レポート深掘り: ${args.followupQuery}`,
+      answer_text: answerText,
+      answer_json: {
+        ...args.answer,
+        parent_report_id: args.parentReportId,
+        parent_user_query: args.originalQuery,
+        followup_query: args.followupQuery,
+        report_chat: true
+      },
+      related_article_ids: args.articleIds
+    })
+    .select('*')
+    .single();
+
+  if (error) {
+    console.error('followup chat_reports insert failed:', error);
+    return null;
+  }
+
+  return data;
+}
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
@@ -100,7 +134,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         answer: {
           answer_text: 'OPENAI_API_KEYが未設定のため、レポートへの追加質問に回答できません。',
           model_used: model
-        }
+        },
+        followup_report: null
       });
     }
 
@@ -153,8 +188,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     answer.model_used = model;
+    answer.parent_report_id = id;
 
-    return Response.json({ answer, related_articles: articles });
+    const followupReport = await saveFollowupReport({
+      parentReportId: id,
+      originalQuery: report.user_query,
+      followupQuery: query,
+      answer,
+      articleIds
+    });
+
+    return Response.json({ answer, related_articles: articles, followup_report: followupReport });
   } catch (error) {
     return jsonError(error);
   }

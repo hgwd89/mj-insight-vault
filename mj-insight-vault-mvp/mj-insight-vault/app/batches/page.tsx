@@ -27,7 +27,7 @@ export default function BatchesPage() {
 
   async function deleteBatch(batchId: string) {
     const ok = window.confirm(
-      'このバッチを不要にします。バッチ内の記事も分析対象から外します。元画像ファイルはStorageに残します。'
+      'このアップロード履歴を不要化します。中の記事も分析対象から外します。元画像ファイルはStorageに残します。'
     );
 
     if (!ok) return;
@@ -41,11 +41,11 @@ export default function BatchesPage() {
       });
 
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'バッチ削除に失敗しました');
+      if (!res.ok) throw new Error(json.error || 'アップロード履歴の不要化に失敗しました');
 
       setBatches((prev) => prev.filter((b) => b.id !== batchId));
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'バッチ削除に失敗しました');
+      alert(error instanceof Error ? error.message : 'アップロード履歴の不要化に失敗しました');
     } finally {
       setBusyId('');
     }
@@ -57,14 +57,19 @@ export default function BatchesPage() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h1 className="text-xl font-black">バッチ一覧</h1>
-        <p className="mt-2 text-sm leading-6 text-zinc-600">
-          失敗アップロードや重複アップロードは「バッチ不要」で一覧・分析対象から外せます。
-        </p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-xl font-black">アップロード履歴</h1>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              1回のアップロード単位です。通常運用は「記事一覧」を見れば十分です。失敗画像や重複アップロードの整理が必要な時だけ使います。
+            </p>
+          </div>
+          <Link className="btn" href="/articles">記事一覧へ</Link>
+        </div>
       </div>
 
       {batches.length === 0 && (
-        <div className="card p-5 text-sm text-zinc-500">表示できるバッチがありません。</div>
+        <div className="card p-5 text-sm text-zinc-500">表示できるアップロード履歴がありません。</div>
       )}
 
       {batches.map((b) => (
@@ -84,7 +89,7 @@ export default function BatchesPage() {
               onClick={() => deleteBatch(b.id)}
               disabled={busyId === b.id}
             >
-              {busyId === b.id ? '処理中' : 'バッチ不要'}
+              {busyId === b.id ? '処理中' : '履歴を不要化'}
             </button>
           </div>
         </div>

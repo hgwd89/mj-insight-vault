@@ -51,8 +51,17 @@ type ArticleCard = {
   article_id?: string;
   headline?: string;
   article_date?: string;
+  evidence_excerpt?: string;
+  confidence?: string;
   reason?: string;
   note?: string;
+};
+
+type RelatedArticle = {
+  id: string;
+  headline?: string | null;
+  article_date?: string | null;
+  ocr_text?: string | null;
 };
 
 type ChatAnswer = {
@@ -78,6 +87,11 @@ function getAnswerText(answer: ChatAnswer): string {
   return '';
 }
 
+function evidenceExcerpt(text?: string | null) {
+  const compact = (text || '').replace(/\s+/g, ' ').trim();
+  return compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
+}
+
 export function ChatPanel() {
   const password = useAppPassword();
   const [query, setQuery] = useState('');
@@ -88,6 +102,7 @@ export function ChatPanel() {
   const [answer, setAnswer] = useState<ChatAnswer | null>(null);
   const [raw, setRaw] = useState('');
   const [conversation, setConversation] = useState<ConversationTurn[]>([]);
+  const [relatedArticles, setRelatedArticles] = useState<RelatedArticle[]>([]);
 
   const selectedScope = targetScopes.find((scope) => scope.value === targetScope) || targetScopes[0];
   const selectedTemplate = outputTemplates.find((template) => template.value === outputTemplate) || outputTemplates[0];
@@ -125,6 +140,7 @@ export function ChatPanel() {
       const answerText = getAnswerText(nextAnswer);
 
       setAnswer(nextAnswer);
+      setRelatedArticles(Array.isArray(json.related_articles) ? json.related_articles : []);
       setRaw(JSON.stringify(json, null, 2));
       setConversation([...nextConversation, { role: 'assistant', content: answerText || JSON.stringify(nextAnswer) }].slice(-10));
       setQuery('');
@@ -141,7 +157,20 @@ export function ChatPanel() {
     setAnswer(null);
     setRaw('');
     setQuery('');
+    setRelatedArticles([]);
   }
+
+  const relatedById = new Map(relatedArticles.map((article) => [article.id, article]));
+  const evidenceCards: ArticleCard[] = answer?.cards?.length
+    ? answer.cards
+    : relatedArticles.slice(0, 12).map((article) => ({
+        article_id: article.id,
+        headline: article.headline || '記事',
+        article_date: article.article_date || '日付不明',
+        evidence_excerpt: evidenceExcerpt(article.ocr_text),
+        confidence: article.article_date ? 'medium' : 'low',
+        reason: '検索で取得した根拠候補'
+      }));
 
   return (
     <div className="space-y-5">
@@ -234,20 +263,32 @@ export function ChatPanel() {
             </section>
           )}
 
-          {Array.isArray(answer.cards) && answer.cards.length > 0 && (
+          {evidenceCards.length > 0 && (
             <section>
               <h2 className="mb-2 font-bold">根拠記事カード</h2>
               <div className="grid gap-3">
-                {answer.cards.map((c, i) => (
-                  <div key={i} className="rounded-xl border border-zinc-200 p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-semibold">{c.headline || c.article_id || '記事'}</p>
-                      {c.article_date && <span className="badge">{c.article_date}</span>}
+                {evidenceCards.map((c, i) => {
+                  const related = c.article_id ? relatedById.get(c.article_id) : undefined;
+                  const date = c.article_date || related?.article_date || '日付不明';
+                  const excerpt = c.evidence_excerpt || evidenceExcerpt(related?.ocr_text);
+
+                  return (
+                    <div key={`${c.article_id || 'card'}-${i}`} className="rounded-xl border border-zinc-200 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold">{c.headline || related?.headline || c.article_id || '記事'}</p>
+                        <span className="badge">{date}</span>
+                        {c.confidence && <span className="badge">confidence: {c.confidence}</span>}
+                      </div>
+                      <p className="mt-1 text-sm leading-6 text-zinc-600">{c.reason || c.note || '根拠候補'}</p>
+                      {excerpt && (
+                        <p className="mt-2 rounded-xl bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
+                          {excerpt}
+                        </p>
+                      )}
+                      {c.article_id && <Link className="btn mt-2" href={`/articles/${c.article_id}`}>記事詳細を開く</Link>}
                     </div>
-                    <p className="mt-1 text-sm leading-6 text-zinc-600">{c.reason || c.note || ''}</p>
-                    {c.article_id && <Link className="btn mt-2" href={`/articles/${c.article_id}`}>記事詳細を開く</Link>}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}

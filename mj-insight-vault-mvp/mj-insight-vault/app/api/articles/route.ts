@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
     let query = supabaseAdmin
       .from('articles')
-      .select('*, article_tags(tag_type, tag_name)')
+      .select('*, article_tags(tag_type, tag_name), source_images(id, file_name, storage_path, mime_type)')
       .order('created_at', { ascending: false })
       .limit(300);
 

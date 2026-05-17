@@ -62,16 +62,51 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     const metadataPatch: Record<string, unknown> = {};
 
-    if ('report_title' in body) {
-      metadataPatch.report_title = String(body.report_title || '').trim();
-    }
-
+    if ('report_title' in body) metadataPatch.report_title = String(body.report_title || '').trim();
     if ('pinned' in body) {
       metadataPatch.pinned = Boolean(body.pinned);
       metadataPatch.pinned_at = body.pinned ? new Date().toISOString() : null;
     }
+    if ('hidden' in body) {
+      metadataPatch.hidden = Boolean(body.hidden);
+      metadataPatch.hidden_at = body.hidden ? new Date().toISOString() : null;
+    }
 
     const answerJson = mergeAnswerJson(currentReport.answer_json, metadataPatch);
+
+    const { data: report, error } = await supabaseAdmin
+      .from('chat_reports')
+      .update({ answer_json: answerJson })
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    return Response.json({ report });
+  } catch (error) {
+    return jsonError(error);
+  }
+}
+
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    requireAppPassword(req);
+
+    const { id } = await params;
+
+    const { data: currentReport, error: currentError } = await supabaseAdmin
+      .from('chat_reports')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (currentError) throw currentError;
+
+    const answerJson = mergeAnswerJson(currentReport.answer_json, {
+      hidden: true,
+      hidden_at: new Date().toISOString()
+    });
 
     const { data: report, error } = await supabaseAdmin
       .from('chat_reports')

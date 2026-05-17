@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
+import { backupImageToGoogleDrive } from '@/lib/googleDriveBackup';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -48,6 +49,12 @@ async function updateBatchStatus(batchId: string, status: string) {
   if (fallback.error) throw fallback.error;
 }
 
+function appendBackupMessage(base: string, backup: { ok: boolean; skipped?: boolean; file_id?: string; error?: string }) {
+  if (backup.skipped) return base;
+  if (backup.ok) return `${base}; drive_file_id=${backup.file_id || ''}`;
+  return `${base}; drive_backup_error=${backup.error || 'unknown'}`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
@@ -61,9 +68,7 @@ export async function POST(req: NextRequest) {
     if (!batchId) return Response.json({ error: 'batch_id is required' }, { status: 400 });
     if (!(file instanceof File)) return Response.json({ error: 'file is required' }, { status: 400 });
     if (isHeicFile(file)) return Response.json({ error: `HEIC/HEIF files are not supported: ${file.name}` }, { status: 400 });
-    if (file.size > MAX_FILE_BYTES) {
-      return Response.json({ error: `File is too large after compression. Limit is 3.5MB: ${file.name}` }, { status: 400 });
-    }
+    if (file.size > MAX_FILE_BYTES) return Response.json({ error: `File is too large after compression. Limit is 3.5MB: ${file.name}` }, { status: 400 });
 
     const { data: batch, error: batchError } = await supabaseAdmin
       .from('upload_batches')
@@ -89,6 +94,16 @@ export async function POST(req: NextRequest) {
 
     if (upload.error) throw upload.error;
 
+    const driveBackup = await backupImageToGoogleDrive({
+      buffer,
+      fileName: displayFileName,
+      mimeType,
+      batchId,
+      index: safeIndex
+    });
+
+    const baseMessage = fallbackArticleDate ? `queued; article_date=${fallbackArticleDate}` : 'queued';
+
     const { data: image, error: imageError } = await supabaseAdmin
       .from('source_images')
       .insert({
@@ -97,7 +112,7 @@ export async function POST(req: NextRequest) {
         storage_path: storagePath,
         mime_type: mimeType,
         ocr_status: 'queued',
-        error_message: fallbackArticleDate ? `queued; article_date=${fallbackArticleDate}` : 'queued'
+        error_message: appendBackupMessage(baseMessage, driveBackup)
       })
       .select('*')
       .single();
@@ -106,7 +121,7 @@ export async function POST(req: NextRequest) {
 
     await updateBatchStatus(batchId, 'queued');
 
-    return Response.json({ image });
+    return Response.json({ image, drive_backup: driveBackup });
   } catch (error) {
     return jsonError(error);
   }

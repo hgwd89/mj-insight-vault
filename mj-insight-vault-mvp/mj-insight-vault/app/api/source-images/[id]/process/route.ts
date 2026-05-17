@@ -19,6 +19,21 @@ function getErrorMessage(error: unknown) {
   }
 }
 
+function normalizeKey(value: unknown) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[「」『』【】\[\]（）()、。,.，．・:：]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function articleDuplicateKey(headline: unknown, articleDate: unknown) {
+  const normalizedHeadline = normalizeKey(headline);
+  const normalizedDate = String(articleDate || '').trim();
+  if (!normalizedHeadline || !normalizedDate) return '';
+  return `${normalizedDate}::${normalizedHeadline}`;
+}
+
 async function updateImage(imageId: string, values: Record<string, unknown>) {
   const first = await supabaseAdmin
     .from('source_images')
@@ -104,11 +119,47 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       });
 
       const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
+      const candidateDates = Array.from(new Set(candidates.map((candidate) => candidate.article_date || fallbackArticleDate || '').filter(Boolean)));
+      const { data: existingArticles, error: existingError } = candidateDates.length
+        ? await supabaseAdmin
+          .from('articles')
+          .select('id, headline, article_date, status')
+          .in('article_date', candidateDates)
+          .neq('status', 'deleted')
+        : { data: [], error: null };
+
+      if (existingError) throw existingError;
+
+      const existingKeys = new Map<string, { id: string; headline: string | null; article_date: string | null }>();
+      for (const article of existingArticles || []) {
+        const key = articleDuplicateKey(article.headline, article.article_date);
+        if (key) existingKeys.set(key, article);
+      }
+
       const createdArticles: unknown[] = [];
+      const duplicateArticles: unknown[] = [];
+      const seenInThisImage = new Set<string>();
 
       for (let idx = 0; idx < candidates.length; idx++) {
         const candidate = candidates[idx];
         const articleDate = candidate.article_date || fallbackArticleDate || null;
+        const duplicateKey = articleDuplicateKey(candidate.headline, articleDate);
+        const existing = duplicateKey ? existingKeys.get(duplicateKey) : undefined;
+        const duplicatedInThisImage = duplicateKey ? seenInThisImage.has(duplicateKey) : false;
+
+        if (duplicateKey) seenInThisImage.add(duplicateKey);
+
+        if (existing || duplicatedInThisImage) {
+          duplicateArticles.push({
+            headline: candidate.headline,
+            article_date: articleDate,
+            article_index: idx,
+            reason: existing ? '既存記事と同じ日付・見出し' : '同一画像内で同じ日付・見出し',
+            existing_article_id: existing?.id || null,
+            existing_headline: existing?.headline || null
+          });
+          continue;
+        }
 
         const { data: article, error: articleError } = await supabaseAdmin
           .from('articles')
@@ -132,6 +183,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
         createdArticles.push(article);
 
+        const insertedKey = articleDuplicateKey(article.headline, article.article_date);
+        if (insertedKey) existingKeys.set(insertedKey, article);
+
         const embeddingText = buildEmbeddingText(article);
         const embedding = await embedText(embeddingText);
 
@@ -149,14 +203,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return Response.json({
         image: { ...image, ocr_status: 'done' },
         articles: createdArticles,
-        article_count: createdArticles.length
+        article_count: createdArticles.length,
+        duplicates: duplicateArticles,
+        duplicate_count: duplicateArticles.length
       });
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       console.error('Source image process failed:', errorMessage, error);
       await updateImage(id, { ocr_status: 'failed', error_message: errorMessage || 'Process failed with empty error message' });
       await maybeCompleteBatch(image.batch_id);
-      return Response.json({ error: errorMessage, image: { ...image, ocr_status: 'failed' }, articles: [], article_count: 0 }, { status: 500 });
+      return Response.json({ error: errorMessage, image: { ...image, ocr_status: 'failed' }, articles: [], article_count: 0, duplicates: [], duplicate_count: 0 }, { status: 500 });
     }
   } catch (error) {
     return jsonError(error);

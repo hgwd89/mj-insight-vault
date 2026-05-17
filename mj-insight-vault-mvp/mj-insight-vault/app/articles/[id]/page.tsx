@@ -63,6 +63,7 @@ export default function ArticleDetailPage() {
   const [selectedTags, setSelectedTags] = useState<ArticleTag[]>([]);
   const [customTagType, setCustomTagType] = useState('custom_theme');
   const [customTagName, setCustomTagName] = useState('');
+  const [showTagEditor, setShowTagEditor] = useState(false);
   const [reprocessBusy, setReprocessBusy] = useState(false);
   const [imageZoom, setImageZoom] = useState(100);
 
@@ -301,48 +302,59 @@ export default function ArticleDetailPage() {
       </div>
 
       <section className="card p-5">
-        <h2 className="font-bold">手動タグ</h2>
-        <p className="mt-1 text-sm leading-6 text-zinc-600">
-          分析時の絞り込み・解釈軸に使うタグです。保存ボタンで反映します。
-        </p>
-
-        <div className="mt-4 grid gap-4">
-          {Object.entries(groupedTagMaster).map(([type, tags]) => (
-            <div key={type}>
-              <p className="text-sm font-bold text-zinc-700">{type}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {tags.map((tag) => {
-                  const checked = selectedKeys.has(tagKey(tag));
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      className={checked ? 'btn btn-primary' : 'btn'}
-                      onClick={() => toggleTag(tag)}
-                    >
-                      {tag.tag_name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-5 grid gap-2 md:grid-cols-[180px_1fr_auto]">
-          <select className="input" value={customTagType} onChange={(e) => setCustomTagType(e.target.value)}>
-            {tagTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-          <input
-            className="input"
-            value={customTagName}
-            onChange={(e) => setCustomTagName(e.target.value)}
-            placeholder="カスタムタグ名"
-          />
-          <button className="btn" type="button" onClick={addCustomTag} disabled={!customTagName.trim()}>
-            タグ追加
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="font-bold">手動タグ</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-600">
+              通常は閉じています。必要な時だけ開いてタグを編集します。
+            </p>
+          </div>
+          <button className="btn" type="button" onClick={() => setShowTagEditor((v) => !v)}>
+            {showTagEditor ? '手動タグを隠す' : '手動タグを表示'}
           </button>
         </div>
+
+        {showTagEditor && (
+          <div className="mt-4">
+            <div className="grid gap-4">
+              {Object.entries(groupedTagMaster).map(([type, tags]) => (
+                <div key={type}>
+                  <p className="text-sm font-bold text-zinc-700">{type}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {tags.map((tag) => {
+                      const checked = selectedKeys.has(tagKey(tag));
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          className={checked ? 'btn btn-primary' : 'btn'}
+                          onClick={() => toggleTag(tag)}
+                        >
+                          {tag.tag_name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 grid gap-2 md:grid-cols-[180px_1fr_auto]">
+              <select className="input" value={customTagType} onChange={(e) => setCustomTagType(e.target.value)}>
+                {tagTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <input
+                className="input"
+                value={customTagName}
+                onChange={(e) => setCustomTagName(e.target.value)}
+                placeholder="カスタムタグ名"
+              />
+              <button className="btn" type="button" onClick={addCustomTag} disabled={!customTagName.trim()}>
+                タグ追加
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <ArticleInsightMemo value={analysisText} onChange={setAnalysisText} />

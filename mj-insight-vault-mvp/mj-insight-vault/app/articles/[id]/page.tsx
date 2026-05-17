@@ -50,7 +50,6 @@ export default function ArticleDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const password = useAppPassword();
-
   const { data, error, loading } = useApi<{ article: Article }>(`/api/articles/${params.id}`);
 
   const [headline, setHeadline] = useState('');
@@ -64,30 +63,24 @@ export default function ArticleDetailPage() {
   const [customTagType, setCustomTagType] = useState('custom_theme');
   const [customTagName, setCustomTagName] = useState('');
   const [showTagEditor, setShowTagEditor] = useState(false);
+  const [showJsonMemo, setShowJsonMemo] = useState(false);
   const [reprocessBusy, setReprocessBusy] = useState(false);
   const [imageZoom, setImageZoom] = useState(100);
 
   useEffect(() => {
-    if (data?.article) {
-      setHeadline(data.article.headline || '');
-      setArticleDate(data.article.article_date || '');
-      setStatus(data.article.status);
-      setSelectedTags(data.article.article_tags || []);
-      setAnalysisText(
-        data.article.manual_analysis
-          ? JSON.stringify(data.article.manual_analysis, null, 2)
-          : ''
-      );
+    if (!data?.article) return;
 
-      const path = data.article.source_images?.storage_path;
+    setHeadline(data.article.headline || '');
+    setArticleDate(data.article.article_date || '');
+    setStatus(data.article.status);
+    setSelectedTags(data.article.article_tags || []);
+    setAnalysisText(data.article.manual_analysis ? JSON.stringify(data.article.manual_analysis, null, 2) : '');
 
-      if (path) {
-        fetch(`/api/signed-url?path=${encodeURIComponent(path)}`, {
-          headers: { 'x-app-password': password }
-        })
-          .then((r) => r.json())
-          .then((j) => setImageUrl(j.url || ''));
-      }
+    const path = data.article.source_images?.storage_path;
+    if (path) {
+      fetch(`/api/signed-url?path=${encodeURIComponent(path)}`, { headers: { 'x-app-password': password } })
+        .then((r) => r.json())
+        .then((j) => setImageUrl(j.url || ''));
     }
   }, [data, password]);
 
@@ -100,27 +93,18 @@ export default function ArticleDetailPage() {
 
   function toggleTag(tag: ArticleTag) {
     const key = tagKey(tag);
-    setSelectedTags((prev) => {
-      if (prev.some((t) => tagKey(t) === key)) {
-        return prev.filter((t) => tagKey(t) !== key);
-      }
-
-      return [...prev, { tag_type: tag.tag_type, tag_name: tag.tag_name }];
-    });
+    setSelectedTags((prev) => prev.some((t) => tagKey(t) === key)
+      ? prev.filter((t) => tagKey(t) !== key)
+      : [...prev, { tag_type: tag.tag_type, tag_name: tag.tag_name }]);
   }
 
   function addCustomTag() {
     const tagName = customTagName.trim();
     if (!tagName) return;
-
     const tag = { tag_type: customTagType, tag_name: tagName };
     const key = tagKey(tag);
 
-    setSelectedTags((prev) => {
-      if (prev.some((t) => tagKey(t) === key)) return prev;
-      return [...prev, tag];
-    });
-
+    setSelectedTags((prev) => prev.some((t) => tagKey(t) === key) ? prev : [...prev, tag]);
     setCustomTagName('');
   }
 
@@ -137,10 +121,7 @@ export default function ArticleDetailPage() {
 
     const res = await fetch(`/api/articles/${params.id}`, {
       method: 'PATCH',
-      headers: {
-        'content-type': 'application/json',
-        'x-app-password': password
-      },
+      headers: { 'content-type': 'application/json', 'x-app-password': password },
       body: JSON.stringify({
         headline,
         article_date: articleDate.trim() || null,
@@ -150,36 +131,18 @@ export default function ArticleDetailPage() {
       })
     });
 
-    if (!res.ok) {
-      alert('保存に失敗しました');
-    } else {
-      alert('保存しました');
-    }
+    alert(res.ok ? '保存しました' : '保存に失敗しました');
   }
 
   async function deleteArticle() {
-    const ok = window.confirm(
-      'この記事を不要記事にします。物理削除ではなく status=deleted にして、分析対象から外します。'
-    );
-
+    const ok = window.confirm('この記事を不要記事にします。物理削除ではなく status=deleted にして、分析対象から外します。');
     if (!ok) return;
 
     setBusy(true);
-
     try {
-      const res = await fetch(`/api/articles/${params.id}`, {
-        method: 'DELETE',
-        headers: {
-          'x-app-password': password
-        }
-      });
-
+      const res = await fetch(`/api/articles/${params.id}`, { method: 'DELETE', headers: { 'x-app-password': password } });
       const json = await res.json();
-
-      if (!res.ok) {
-        throw new Error(json.error || '削除に失敗しました');
-      }
-
+      if (!res.ok) throw new Error(json.error || '削除に失敗しました');
       setStatus('deleted');
       alert('不要記事にしました');
       router.back();
@@ -194,23 +157,14 @@ export default function ArticleDetailPage() {
     const imageId = data?.article.source_images?.id;
     if (!imageId) return;
 
-    const ok = window.confirm(
-      'この元画像を再OCR・再構造化します。同じ元画像から作った既存記事は不要記事になり、新しい記事候補が作られます。'
-    );
-
+    const ok = window.confirm('この元画像を再OCR・再構造化します。同じ元画像から作った既存記事は不要記事になり、新しい記事候補が作られます。');
     if (!ok) return;
 
     setReprocessBusy(true);
-
     try {
-      const res = await fetch(`/api/source-images/${imageId}/reprocess`, {
-        method: 'POST',
-        headers: { 'x-app-password': password }
-      });
-
+      const res = await fetch(`/api/source-images/${imageId}/reprocess`, { method: 'POST', headers: { 'x-app-password': password } });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || '再処理に失敗しました');
-
       alert(`再処理しました。新しい記事候補: ${json.article_count || 0}件`);
       router.push(`/batches/${data!.article.batch_id}`);
     } catch (error) {
@@ -236,21 +190,23 @@ export default function ArticleDetailPage() {
       <div className="card p-5">
         <p className="text-sm text-zinc-500">記事ID：{article.id}</p>
 
-        <input
-          className="input mt-3 text-lg font-bold"
-          value={headline}
-          onChange={(e) => setHeadline(e.target.value)}
-        />
+        <input className="input mt-3 text-lg font-bold" value={headline} onChange={(e) => setHeadline(e.target.value)} />
 
-        <label className="mt-3 block max-w-sm">
-          <span className="text-sm font-bold text-zinc-700">記事日付</span>
-          <input
-            className="input mt-2"
-            value={articleDate}
-            onChange={(e) => setArticleDate(e.target.value)}
-            placeholder="例: 2026-05-13 / 5月13日 / 日付不明"
-          />
-        </label>
+        <div className="mt-3 grid gap-3 md:grid-cols-[240px_1fr]">
+          <label className="block">
+            <span className="text-sm font-bold text-zinc-700">記事日付</span>
+            <input className="input mt-2" value={articleDate} onChange={(e) => setArticleDate(e.target.value)} placeholder="例: 2026-05-13 / 5月13日 / 日付不明" />
+          </label>
+          <label className="block">
+            <span className="text-sm font-bold text-zinc-700">状態</span>
+            <select className="input mt-2" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="ocr_done">OCR完了</option>
+              <option value="needs_review">要確認</option>
+              <option value="analyzed">分析済み</option>
+              <option value="deleted">不要記事</option>
+            </select>
+          </label>
+        </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
           <span className="badge">{article.article_type}</span>
@@ -258,106 +214,22 @@ export default function ArticleDetailPage() {
           {article.has_table && <span className="badge">表</span>}
           {article.has_chart && <span className="badge">図表</span>}
           {article.has_image && <span className="badge">画像</span>}
-          {selectedTags.map((t) => (
-            <button key={tagKey(t)} className="badge" onClick={() => toggleTag(t)} type="button">
-              {t.tag_name} ×
-            </button>
-          ))}
+          {selectedTags.map((t) => <button key={tagKey(t)} className="badge" onClick={() => toggleTag(t)} type="button">{t.tag_name} ×</button>)}
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
-          <select
-            className="input max-w-xs"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-          >
-            <option value="ocr_done">OCR完了</option>
-            <option value="needs_review">要確認</option>
-            <option value="analyzed">分析済み</option>
-            <option value="deleted">不要記事</option>
-          </select>
-
-          <button className="btn btn-primary" onClick={save} disabled={busy || reprocessBusy}>
-            保存
-          </button>
-
-          <button
-            className="btn border-red-300 text-red-600 hover:bg-red-50"
-            onClick={deleteArticle}
-            disabled={busy || reprocessBusy || status === 'deleted'}
-          >
-            {status === 'deleted' ? '不要記事済み' : '不要記事にする'}
-          </button>
-
-          {article.source_images?.id && (
-            <button
-              className="btn border-amber-300 text-amber-700 hover:bg-amber-50"
-              onClick={reprocessSourceImage}
-              disabled={busy || reprocessBusy}
-            >
-              {reprocessBusy ? '再処理中' : '元画像を再OCR'}
-            </button>
-          )}
+          <button className="btn btn-primary" onClick={save} disabled={busy || reprocessBusy}>保存</button>
+          <button className="btn border-red-300 text-red-600 hover:bg-red-50" onClick={deleteArticle} disabled={busy || reprocessBusy || status === 'deleted'}>{status === 'deleted' ? '不要記事済み' : '不要記事にする'}</button>
+          {article.source_images?.id && <button className="btn border-amber-300 text-amber-700 hover:bg-amber-50" onClick={reprocessSourceImage} disabled={busy || reprocessBusy}>{reprocessBusy ? '再処理中' : '元画像を再OCR'}</button>}
         </div>
       </div>
 
       <section className="card p-5">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="font-bold">手動タグ</h2>
-            <p className="mt-1 text-sm leading-6 text-zinc-600">
-              通常は閉じています。必要な時だけ開いてタグを編集します。
-            </p>
-          </div>
-          <button className="btn" type="button" onClick={() => setShowTagEditor((v) => !v)}>
-            {showTagEditor ? '手動タグを隠す' : '手動タグを表示'}
-          </button>
-        </div>
-
-        {showTagEditor && (
-          <div className="mt-4">
-            <div className="grid gap-4">
-              {Object.entries(groupedTagMaster).map(([type, tags]) => (
-                <div key={type}>
-                  <p className="text-sm font-bold text-zinc-700">{type}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {tags.map((tag) => {
-                      const checked = selectedKeys.has(tagKey(tag));
-                      return (
-                        <button
-                          key={tag.id}
-                          type="button"
-                          className={checked ? 'btn btn-primary' : 'btn'}
-                          onClick={() => toggleTag(tag)}
-                        >
-                          {tag.tag_name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-5 grid gap-2 md:grid-cols-[180px_1fr_auto]">
-              <select className="input" value={customTagType} onChange={(e) => setCustomTagType(e.target.value)}>
-                {tagTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-              </select>
-              <input
-                className="input"
-                value={customTagName}
-                onChange={(e) => setCustomTagName(e.target.value)}
-                placeholder="カスタムタグ名"
-              />
-              <button className="btn" type="button" onClick={addCustomTag} disabled={!customTagName.trim()}>
-                タグ追加
-              </button>
-            </div>
-          </div>
-        )}
+        <h2 className="font-bold">OCR本文</h2>
+        <pre className="mt-3 max-h-[55vh] overflow-auto whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7">
+          {article.ocr_text || 'OCR本文がありません。元画像を確認してください。'}
+        </pre>
       </section>
-
-      <ArticleInsightMemo value={analysisText} onChange={setAnalysisText} />
 
       {imageUrl && (
         <div className="card p-5">
@@ -376,37 +248,54 @@ export default function ArticleDetailPage() {
               <a className="btn" href={imageUrl} target="_blank" rel="noreferrer">別タブで開く</a>
             </div>
           </div>
-
           <div className="mt-3 max-h-[78vh] overflow-auto rounded-xl border bg-zinc-50 p-3">
-            <img
-              src={imageUrl}
-              alt="元画像"
-              className="max-w-none rounded-lg border bg-white object-contain"
-              style={{ width: `${imageZoom}%` }}
-            />
+            <img src={imageUrl} alt="元画像" className="max-w-none rounded-lg border bg-white object-contain" style={{ width: `${imageZoom}%` }} />
           </div>
         </div>
       )}
 
+      <ArticleInsightMemo value={analysisText} onChange={setAnalysisText} />
+
       <section className="card p-5">
-        <h2 className="font-bold">OCR本文</h2>
-        <pre className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7">
-          {article.ocr_text}
-        </pre>
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="font-bold">手動タグ</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-600">通常は閉じています。必要な時だけ開いてタグを編集します。</p>
+          </div>
+          <button className="btn" type="button" onClick={() => setShowTagEditor((v) => !v)}>{showTagEditor ? '手動タグを隠す' : '手動タグを表示'}</button>
+        </div>
+
+        {showTagEditor && (
+          <div className="mt-4">
+            <div className="grid gap-4">
+              {Object.entries(groupedTagMaster).map(([type, tags]) => (
+                <div key={type}>
+                  <p className="text-sm font-bold text-zinc-700">{type}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {tags.map((tag) => <button key={tag.id} type="button" className={selectedKeys.has(tagKey(tag)) ? 'btn btn-primary' : 'btn'} onClick={() => toggleTag(tag)}>{tag.tag_name}</button>)}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 grid gap-2 md:grid-cols-[180px_1fr_auto]">
+              <select className="input" value={customTagType} onChange={(e) => setCustomTagType(e.target.value)}>{tagTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select>
+              <input className="input" value={customTagName} onChange={(e) => setCustomTagName(e.target.value)} placeholder="カスタムタグ名" />
+              <button className="btn" type="button" onClick={addCustomTag} disabled={!customTagName.trim()}>タグ追加</button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="card p-5">
-        <h2 className="font-bold">手修正用 分析メモJSON</h2>
-        <p className="mt-1 text-sm text-zinc-600">
-          上の引用・示唆メモと同じ内容です。直接JSON編集もできます。
-        </p>
-
-        <textarea
-          className="input mt-3 min-h-64 font-mono"
-          value={analysisText}
-          onChange={(e) => setAnalysisText(e.target.value)}
-          placeholder='{"research_issue":"..."}'
-        />
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="font-bold">手修正用 分析メモJSON</h2>
+            <p className="mt-1 text-sm text-zinc-600">通常は閉じています。直接JSON編集が必要な時だけ開きます。</p>
+          </div>
+          <button className="btn" type="button" onClick={() => setShowJsonMemo((v) => !v)}>{showJsonMemo ? 'JSONを隠す' : 'JSONを表示'}</button>
+        </div>
+        {showJsonMemo && <textarea className="input mt-3 min-h-64 font-mono" value={analysisText} onChange={(e) => setAnalysisText(e.target.value)} placeholder='{"research_issue":"..."}' />}
       </section>
     </div>
   );

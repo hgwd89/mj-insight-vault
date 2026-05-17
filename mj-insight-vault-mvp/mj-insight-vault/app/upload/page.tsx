@@ -1,10 +1,10 @@
 import Link from 'next/link';
-import { UploadForm } from '@/components/UploadForm';
+import { UploadFormStable } from '@/components/UploadFormStable';
 
 export default function UploadPage() {
   return (
     <div className="space-y-4">
-      <UploadForm />
+      <UploadFormStable />
       <div className="card p-5">
         <h2 className="font-bold">アップロード履歴</h2>
         <p className="mt-2 text-sm leading-6 text-zinc-600">

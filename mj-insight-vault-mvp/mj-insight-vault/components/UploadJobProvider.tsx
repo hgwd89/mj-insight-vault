@@ -3,11 +3,12 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
-const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中']);
+const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中', '再試行中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 const DRAFT_DB = 'mj-upload-draft-v1';
 const DRAFT_STORE = 'draft';
 const DRAFT_KEY = 'current';
+const MAX_ATTEMPTS = 3;
 
 type Row = { name: string; status: string; note?: string };
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
@@ -57,6 +58,33 @@ function sameNameIndexes(list: File[]): SameName[] {
   const counts = new Map<string, number[]>();
   list.forEach((file, index) => counts.set(file.name, [...(counts.get(file.name) || []), index]));
   return Array.from(counts.entries()).filter(([, indexes]) => indexes.length > 1);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function retryDelay(attempt: number) {
+  return Math.min(8000, 1000 * Math.pow(2, attempt - 1));
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '失敗';
+}
+
+async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, message: string) => void): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_ATTEMPTS) break;
+      onRetry(attempt + 1, errorMessage(error));
+      await sleep(retryDelay(attempt));
+    }
+  }
+  throw lastError;
 }
 
 function openDraftDb(): Promise<IDBDatabase> {
@@ -278,7 +306,7 @@ export function UploadJobProvider({ children }: { children: React.ReactNode }) {
     setBusy(true);
     setResult(null);
     setRows(files.map((f) => ({ name: f.name, status: '待機' })));
-    setMessage('まとめて処理中です。アプリ内の別ページへ移動しても継続します。');
+    setMessage('まとめて処理中です。失敗時は自動で最大3回まで再試行します。');
 
     let batchId = '';
     let saved = 0;
@@ -286,13 +314,23 @@ export function UploadJobProvider({ children }: { children: React.ReactNode }) {
     let failed = 0;
     let articles = 0;
     try {
-      batchId = await startBatch();
+      batchId = await withRetry(
+        () => startBatch(),
+        (attempt, msg) => setMessage(`アップロード開始に失敗しました。${attempt}/${MAX_ATTEMPTS}回目を再試行中：${msg}`)
+      );
+
       for (let i = 0; i < files.length; i++) {
         try {
-          const imageId = await uploadImage(batchId, files[i], i);
+          const imageId = await withRetry(
+            () => uploadImage(batchId, files[i], i),
+            (attempt, msg) => patchRow(i, { status: '再試行中', note: `保存 ${attempt}/${MAX_ATTEMPTS}回目：${msg}` })
+          );
           saved += 1;
           if (autoOcr) {
-            const count = await runOcr(imageId, i);
+            const count = await withRetry(
+              () => runOcr(imageId, i),
+              (attempt, msg) => patchRow(i, { status: '再試行中', note: `OCR ${attempt}/${MAX_ATTEMPTS}回目：${msg}` })
+            );
             ocr += 1;
             articles += count;
             patchRow(i, { status: '完了', note: `記事 ${count}件` });
@@ -301,17 +339,17 @@ export function UploadJobProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (e) {
           failed += 1;
-          patchRow(i, { status: '失敗', note: e instanceof Error ? e.message : '失敗' });
+          patchRow(i, { status: '失敗', note: `${MAX_ATTEMPTS}回試行後に失敗：${errorMessage(e)}` });
         }
       }
       setResult({ batchId, selected: files.length, saved, ocr, failed, articles });
-      setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
-      if (saved > 0) {
+      setMessage(autoOcr ? `完了：記事候補 ${articles}件 / 失敗 ${failed}件` : `保存完了：失敗 ${failed}件。詳細画面でOCRできます`);
+      if (saved > 0 && failed === 0) {
         setFiles([]);
         clearDraft().catch(() => undefined);
       }
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '失敗しました');
+      setMessage(`${MAX_ATTEMPTS}回試行後に失敗しました：${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }

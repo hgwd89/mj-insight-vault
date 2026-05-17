@@ -20,12 +20,7 @@ const presets = [
   'この記事に似た記事を探して'
 ];
 
-const modelOptions = [
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4o',
-  'gpt-4o-mini'
-] as const;
+const modelOptions = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] as const;
 
 const targetScopes = [
   { value: 'all', label: '全記事', description: '不要記事を除く全記事から検索。' },
@@ -64,11 +59,23 @@ type RelatedArticle = {
   ocr_text?: string | null;
 };
 
+type ExplanatoryHypothesis = {
+  hypothesis?: string;
+  observed_facts?: string[];
+  underlying_motive?: string;
+  mechanism?: string;
+  alternative_read?: string;
+  marketing_implication?: string;
+  evidence_article_ids?: string[];
+  confidence?: string;
+};
+
 type ChatAnswer = {
   answer_text?: string;
   summary?: string;
   table?: Record<string, unknown>[];
   cards?: ArticleCard[];
+  explanatory_hypotheses?: ExplanatoryHypothesis[];
   target_scope?: string;
   output_template?: string;
   model_used?: string;
@@ -90,6 +97,10 @@ function getAnswerText(answer: ChatAnswer): string {
 function evidenceExcerpt(text?: string | null) {
   const compact = (text || '').replace(/\s+/g, ' ').trim();
   return compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
+}
+
+function buildReportQuery(userQuery: string) {
+  return `${userQuery}\n\n【レポート要件】\n通常レポートでは、MJ記事から見える生活者動向を主役にしてください。調査手法の適性評価は、ユーザーが明示した場合だけ扱ってください。\n必ず「説明仮説（インサイト）」を入れてください。説明仮説は、単なる発見ではなく「なぜその生活者行動が起きているのか」を説明する仮説です。\n説明仮説は、観察事実、背後心理、発生メカニズム、別解釈、マーケティング上の意味、根拠記事ID、確信度を分けてください。\n可能ならJSONにも explanatory_hypotheses を含めてください。`; 
 }
 
 export function ChatPanel() {
@@ -121,12 +132,9 @@ export function ChatPanel() {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-app-password': password
-        },
+        headers: { 'content-type': 'application/json', 'x-app-password': password },
         body: JSON.stringify({
-          query: trimmed,
+          query: buildReportQuery(trimmed),
           model,
           target_scope: targetScope,
           output_template: outputTemplate,
@@ -135,7 +143,6 @@ export function ChatPanel() {
       });
 
       const json = await res.json();
-
       if (!res.ok) throw new Error(json.error || 'Chat failed');
 
       const nextAnswer = json.answer as ChatAnswer;
@@ -175,6 +182,8 @@ export function ChatPanel() {
         reason: '検索で取得した根拠候補'
       }));
 
+  const hypotheses = Array.isArray(answer?.explanatory_hypotheses) ? answer.explanatory_hypotheses : [];
+
   return (
     <div className="space-y-5">
       <div className="card p-5">
@@ -182,7 +191,7 @@ export function ChatPanel() {
           <div>
             <h1 className="text-xl font-black">チャット分析</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              自然言語で分析指示を入力します。よく使う定型指示は必要な時だけ開けます。
+              自然言語で分析指示を入力します。レポートには生活者行動を説明する仮説も含めます。
             </p>
           </div>
           <div className="flex gap-2">
@@ -218,40 +227,16 @@ export function ChatPanel() {
         </div>
 
         <div className="mt-4 flex flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-          <button
-            className="btn w-fit"
-            type="button"
-            onClick={() => setShowPresets((v) => !v)}
-            disabled={busy}
-          >
+          <button className="btn w-fit" type="button" onClick={() => setShowPresets((v) => !v)} disabled={busy}>
             {showPresets ? '定型指示を隠す' : '定型指示を表示'}
           </button>
-
-          {showPresets && (
-            <div className="flex flex-wrap gap-2">
-              {presets.map((p) => (
-                <button key={p} className="btn" onClick={() => { setQuery(p); send(p); }} disabled={busy}>{p}</button>
-              ))}
-            </div>
-          )}
+          {showPresets && <div className="flex flex-wrap gap-2">{presets.map((p) => <button key={p} className="btn" onClick={() => { setQuery(p); send(p); }} disabled={busy}>{p}</button>)}</div>}
         </div>
 
-        {conversation.length > 0 && (
-          <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600">
-            継続中の会話：{conversation.filter((turn) => turn.role === 'user').length}問
-          </div>
-        )}
+        {conversation.length > 0 && <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600">継続中の会話：{conversation.filter((turn) => turn.role === 'user').length}問</div>}
 
         <div className="mt-4 flex gap-2">
-          <input
-            className="input"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={conversation.length ? 'この分析結果について追加質問' : '分析指示を入力'}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) send();
-            }}
-          />
+          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={conversation.length ? 'この分析結果について追加質問' : '分析指示を入力'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) send(); }} />
           <button className="btn btn-primary" onClick={() => send()} disabled={busy || !query.trim()}>{busy ? '分析中' : '送信'}</button>
         </div>
       </div>
@@ -268,6 +253,27 @@ export function ChatPanel() {
             </div>
             <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{getAnswerText(answer)}</p>
           </section>
+
+          {hypotheses.length > 0 && (
+            <section>
+              <h2 className="mb-2 font-bold">説明仮説（インサイト）</h2>
+              <div className="grid gap-3">
+                {hypotheses.map((h, index) => (
+                  <div key={index} className="rounded-xl border border-zinc-200 p-3 text-sm leading-6">
+                    <p className="font-semibold">{h.hypothesis || `説明仮説 ${index + 1}`}</p>
+                    {h.underlying_motive && <p className="mt-2 text-zinc-700"><b>背後心理：</b>{h.underlying_motive}</p>}
+                    {h.mechanism && <p className="mt-1 text-zinc-700"><b>発生メカニズム：</b>{h.mechanism}</p>}
+                    {h.alternative_read && <p className="mt-1 text-zinc-700"><b>別解釈：</b>{h.alternative_read}</p>}
+                    {h.marketing_implication && <p className="mt-1 text-zinc-700"><b>示唆：</b>{h.marketing_implication}</p>}
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                      {h.confidence && <span className="badge">confidence: {h.confidence}</span>}
+                      {(h.evidence_article_ids || []).map((id) => <span key={id} className="badge">記事 {id}</span>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {Array.isArray(answer.table) && answer.table.length > 0 && (
             <section className="overflow-x-auto">
@@ -287,7 +293,6 @@ export function ChatPanel() {
                   const related = c.article_id ? relatedById.get(c.article_id) : undefined;
                   const date = c.article_date || related?.article_date || '日付不明';
                   const excerpt = c.evidence_excerpt || evidenceExcerpt(related?.ocr_text);
-
                   return (
                     <div key={`${c.article_id || 'card'}-${i}`} className="rounded-xl border border-zinc-200 p-3">
                       <div className="flex flex-wrap items-center gap-2">
@@ -307,12 +312,7 @@ export function ChatPanel() {
         </div>
       )}
 
-      {raw && (
-        <details className="card p-5">
-          <summary className="cursor-pointer font-bold">JSON出力</summary>
-          <pre className="mt-3 whitespace-pre-wrap text-xs leading-6">{raw}</pre>
-        </details>
-      )}
+      {raw && <details className="card p-5"><summary className="cursor-pointer font-bold">JSON出力</summary><pre className="mt-3 whitespace-pre-wrap text-xs leading-6">{raw}</pre></details>}
     </div>
   );
 }

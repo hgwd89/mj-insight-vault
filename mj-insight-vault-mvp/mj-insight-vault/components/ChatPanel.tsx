@@ -114,7 +114,8 @@ export function ChatPanel() {
     setBusy(true);
     setRaw('');
 
-    const nextConversation: ConversationTurn[] = [...conversation, { role: 'user', content: trimmed }];
+    const userTurn: ConversationTurn = { role: 'user', content: trimmed };
+    const nextConversation: ConversationTurn[] = [...conversation, userTurn];
 
     try {
       const res = await fetch('/api/chat', {
@@ -138,11 +139,12 @@ export function ChatPanel() {
 
       const nextAnswer = json.answer as ChatAnswer;
       const answerText = getAnswerText(nextAnswer);
+      const assistantTurn: ConversationTurn = { role: 'assistant', content: answerText || JSON.stringify(nextAnswer) };
 
       setAnswer(nextAnswer);
       setRelatedArticles(Array.isArray(json.related_articles) ? json.related_articles : []);
       setRaw(JSON.stringify(json, null, 2));
-      setConversation([...nextConversation, { role: 'assistant', content: answerText || JSON.stringify(nextAnswer) }].slice(-10));
+      setConversation([...nextConversation, assistantTurn].slice(-10));
       setQuery('');
     } catch (error) {
       setRaw(error instanceof Error ? error.message : 'エラーが発生しました');

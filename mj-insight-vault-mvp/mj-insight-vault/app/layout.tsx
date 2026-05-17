@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { AppShell } from '@/components/AppShell';
 import { PasswordGate } from '@/components/PasswordGate';
+import { UploadJobProvider } from '@/components/UploadJobProvider';
 
 export const metadata: Metadata = {
   title: 'MJ Insight Vault',
@@ -20,7 +21,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="ja">
       <body>
         <PasswordGate>
-          <AppShell>{children}</AppShell>
+          <UploadJobProvider>
+            <AppShell>{children}</AppShell>
+          </UploadJobProvider>
         </PasswordGate>
       </body>
     </html>

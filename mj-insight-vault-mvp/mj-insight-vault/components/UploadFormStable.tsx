@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
-const MAX_FILES = 20;
 const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 const DRAFT_DB = 'mj-upload-draft-v1';
@@ -123,7 +122,7 @@ export function UploadFormStable() {
         setMemo(draft.memo || '');
         setDate(draft.date || '');
         setAutoOcr(draft.autoOcr !== false);
-        const restoredFiles = (draft.files || []).map(fromStoredFile).slice(0, MAX_FILES);
+        const restoredFiles = (draft.files || []).map(fromStoredFile);
         if (restoredFiles.length) {
           setFiles(restoredFiles);
           setMessage(`前回選択した画像 ${restoredFiles.length}枚を復元しました`);
@@ -158,13 +157,13 @@ export function UploadFormStable() {
   }, [busy]);
 
   function choose(list: File[]) {
-    const next = list.slice(0, MAX_FILES);
+    const next = list;
     setFiles(next);
     setRows([]);
     setResult(null);
     const found = sameNameIndexes(next);
     if (found.length) setMessage('同じファイル名があります。不要な方を外してからアップロードしてください。');
-    else setMessage(list.length > MAX_FILES ? `最大${MAX_FILES}枚に絞りました` : '選択内容を一時保存しました');
+    else setMessage('選択内容を一時保存しました');
   }
 
   function removeFile(index: number) {
@@ -319,7 +318,9 @@ export function UploadFormStable() {
       <input className="input" value={date} onChange={(e) => setDate(e.target.value)} placeholder="記事日付：例 2026-05-13" />
       <label className="flex gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm"><input type="checkbox" checked={autoOcr} onChange={(e) => setAutoOcr(e.target.checked)} />保存後にOCR・記事化する</label>
       <input className="input" type="file" accept="image/*,.heic,.heif" multiple onChange={(e) => choose(Array.from(e.target.files || []))} disabled={busy} />
-      <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}/{MAX_FILES}枚</span>{files.length > 0 && <button className="btn" onClick={clearSelection} disabled={busy}>選択をクリア</button>}</div>
+      <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}枚</span>{files.length > 0 && <button className="btn" onClick={clearSelection} disabled={busy}>選択をクリア</button>}</div>
+
+      {files.length > 30 && !busy && <p className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900">選択数が多いほど処理時間と失敗率は上がります。制限は外していますが、失敗した場合は分割してください。</p>}
 
       {sameNames.length > 0 && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">

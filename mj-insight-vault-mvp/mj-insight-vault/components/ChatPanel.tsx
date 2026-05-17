@@ -9,13 +9,10 @@ const presets = [
   '食品業界だけ分析して',
   '化粧品業界だけ分析して',
   'AI関連の記事を分析して',
-  'N1探索に向いている記事を出して',
-  '投影法が使えそうなテーマを出して',
-  'BOT調査に向いている記事を出して',
-  'リフレクションに向いている記事を出して',
-  '定量調査に回すべきテーマを出して',
-  'リサーチ課題を整理して',
-  '提案書ネタにして',
+  '調査が必要そうな論点を優先度順に出して',
+  '説明仮説を複数案で比較して',
+  '根拠マトリクス付きで整理して',
+  '反証・別解釈まで出して',
   '元記事に戻れる形で出して',
   'この記事に似た記事を探して'
 ];
@@ -32,9 +29,9 @@ const outputTemplates = [
   { value: 'auto', label: '自動', description: '質問内容に合わせて出力形式を調整。' },
   { value: 'trend', label: '生活者トレンド', description: '生活者変化・背景・示唆を中心に整理。' },
   { value: 'why', label: 'WHY深掘り', description: 'WHYを3回重ねて背後欲求まで掘る。' },
-  { value: 'research', label: 'リサーチ課題化', description: '調査目的・仮説・聞くべき論点へ落とす。' },
-  { value: 'proposal', label: '提案書ネタ', description: '企画提案に使える切り口で出す。' },
-  { value: 'method', label: '手法適性', description: 'N1・投影・BOT・リフレクション・定量の適性を見る。' },
+  { value: 'research', label: 'リサーチ課題化', description: '調査が必要そうな論点・検証仮説へ落とす。' },
+  { value: 'proposal', label: '提案書ネタ', description: '提案に使えるリサーチテーマとして整理。' },
+  { value: 'method', label: '手法適性', description: '明示的に必要な場合だけ手法適性を見る。' },
   { value: 'news_list', label: 'ニュース一覧', description: '元記事を一覧として確認する。' }
 ] as const;
 
@@ -87,10 +84,61 @@ type ResearchNeed = {
   why_research_needed?: string;
   unknowns?: string[];
   hypothesis_to_test?: string;
+  research_question?: string;
   signals_from_articles?: string[];
   evidence_article_ids?: string[];
   priority?: string;
+  score?: number | string;
   confidence?: string;
+};
+
+type EvidenceMatrixRow = {
+  claim?: string;
+  insight?: string;
+  article_id?: string;
+  headline?: string;
+  article_date?: string;
+  evidence_excerpt?: string;
+  excerpt?: string;
+  supports?: string;
+  strength?: string;
+  limitation?: string;
+  research_need?: string;
+  confidence?: string;
+};
+
+type HypothesisOption = {
+  hypothesis?: string;
+  support?: string;
+  evidence_article_ids?: string[];
+  what_would_disprove?: string;
+  research_question?: string;
+  confidence?: string;
+};
+
+type HypothesisComparison = {
+  phenomenon?: string;
+  best_current_read?: string;
+  hypotheses?: HypothesisOption[];
+};
+
+type CoverageDiagnosis = {
+  article_count?: number;
+  direct_article_count?: number;
+  peripheral_article_count?: number;
+  date_unknown_count?: number;
+  coverage_note?: string;
+  caveats?: string[];
+};
+
+type QualityRubric = {
+  evidence_strength?: number | string;
+  hypothesis_depth?: number | string;
+  research_potential?: number | string;
+  restraint?: number | string;
+  originality?: number | string;
+  overall?: number | string;
+  reason?: string;
 };
 
 type ChatAnswer = {
@@ -98,8 +146,15 @@ type ChatAnswer = {
   summary?: string;
   table?: Record<string, unknown>[];
   cards?: ArticleCard[];
+  evidence?: EvidenceMatrixRow[];
+  evidence_matrix?: EvidenceMatrixRow[];
   explanatory_hypotheses?: ExplanatoryHypothesis[];
   research_needs?: ResearchNeed[];
+  hypothesis_comparison?: HypothesisComparison[];
+  coverage_diagnosis?: CoverageDiagnosis;
+  source_coverage?: CoverageDiagnosis;
+  quality_rubric?: QualityRubric;
+  quality_score?: QualityRubric;
   target_scope?: string;
   output_template?: string;
   model_used?: string;
@@ -124,7 +179,7 @@ function evidenceExcerpt(text?: string | null) {
 }
 
 function buildReportQuery(userQuery: string) {
-  return `${userQuery}\n\n【レポート要件】\n通常レポートでは、MJ記事から見える生活者動向を主役にしてください。調査手法の適性評価は、ユーザーが明示した場合だけ扱ってください。\nこのレポートの目的は、商品・販促アクションを出すことではなく、リサーチのネタを見つけることです。\n必ず「説明仮説（インサイト）」を入れてください。説明仮説は、単なる発見ではなく「なぜその生活者行動が起きているのか」を説明する仮説です。\n説明仮説の掘り下げは、WHYを必ず3回重ねてください。WHY1は表層行動の理由、WHY2は背後心理・制約、WHY3はより深い価値観・社会背景まで掘ってください。\n説明仮説は、観察事実、WHY1、WHY2、WHY3、発生メカニズム、別解釈、リサーチ上の意味、根拠記事ID、確信度を分けてください。\n必ず「調査が必要そうな論点」を出してください。これは、記事だけでは断定できないが、生活者理解として検証する価値がある問いです。\n調査が必要そうな論点は、なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度を分けてください。\n商品開発・販促・チャネルなどの実行アクション提案は不要です。示唆はリサーチ課題・検証問いに寄せてください。\n可能ならJSONにも explanatory_hypotheses と research_needs を含め、各仮説に why_chain を3要素で入れてください。`; 
+  return `${userQuery}\n\n【レポート要件】\n目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n通常レポートでは、生活者動向、説明仮説、調査が必要そうな論点を主役にしてください。調査手法の適性評価は、ユーザーが明示した場合だけ扱ってください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`; 
 }
 
 function getWhyChain(h: ExplanatoryHypothesis): WhyChainItem[] {
@@ -132,6 +187,11 @@ function getWhyChain(h: ExplanatoryHypothesis): WhyChainItem[] {
   return [h.why_1, h.why_2, h.why_3]
     .map((why, index) => why ? { level: index + 1, why, explanation: why } : null)
     .filter(Boolean) as WhyChainItem[];
+}
+
+function scoreValue(value: unknown) {
+  if (value === undefined || value === null || value === '') return '-';
+  return String(value);
 }
 
 export function ChatPanel() {
@@ -215,6 +275,14 @@ export function ChatPanel() {
 
   const hypotheses = Array.isArray(answer?.explanatory_hypotheses) ? answer.explanatory_hypotheses : [];
   const researchNeeds = Array.isArray(answer?.research_needs) ? answer.research_needs : [];
+  const evidenceMatrix = Array.isArray(answer?.evidence_matrix)
+    ? answer.evidence_matrix
+    : Array.isArray(answer?.evidence)
+      ? answer.evidence
+      : [];
+  const comparisons = Array.isArray(answer?.hypothesis_comparison) ? answer.hypothesis_comparison : [];
+  const coverage = answer?.coverage_diagnosis || answer?.source_coverage;
+  const quality = answer?.quality_rubric || answer?.quality_score;
 
   return (
     <div className="space-y-5">
@@ -223,7 +291,7 @@ export function ChatPanel() {
           <div>
             <h1 className="text-xl font-black">チャット分析</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              自然言語で分析指示を入力します。レポートには生活者行動を説明する仮説、WHY3段階、調査が必要そうな論点も含めます。
+              MJ記事から生活者動向を読み、説明仮説・根拠・調査が必要そうな論点を抽出します。
             </p>
           </div>
           <div className="flex gap-2">
@@ -286,6 +354,44 @@ export function ChatPanel() {
             <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{getAnswerText(answer)}</p>
           </section>
 
+          {coverage && (
+            <section>
+              <h2 className="mb-2 font-bold">カバレッジ診断</h2>
+              <div className="grid gap-2 text-sm md:grid-cols-4">
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{coverage.article_count ?? answer.related_article_count ?? '-'}</b><br />対象記事</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{coverage.direct_article_count ?? '-'}</b><br />直接該当</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{coverage.peripheral_article_count ?? '-'}</b><br />周辺該当</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{coverage.date_unknown_count ?? '-'}</b><br />日付不明</div>
+              </div>
+              {coverage.coverage_note && <p className="mt-3 text-sm leading-6 text-zinc-700">{coverage.coverage_note}</p>}
+              {Array.isArray(coverage.caveats) && coverage.caveats.length > 0 && <p className="mt-2 text-sm leading-6 text-zinc-600">留意点：{coverage.caveats.join(' / ')}</p>}
+            </section>
+          )}
+
+          {researchNeeds.length > 0 && (
+            <section>
+              <h2 className="mb-2 font-bold">調査が必要そうな論点ランキング</h2>
+              <div className="grid gap-3">
+                {researchNeeds.map((need, index) => (
+                  <div key={index} className="rounded-xl border border-zinc-200 p-3 text-sm leading-6">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-zinc-900 px-2 py-1 text-xs font-bold text-white">#{index + 1}</span>
+                      <p className="font-semibold">{need.theme || `調査論点 ${index + 1}`}</p>
+                      {need.priority && <span className="badge">priority: {need.priority}</span>}
+                      {need.score !== undefined && <span className="badge">score: {need.score}</span>}
+                      {need.confidence && <span className="badge">confidence: {need.confidence}</span>}
+                    </div>
+                    {need.why_research_needed && <p className="mt-2 text-zinc-700"><b>調査が必要な理由：</b>{need.why_research_needed}</p>}
+                    {(need.hypothesis_to_test || need.research_question) && <p className="mt-1 text-zinc-700"><b>検証仮説・問い：</b>{need.hypothesis_to_test || need.research_question}</p>}
+                    {Array.isArray(need.unknowns) && need.unknowns.length > 0 && <p className="mt-1 text-zinc-700"><b>未解明な点：</b>{need.unknowns.join(' / ')}</p>}
+                    {Array.isArray(need.signals_from_articles) && need.signals_from_articles.length > 0 && <p className="mt-1 text-zinc-700"><b>記事からの兆し：</b>{need.signals_from_articles.join(' / ')}</p>}
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs">{(need.evidence_article_ids || []).map((id) => <span key={id} className="badge">記事 {id}</span>)}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {hypotheses.length > 0 && (
             <section>
               <h2 className="mb-2 font-bold">説明仮説（インサイト）</h2>
@@ -324,27 +430,72 @@ export function ChatPanel() {
             </section>
           )}
 
-          {researchNeeds.length > 0 && (
+          {comparisons.length > 0 && (
             <section>
-              <h2 className="mb-2 font-bold">調査が必要そうな論点</h2>
+              <h2 className="mb-2 font-bold">説明仮説の複数案比較</h2>
               <div className="grid gap-3">
-                {researchNeeds.map((need, index) => (
+                {comparisons.map((comparison, index) => (
                   <div key={index} className="rounded-xl border border-zinc-200 p-3 text-sm leading-6">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-semibold">{need.theme || `調査論点 ${index + 1}`}</p>
-                      {need.priority && <span className="badge">priority: {need.priority}</span>}
-                      {need.confidence && <span className="badge">confidence: {need.confidence}</span>}
-                    </div>
-                    {need.why_research_needed && <p className="mt-2 text-zinc-700"><b>調査が必要な理由：</b>{need.why_research_needed}</p>}
-                    {need.hypothesis_to_test && <p className="mt-1 text-zinc-700"><b>検証仮説：</b>{need.hypothesis_to_test}</p>}
-                    {Array.isArray(need.unknowns) && need.unknowns.length > 0 && <p className="mt-1 text-zinc-700"><b>未解明な点：</b>{need.unknowns.join(' / ')}</p>}
-                    {Array.isArray(need.signals_from_articles) && need.signals_from_articles.length > 0 && <p className="mt-1 text-zinc-700"><b>記事からの兆し：</b>{need.signals_from_articles.join(' / ')}</p>}
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                      {(need.evidence_article_ids || []).map((id) => <span key={id} className="badge">記事 {id}</span>)}
-                    </div>
+                    <p className="font-semibold">{comparison.phenomenon || `比較対象 ${index + 1}`}</p>
+                    {comparison.best_current_read && <p className="mt-1 text-zinc-700"><b>現時点の有力読み：</b>{comparison.best_current_read}</p>}
+                    {Array.isArray(comparison.hypotheses) && comparison.hypotheses.length > 0 && (
+                      <div className="mt-3 grid gap-2">
+                        {comparison.hypotheses.map((h, i) => (
+                          <div key={i} className="rounded-lg bg-zinc-50 p-3">
+                            <p className="font-semibold">仮説{i + 1}: {h.hypothesis || '-'}</p>
+                            {h.support && <p className="mt-1">根拠: {h.support}</p>}
+                            {h.what_would_disprove && <p className="mt-1">棄却条件: {h.what_would_disprove}</p>}
+                            {h.research_question && <p className="mt-1">調査問い: {h.research_question}</p>}
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                              {h.confidence && <span className="badge">confidence: {h.confidence}</span>}
+                              {(h.evidence_article_ids || []).map((id) => <span key={id} className="badge">記事 {id}</span>)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
+            </section>
+          )}
+
+          {evidenceMatrix.length > 0 && (
+            <section className="overflow-x-auto">
+              <h2 className="mb-2 font-bold">根拠マトリクス</h2>
+              <table className="w-full min-w-[900px] text-sm">
+                <thead>
+                  <tr>
+                    {['主張', '記事', '根拠抜粋', '強度', '限界', '調査が必要な理由'].map((h) => <th key={h} className="border-b bg-zinc-50 p-2 text-left">{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {evidenceMatrix.map((row, index) => (
+                    <tr key={index}>
+                      <td className="border-b p-2 align-top">{row.claim || row.insight || '-'}</td>
+                      <td className="border-b p-2 align-top">{row.article_date || '日付不明'}<br />{row.headline || row.article_id || '-'}</td>
+                      <td className="border-b p-2 align-top">{row.evidence_excerpt || row.excerpt || row.supports || '-'}</td>
+                      <td className="border-b p-2 align-top">{row.strength || row.confidence || '-'}</td>
+                      <td className="border-b p-2 align-top">{row.limitation || '-'}</td>
+                      <td className="border-b p-2 align-top">{row.research_need || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {quality && (
+            <section>
+              <h2 className="mb-2 font-bold">品質ルーブリック</h2>
+              <div className="grid gap-2 text-sm md:grid-cols-5">
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{scoreValue(quality.evidence_strength)}</b><br />根拠強度</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{scoreValue(quality.hypothesis_depth)}</b><br />仮説の深さ</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{scoreValue(quality.research_potential)}</b><br />調査余地</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{scoreValue(quality.restraint)}</b><br />無理な接続の少なさ</div>
+                <div className="rounded-xl bg-zinc-50 p-3"><b>{scoreValue(quality.overall)}</b><br />総合</div>
+              </div>
+              {quality.reason && <p className="mt-3 text-sm leading-6 text-zinc-700">{quality.reason}</p>}
             </section>
           )}
 

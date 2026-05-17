@@ -5,6 +5,8 @@ import { useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const MAX_FILES = 20;
+const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中']);
+const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 
 type Row = { name: string; status: string; note?: string };
 
@@ -138,6 +140,20 @@ export function UploadFormStable() {
     }
   }
 
+  const totalCount = rows.length || files.length;
+  const finishedCount = rows.filter((row) => FINISHED_STATUSES.has(row.status)).length;
+  const activeIndex = rows.findIndex((row) => ACTIVE_STATUSES.has(row.status));
+  const activeRow = activeIndex >= 0 ? rows[activeIndex] : null;
+  const failedCount = rows.filter((row) => row.status === '失敗').length;
+  const progressPercent = totalCount ? Math.round((finishedCount / totalCount) * 100) : 0;
+  const activeLabel = activeRow
+    ? `現在処理中：${activeIndex + 1}/${totalCount} ${activeRow.status}`
+    : busy && totalCount
+      ? `処理準備中：0/${totalCount}`
+      : totalCount && finishedCount === totalCount
+        ? `処理完了：${finishedCount}/${totalCount}`
+        : '';
+
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
     <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、記事候補まで作成します。通常は「保存後にOCR・記事化する」をONのまま使ってください。</p>
@@ -154,6 +170,24 @@ export function UploadFormStable() {
       <label className="flex gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm"><input type="checkbox" checked={autoOcr} onChange={(e) => setAutoOcr(e.target.checked)} />保存後にOCR・記事化する</label>
       <input className="input" type="file" accept="image/*,.heic,.heif" multiple onChange={(e) => choose(Array.from(e.target.files || []))} disabled={busy} />
       <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}/{MAX_FILES}枚</span>{files.length > 0 && <button className="btn" onClick={() => { setFiles([]); setRows([]); setResult(null); }} disabled={busy}>全てクリア</button>}</div>
+
+      {(busy || rows.length > 0) && totalCount > 0 && <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="font-bold">処理状況</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-600">{activeLabel || `処理済み：${finishedCount}/${totalCount}`}</p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-zinc-600">
+            <span className="badge">完了 {finishedCount}/{totalCount}</span>
+            <span className="badge">失敗 {failedCount}</span>
+            <span className="badge">{progressPercent}%</span>
+          </div>
+        </div>
+        <div className="mt-3 h-3 overflow-hidden rounded-full bg-zinc-200">
+          <div className="h-full rounded-full bg-zinc-900 transition-all duration-300" style={{ width: `${progressPercent}%` }} />
+        </div>
+      </div>}
+
       {files.length > 0 && <ul className="max-h-64 overflow-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">{files.map((f, i) => <li key={`${f.name}-${i}`} className="flex justify-between gap-3 border-b border-zinc-200 py-2 last:border-b-0"><div>{i + 1}. {f.name}<p className={rows[i]?.status === '失敗' ? 'text-xs text-red-600' : 'text-xs text-zinc-500'}>{rows[i]?.status || '待機'} {rows[i]?.note || ''}</p></div><button className="btn" onClick={() => setFiles((prev) => prev.filter((_, n) => n !== i))} disabled={busy}>削除</button></li>)}</ul>}
       <button className="btn btn-primary" onClick={submit} disabled={!files.length || busy}>{busy ? '処理中' : autoOcr ? 'まとめてアップロードして記事化' : 'まとめてアップロード'}</button>
       {message && <p className="text-sm leading-6 text-zinc-700">{message}</p>}

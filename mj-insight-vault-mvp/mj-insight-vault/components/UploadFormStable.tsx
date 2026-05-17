@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const MAX_FILES = 20;
@@ -9,11 +9,16 @@ const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 
 type Row = { name: string; status: string; note?: string };
-
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
 
 function isBadFormat(file: File) {
   return /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+}
+
+function sameNameIndexes(list: File[]) {
+  const counts = new Map<string, number[]>();
+  list.forEach((file, index) => counts.set(file.name, [...(counts.get(file.name) || []), index]));
+  return Array.from(counts.entries()).filter(([, indexes]) => indexes.length > 1);
 }
 
 async function shrink(file: File): Promise<File> {
@@ -46,11 +51,38 @@ export function UploadFormStable() {
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
 
+  const sameNames = useMemo(() => sameNameIndexes(files), [files]);
+  const sameNameSet = useMemo(() => new Set(sameNames.flatMap(([, indexes]) => indexes)), [sameNames]);
+
   function choose(list: File[]) {
-    setFiles(list.slice(0, MAX_FILES));
+    const next = list.slice(0, MAX_FILES);
+    setFiles(next);
     setRows([]);
     setResult(null);
-    setMessage(list.length > MAX_FILES ? `最大${MAX_FILES}枚に絞りました` : '');
+    const found = sameNameIndexes(next);
+    if (found.length) setMessage('同じファイル名があります。不要な方を外してからアップロードしてください。');
+    else setMessage(list.length > MAX_FILES ? `最大${MAX_FILES}枚に絞りました` : '');
+  }
+
+  function removeFile(index: number) {
+    const next = files.filter((_, i) => i !== index);
+    setFiles(next);
+    setRows([]);
+    setResult(null);
+    setMessage(sameNameIndexes(next).length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '');
+  }
+
+  function keepFirstSameNames() {
+    const seen = new Set<string>();
+    const next = files.filter((file) => {
+      if (seen.has(file.name)) return false;
+      seen.add(file.name);
+      return true;
+    });
+    setFiles(next);
+    setRows([]);
+    setResult(null);
+    setMessage('同じファイル名の2件目以降を外しました');
   }
 
   function patchRow(index: number, row: Partial<Row>) {
@@ -97,6 +129,10 @@ export function UploadFormStable() {
 
   async function submit() {
     if (!files.length || busy) return;
+    if (sameNameIndexes(files).length) {
+      setMessage('同じファイル名があります。不要な方を外してからアップロードしてください。');
+      return;
+    }
     if (files.some(isBadFormat)) {
       setMessage('JPGまたはPNGに変換してください');
       return;
@@ -161,8 +197,9 @@ export function UploadFormStable() {
       <b>使い方</b><br />
       1. 紙面の日付が分かる場合は「記事日付」に入力<br />
       2. 画像をまとめて選択<br />
-      3. 「まとめてアップロードして記事化」を押す<br />
-      4. 完了後は「記事一覧」または「アップロード詳細」で確認
+      3. 同じファイル名がある場合は不要な方を外す<br />
+      4. 「まとめてアップロードして記事化」を押す<br />
+      5. 完了後は「記事一覧」または「アップロード詳細」で確認
     </div>
     <div className="mt-5 space-y-4">
       <textarea className="input min-h-20" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="メモ：例 2026年5月中旬 / 食品・AI関連多め" />
@@ -171,25 +208,24 @@ export function UploadFormStable() {
       <input className="input" type="file" accept="image/*,.heic,.heif" multiple onChange={(e) => choose(Array.from(e.target.files || []))} disabled={busy} />
       <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}/{MAX_FILES}枚</span>{files.length > 0 && <button className="btn" onClick={() => { setFiles([]); setRows([]); setResult(null); }} disabled={busy}>全てクリア</button>}</div>
 
-      {(busy || rows.length > 0) && totalCount > 0 && <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="font-bold">処理状況</h2>
-            <p className="mt-1 text-sm leading-6 text-zinc-600">{activeLabel || `処理済み：${finishedCount}/${totalCount}`}</p>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs text-zinc-600">
-            <span className="badge">完了 {finishedCount}/{totalCount}</span>
-            <span className="badge">失敗 {failedCount}</span>
-            <span className="badge">{progressPercent}%</span>
-          </div>
+      {sameNames.length > 0 && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div><h2 className="font-bold">同じファイル名があります</h2><p className="mt-1">このままではアップロードできません。不要な方を外してください。</p></div>
+          <button className="btn" onClick={keepFirstSameNames} disabled={busy}>2件目以降を外す</button>
         </div>
-        <div className="mt-3 h-3 overflow-hidden rounded-full bg-zinc-200">
-          <div className="h-full rounded-full bg-zinc-900 transition-all duration-300" style={{ width: `${progressPercent}%` }} />
-        </div>
+        <ul className="mt-3 space-y-1">{sameNames.map(([name, indexes]) => <li key={name}>{name}：{indexes.map((index) => `${index + 1}番`).join(' / ')}</li>)}</ul>
       </div>}
 
-      {files.length > 0 && <ul className="max-h-64 overflow-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">{files.map((f, i) => <li key={`${f.name}-${i}`} className="flex justify-between gap-3 border-b border-zinc-200 py-2 last:border-b-0"><div>{i + 1}. {f.name}<p className={rows[i]?.status === '失敗' ? 'text-xs text-red-600' : 'text-xs text-zinc-500'}>{rows[i]?.status || '待機'} {rows[i]?.note || ''}</p></div><button className="btn" onClick={() => setFiles((prev) => prev.filter((_, n) => n !== i))} disabled={busy}>削除</button></li>)}</ul>}
-      <button className="btn btn-primary" onClick={submit} disabled={!files.length || busy}>{busy ? '処理中' : autoOcr ? 'まとめてアップロードして記事化' : 'まとめてアップロード'}</button>
+      {(busy || rows.length > 0) && totalCount > 0 && <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div><h2 className="font-bold">処理状況</h2><p className="mt-1 text-sm leading-6 text-zinc-600">{activeLabel || `処理済み：${finishedCount}/${totalCount}`}</p></div>
+          <div className="flex flex-wrap gap-2 text-xs text-zinc-600"><span className="badge">完了 {finishedCount}/{totalCount}</span><span className="badge">失敗 {failedCount}</span><span className="badge">{progressPercent}%</span></div>
+        </div>
+        <div className="mt-3 h-3 overflow-hidden rounded-full bg-zinc-200"><div className="h-full rounded-full bg-zinc-900 transition-all duration-300" style={{ width: `${progressPercent}%` }} /></div>
+      </div>}
+
+      {files.length > 0 && <ul className="max-h-64 overflow-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">{files.map((f, i) => <li key={`${f.name}-${i}`} className="flex justify-between gap-3 border-b border-zinc-200 py-2 last:border-b-0"><div>{i + 1}. {f.name}{sameNameSet.has(i) && <span className="ml-2 rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">同名</span>}<p className={rows[i]?.status === '失敗' ? 'text-xs text-red-600' : 'text-xs text-zinc-500'}>{rows[i]?.status || '待機'} {rows[i]?.note || ''}</p></div><button className="btn" onClick={() => removeFile(i)} disabled={busy}>{sameNameSet.has(i) ? '外す' : '削除'}</button></li>)}</ul>}
+      <button className="btn btn-primary" onClick={submit} disabled={!files.length || busy || sameNames.length > 0}>{busy ? '処理中' : autoOcr ? 'まとめてアップロードして記事化' : 'まとめてアップロード'}</button>
       {message && <p className="text-sm leading-6 text-zinc-700">{message}</p>}
       {result && <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><h2 className="font-bold">処理サマリー</h2><div className="mt-3 grid gap-2 text-sm md:grid-cols-5"><div className="rounded-xl bg-white p-3"><b>{result.selected}</b><br />選択</div><div className="rounded-xl bg-white p-3"><b>{result.saved}</b><br />保存</div><div className="rounded-xl bg-white p-3"><b>{result.ocr}</b><br />OCR</div><div className="rounded-xl bg-white p-3"><b>{result.failed}</b><br />失敗</div><div className="rounded-xl bg-white p-3"><b>{result.articles}</b><br />記事</div></div><div className="mt-4 flex flex-wrap gap-2"><Link className="btn btn-primary" href={`/batches/${result.batchId}`}>アップロード詳細</Link><Link className="btn" href="/articles">記事一覧</Link><Link className="btn" href="/chat">Chatで分析</Link></div></div>}
     </div>

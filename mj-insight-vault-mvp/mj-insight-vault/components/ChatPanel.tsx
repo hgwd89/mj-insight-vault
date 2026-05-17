@@ -103,6 +103,7 @@ export function ChatPanel() {
   const [raw, setRaw] = useState('');
   const [conversation, setConversation] = useState<ConversationTurn[]>([]);
   const [relatedArticles, setRelatedArticles] = useState<RelatedArticle[]>([]);
+  const [showPresets, setShowPresets] = useState(false);
 
   const selectedScope = targetScopes.find((scope) => scope.value === targetScope) || targetScopes[0];
   const selectedTemplate = outputTemplates.find((template) => template.value === outputTemplate) || outputTemplates[0];
@@ -181,7 +182,7 @@ export function ChatPanel() {
           <div>
             <h1 className="text-xl font-black">チャット分析</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              記事DBを根拠に分析し、続けて追加質問できます。回答はchat_reportsに保存されます。
+              自然言語で分析指示を入力します。よく使う定型指示は必要な時だけ開けます。
             </p>
           </div>
           <div className="flex gap-2">
@@ -216,10 +217,23 @@ export function ChatPanel() {
           </label>
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {presets.map((p) => (
-            <button key={p} className="btn" onClick={() => { setQuery(p); send(p); }} disabled={busy}>{p}</button>
-          ))}
+        <div className="mt-4 flex flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+          <button
+            className="btn w-fit"
+            type="button"
+            onClick={() => setShowPresets((v) => !v)}
+            disabled={busy}
+          >
+            {showPresets ? '定型指示を隠す' : '定型指示を表示'}
+          </button>
+
+          {showPresets && (
+            <div className="flex flex-wrap gap-2">
+              {presets.map((p) => (
+                <button key={p} className="btn" onClick={() => { setQuery(p); send(p); }} disabled={busy}>{p}</button>
+              ))}
+            </div>
+          )}
         </div>
 
         {conversation.length > 0 && (
@@ -238,7 +252,7 @@ export function ChatPanel() {
               if (e.key === 'Enter' && !e.shiftKey) send();
             }}
           />
-          <button className="btn btn-primary" onClick={() => send()} disabled={busy}>{busy ? '分析中' : '送信'}</button>
+          <button className="btn btn-primary" onClick={() => send()} disabled={busy || !query.trim()}>{busy ? '分析中' : '送信'}</button>
         </div>
       </div>
 
@@ -282,11 +296,7 @@ export function ChatPanel() {
                         {c.confidence && <span className="badge">confidence: {c.confidence}</span>}
                       </div>
                       <p className="mt-1 text-sm leading-6 text-zinc-600">{c.reason || c.note || '根拠候補'}</p>
-                      {excerpt && (
-                        <p className="mt-2 rounded-xl bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
-                          {excerpt}
-                        </p>
-                      )}
+                      {excerpt && <p className="mt-2 rounded-xl bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">{excerpt}</p>}
                       {c.article_id && <Link className="btn mt-2" href={`/articles/${c.article_id}`}>記事詳細を開く</Link>}
                     </div>
                   );

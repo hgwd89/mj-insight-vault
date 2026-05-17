@@ -36,9 +36,14 @@ type Article = {
 };
 
 const tagTypes = ['industry', 'consumer_pressure', 'behavior_change', 'method_fit', 'custom_theme'];
+const zoomPresets = [50, 75, 100, 125, 150, 200, 300];
 
 function tagKey(tag: { tag_type: string; tag_name: string }) {
   return `${tag.tag_type}::${tag.tag_name}`;
+}
+
+function clampZoom(value: number) {
+  return Math.min(400, Math.max(25, value));
 }
 
 export default function ArticleDetailPage() {
@@ -59,6 +64,7 @@ export default function ArticleDetailPage() {
   const [customTagType, setCustomTagType] = useState('custom_theme');
   const [customTagName, setCustomTagName] = useState('');
   const [reprocessBusy, setReprocessBusy] = useState(false);
+  const [imageZoom, setImageZoom] = useState(100);
 
   useEffect(() => {
     if (data?.article) {
@@ -343,12 +349,30 @@ export default function ArticleDetailPage() {
 
       {imageUrl && (
         <div className="card p-5">
-          <h2 className="font-bold">元画像</h2>
-          <img
-            src={imageUrl}
-            alt="元画像"
-            className="mt-3 max-h-[70vh] rounded-xl border object-contain"
-          />
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="font-bold">元画像</h2>
+              <p className="mt-1 text-sm text-zinc-600">拡大時は画像エリア内を横・縦にスクロールできます。</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button className="btn" type="button" onClick={() => setImageZoom((z) => clampZoom(z - 25))}>縮小</button>
+              <select className="input w-28" value={imageZoom} onChange={(e) => setImageZoom(clampZoom(Number(e.target.value)))}>
+                {zoomPresets.map((zoom) => <option key={zoom} value={zoom}>{zoom}%</option>)}
+              </select>
+              <button className="btn" type="button" onClick={() => setImageZoom((z) => clampZoom(z + 25))}>拡大</button>
+              <button className="btn" type="button" onClick={() => setImageZoom(100)}>100%</button>
+              <a className="btn" href={imageUrl} target="_blank" rel="noreferrer">別タブで開く</a>
+            </div>
+          </div>
+
+          <div className="mt-3 max-h-[78vh] overflow-auto rounded-xl border bg-zinc-50 p-3">
+            <img
+              src={imageUrl}
+              alt="元画像"
+              className="max-w-none rounded-lg border bg-white object-contain"
+              style={{ width: `${imageZoom}%` }}
+            />
+          </div>
         </div>
       )}
 

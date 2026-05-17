@@ -140,9 +140,16 @@ export function UploadFormStable() {
 
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
-    <p className="mt-2 text-sm leading-6 text-zinc-600">複数画像をまとめて選択できます。内部では安定化のため1枚ずつ保存します。</p>
+    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、記事候補まで作成します。通常は「保存後にOCR・記事化する」をONのまま使ってください。</p>
+    <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
+      <b>使い方</b><br />
+      1. 紙面の日付が分かる場合は「記事日付」に入力<br />
+      2. 画像をまとめて選択<br />
+      3. 「まとめてアップロードして記事化」を押す<br />
+      4. 完了後は「記事一覧」または「アップロード詳細」で確認
+    </div>
     <div className="mt-5 space-y-4">
-      <textarea className="input min-h-20" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="メモ" />
+      <textarea className="input min-h-20" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="メモ：例 2026年5月中旬 / 食品・AI関連多め" />
       <input className="input" value={date} onChange={(e) => setDate(e.target.value)} placeholder="記事日付：例 2026-05-13" />
       <label className="flex gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm"><input type="checkbox" checked={autoOcr} onChange={(e) => setAutoOcr(e.target.checked)} />保存後にOCR・記事化する</label>
       <input className="input" type="file" accept="image/*,.heic,.heif" multiple onChange={(e) => choose(Array.from(e.target.files || []))} disabled={busy} />

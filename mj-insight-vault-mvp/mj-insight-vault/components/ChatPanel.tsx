@@ -141,9 +141,18 @@ type QualityRubric = {
   reason?: string;
 };
 
+type KeyFinding = {
+  title?: string;
+  finding?: string;
+  why_it_matters?: string;
+};
+
 type ChatAnswer = {
   answer_text?: string;
   summary?: string;
+  executive_summary?: string[];
+  consumer_trend_narrative?: string;
+  key_findings?: KeyFinding[];
   table?: Record<string, unknown>[];
   cards?: ArticleCard[];
   evidence?: EvidenceMatrixRow[];
@@ -167,10 +176,104 @@ type ConversationTurn = {
   content: string;
 };
 
-function getAnswerText(answer: ChatAnswer): string {
-  if (typeof answer.answer_text === 'string') return answer.answer_text;
-  if (typeof answer.summary === 'string') return answer.summary;
+function str(value: unknown) {
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
+}
+
+function getField(row: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = str(row[key]);
+    if (value) return value;
+  }
   return '';
+}
+
+function splitIds(value: unknown) {
+  return str(value).split(/[、,\s]+/).map((id) => id.trim()).filter(Boolean);
+}
+
+function isUsefulCard(card: ArticleCard) {
+  return Boolean(str(card.headline) || str(card.article_id) || str(card.evidence_excerpt) || str(card.reason) || str(card.note));
+}
+
+function getWhyChain(h: ExplanatoryHypothesis): WhyChainItem[] {
+  if (Array.isArray(h.why_chain) && h.why_chain.some((w) => str(w.why) || str(w.explanation))) {
+    return h.why_chain.filter((w) => str(w.why) || str(w.explanation)).slice(0, 3);
+  }
+
+  return [h.why_1, h.why_2, h.why_3]
+    .map((why, index) => why ? { level: index + 1, why, explanation: why } : null)
+    .filter(Boolean) as WhyChainItem[];
+}
+
+function isUsefulHypothesis(h: ExplanatoryHypothesis) {
+  return Boolean(str(h.hypothesis) || str(h.underlying_motive) || str(h.mechanism) || str(h.alternative_read) || str(h.research_implication) || str(h.marketing_implication) || getWhyChain(h).length);
+}
+
+function isUsefulResearchNeed(need: ResearchNeed) {
+  return Boolean(str(need.theme) || str(need.why_research_needed) || str(need.hypothesis_to_test) || str(need.research_question) || (need.unknowns || []).some(str) || (need.signals_from_articles || []).some(str));
+}
+
+function isUsefulEvidence(row: EvidenceMatrixRow) {
+  return Boolean(str(row.claim) || str(row.insight) || str(row.article_id) || str(row.headline) || str(row.evidence_excerpt) || str(row.excerpt) || str(row.supports) || str(row.limitation) || str(row.research_need));
+}
+
+function evidenceFromTable(table?: Record<string, unknown>[]): EvidenceMatrixRow[] {
+  if (!Array.isArray(table)) return [];
+
+  return table.map((row) => ({
+    claim: getField(row, ['主張', '論点', 'インサイト', '仮説', 'テーマ']),
+    article_id: getField(row, ['根拠記事ID', '根拠記事', '関連記事ID', '記事ID']),
+    headline: getField(row, ['見出し', '記事', '根拠記事名']),
+    evidence_excerpt: getField(row, ['該当抜粋', '根拠抜粋', '記事からの兆し', '根拠']),
+    strength: getField(row, ['根拠強度', '強度', 'confidence', '確信度']),
+    limitation: getField(row, ['限界', '未解明な点', '留意点']),
+    research_need: getField(row, ['調査が必要な理由', '調査論点', 'リサーチ課題'])
+  })).filter(isUsefulEvidence);
+}
+
+function researchNeedsFromTable(table?: Record<string, unknown>[]): ResearchNeed[] {
+  if (!Array.isArray(table)) return [];
+
+  return table.map((row) => ({
+    theme: getField(row, ['調査論点', '主張', '論点', 'テーマ', 'インサイト']),
+    why_research_needed: getField(row, ['調査が必要な理由', 'リサーチ課題', '限界']),
+    hypothesis_to_test: getField(row, ['検証仮説', '仮説', '主張']),
+    signals_from_articles: [getField(row, ['該当抜粋', '根拠抜粋', '記事からの兆し', '根拠'])].filter(Boolean),
+    evidence_article_ids: splitIds(getField(row, ['根拠記事ID', '根拠記事', '関連記事ID', '記事ID'])),
+    priority: getField(row, ['優先度', 'priority']),
+    confidence: getField(row, ['確信度', 'confidence', '根拠強度'])
+  })).filter(isUsefulResearchNeed);
+}
+
+function getAnswerText(answer: ChatAnswer): string {
+  if (typeof answer.answer_text === 'string' && answer.answer_text.trim()) return answer.answer_text;
+  if (typeof answer.summary === 'string' && answer.summary.trim()) return answer.summary;
+
+  const lines: string[] = [];
+  const executive = Array.isArray(answer.executive_summary) ? answer.executive_summary.filter(Boolean) : [];
+  if (executive.length) {
+    lines.push('## 要旨', ...executive.map((x) => `- ${x}`), '');
+  }
+
+  if (typeof answer.consumer_trend_narrative === 'string' && answer.consumer_trend_narrative.trim()) {
+    lines.push('## 生活者動向のナラティブ', answer.consumer_trend_narrative.trim(), '');
+  }
+
+  if (Array.isArray(answer.key_findings) && answer.key_findings.length) {
+    const findings = answer.key_findings
+      .map((finding) => [finding.title, finding.finding, finding.why_it_matters].map(str).filter(Boolean).join('：'))
+      .filter(Boolean);
+    if (findings.length) lines.push('## 主要な読み', ...findings.map((x) => `- ${x}`), '');
+  }
+
+  const needs = Array.isArray(answer.research_needs) ? answer.research_needs.filter(isUsefulResearchNeed) : researchNeedsFromTable(answer.table);
+  if (needs.length) {
+    lines.push('## 調査が必要そうな論点', ...needs.slice(0, 5).map((need, index) => `- ${index + 1}. ${need.theme || need.research_question || need.hypothesis_to_test || '調査論点'}${need.why_research_needed ? `：${need.why_research_needed}` : ''}`));
+  }
+
+  return lines.join('\n').trim();
 }
 
 function evidenceExcerpt(text?: string | null) {
@@ -179,14 +282,7 @@ function evidenceExcerpt(text?: string | null) {
 }
 
 function buildReportQuery(userQuery: string) {
-  return `${userQuery}\n\n【レポート要件】\n目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n通常レポートでは、生活者動向、説明仮説、調査が必要そうな論点を主役にしてください。調査手法の適性評価は、ユーザーが明示した場合だけ扱ってください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`; 
-}
-
-function getWhyChain(h: ExplanatoryHypothesis): WhyChainItem[] {
-  if (Array.isArray(h.why_chain) && h.why_chain.length > 0) return h.why_chain.slice(0, 3);
-  return [h.why_1, h.why_2, h.why_3]
-    .map((why, index) => why ? { level: index + 1, why, explanation: why } : null)
-    .filter(Boolean) as WhyChainItem[];
+  return `${userQuery}\n\n【レポート要件】\n目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n\n最重要: answer_text は必須です。空欄にしないでください。answer_text には、少なくとも「結論」「生活者動向のナラティブ」「説明仮説（WHY3段階）」「調査が必要そうな論点」「根拠と限界」を本文として書いてください。\n空のオブジェクト、空の見出し、値が入っていない配列要素は禁止です。値を埋められない項目は出力しないでください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。theme, why_research_needed, hypothesis_to_test, evidence_article_ids は必ず埋める。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。claim, article_id, evidence_excerpt, strength, limitation, research_need は必ず埋める。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`; 
 }
 
 function scoreValue(value: unknown) {
@@ -262,8 +358,9 @@ export function ChatPanel() {
   }
 
   const relatedById = new Map(relatedArticles.map((article) => [article.id, article]));
-  const evidenceCards: ArticleCard[] = answer?.cards?.length
-    ? answer.cards
+  const answerCards = Array.isArray(answer?.cards) ? answer.cards.filter(isUsefulCard) : [];
+  const evidenceCards: ArticleCard[] = answerCards.length
+    ? answerCards
     : relatedArticles.slice(0, 12).map((article) => ({
         article_id: article.id,
         headline: article.headline || '記事',
@@ -273,16 +370,20 @@ export function ChatPanel() {
         reason: '検索で取得した根拠候補'
       }));
 
-  const hypotheses = Array.isArray(answer?.explanatory_hypotheses) ? answer.explanatory_hypotheses : [];
-  const researchNeeds = Array.isArray(answer?.research_needs) ? answer.research_needs : [];
-  const evidenceMatrix = Array.isArray(answer?.evidence_matrix)
+  const hypotheses = Array.isArray(answer?.explanatory_hypotheses) ? answer.explanatory_hypotheses.filter(isUsefulHypothesis) : [];
+  const researchNeeds = Array.isArray(answer?.research_needs) && answer.research_needs.some(isUsefulResearchNeed)
+    ? answer.research_needs.filter(isUsefulResearchNeed)
+    : researchNeedsFromTable(answer?.table);
+  const evidenceMatrixRaw = Array.isArray(answer?.evidence_matrix) && answer.evidence_matrix.some(isUsefulEvidence)
     ? answer.evidence_matrix
-    : Array.isArray(answer?.evidence)
+    : Array.isArray(answer?.evidence) && answer.evidence.some(isUsefulEvidence)
       ? answer.evidence
-      : [];
+      : evidenceFromTable(answer?.table);
+  const evidenceMatrix = evidenceMatrixRaw.filter(isUsefulEvidence);
   const comparisons = Array.isArray(answer?.hypothesis_comparison) ? answer.hypothesis_comparison : [];
   const coverage = answer?.coverage_diagnosis || answer?.source_coverage;
   const quality = answer?.quality_rubric || answer?.quality_score;
+  const answerText = answer ? getAnswerText(answer) : '';
 
   return (
     <div className="space-y-5">
@@ -351,7 +452,7 @@ export function ChatPanel() {
               {answer.model_used && <span className="badge">model: {answer.model_used}</span>}
               {typeof answer.related_article_count === 'number' && <span className="badge">記事 {answer.related_article_count}</span>}
             </div>
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{getAnswerText(answer)}</p>
+            {answerText ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{answerText}</p> : <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800">本文が空で返っています。下の構造化セクションを表示しています。再実行すると本文も生成されます。</p>}
           </section>
 
           {coverage && (
@@ -376,7 +477,7 @@ export function ChatPanel() {
                   <div key={index} className="rounded-xl border border-zinc-200 p-3 text-sm leading-6">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="rounded-full bg-zinc-900 px-2 py-1 text-xs font-bold text-white">#{index + 1}</span>
-                      <p className="font-semibold">{need.theme || `調査論点 ${index + 1}`}</p>
+                      <p className="font-semibold">{need.theme || need.research_question || need.hypothesis_to_test || `調査論点 ${index + 1}`}</p>
                       {need.priority && <span className="badge">priority: {need.priority}</span>}
                       {need.score !== undefined && <span className="badge">score: {need.score}</span>}
                       {need.confidence && <span className="badge">confidence: {need.confidence}</span>}

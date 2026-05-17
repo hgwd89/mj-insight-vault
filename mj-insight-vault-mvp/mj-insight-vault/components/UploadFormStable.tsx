@@ -156,7 +156,7 @@ export function UploadFormStable() {
 
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
-    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、記事候補まで作成します。通常は「保存後にOCR・記事化する」をONのまま使ってください。</p>
+    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、OCRと記事候補化まで実行します。</p>
     <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
       <b>使い方</b><br />
       1. 紙面の日付が分かる場合は「記事日付」に入力<br />

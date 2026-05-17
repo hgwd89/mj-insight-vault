@@ -166,7 +166,8 @@ export default function ReportDetailPage() {
     setBusy(true);
     setRaw('');
 
-    const nextConversation: ConversationTurn[] = [...conversation, { role: 'user', content: trimmed }];
+    const userTurn: ConversationTurn = { role: 'user', content: trimmed };
+    const nextConversation: ConversationTurn[] = [...conversation, userTurn];
 
     try {
       const res = await fetch(`/api/reports/${params.id}/chat`, {
@@ -187,10 +188,11 @@ export default function ReportDetailPage() {
 
       const answer = json.answer as ReportChatAnswer;
       const answerText = getAnswerText(answer);
+      const assistantTurn: ConversationTurn = { role: 'assistant', content: answerText };
 
       setLatestAnswer(answer);
       setRaw(JSON.stringify(json, null, 2));
-      setConversation([...nextConversation, { role: 'assistant', content: answerText }].slice(-12));
+      setConversation([...nextConversation, assistantTurn].slice(-12));
       setQuery('');
     } catch (error) {
       setRaw(error instanceof Error ? error.message : 'エラーが発生しました');

@@ -73,6 +73,7 @@ type ExplanatoryHypothesis = {
   mechanism?: string;
   alternative_read?: string;
   marketing_implication?: string;
+  research_implication?: string;
   evidence_article_ids?: string[];
   confidence?: string;
   why_chain?: WhyChainItem[];
@@ -81,12 +82,24 @@ type ExplanatoryHypothesis = {
   why_3?: string;
 };
 
+type ResearchNeed = {
+  theme?: string;
+  why_research_needed?: string;
+  unknowns?: string[];
+  hypothesis_to_test?: string;
+  signals_from_articles?: string[];
+  evidence_article_ids?: string[];
+  priority?: string;
+  confidence?: string;
+};
+
 type ChatAnswer = {
   answer_text?: string;
   summary?: string;
   table?: Record<string, unknown>[];
   cards?: ArticleCard[];
   explanatory_hypotheses?: ExplanatoryHypothesis[];
+  research_needs?: ResearchNeed[];
   target_scope?: string;
   output_template?: string;
   model_used?: string;
@@ -111,7 +124,7 @@ function evidenceExcerpt(text?: string | null) {
 }
 
 function buildReportQuery(userQuery: string) {
-  return `${userQuery}\n\n【レポート要件】\n通常レポートでは、MJ記事から見える生活者動向を主役にしてください。調査手法の適性評価は、ユーザーが明示した場合だけ扱ってください。\n必ず「説明仮説（インサイト）」を入れてください。説明仮説は、単なる発見ではなく「なぜその生活者行動が起きているのか」を説明する仮説です。\n説明仮説の掘り下げは、WHYを必ず3回重ねてください。WHY1は表層行動の理由、WHY2は背後心理・制約、WHY3はより深い価値観・社会背景まで掘ってください。\n説明仮説は、観察事実、WHY1、WHY2、WHY3、発生メカニズム、別解釈、マーケティング上の意味、根拠記事ID、確信度を分けてください。\n可能ならJSONにも explanatory_hypotheses を含め、各仮説に why_chain を3要素で入れてください。`; 
+  return `${userQuery}\n\n【レポート要件】\n通常レポートでは、MJ記事から見える生活者動向を主役にしてください。調査手法の適性評価は、ユーザーが明示した場合だけ扱ってください。\nこのレポートの目的は、商品・販促アクションを出すことではなく、リサーチのネタを見つけることです。\n必ず「説明仮説（インサイト）」を入れてください。説明仮説は、単なる発見ではなく「なぜその生活者行動が起きているのか」を説明する仮説です。\n説明仮説の掘り下げは、WHYを必ず3回重ねてください。WHY1は表層行動の理由、WHY2は背後心理・制約、WHY3はより深い価値観・社会背景まで掘ってください。\n説明仮説は、観察事実、WHY1、WHY2、WHY3、発生メカニズム、別解釈、リサーチ上の意味、根拠記事ID、確信度を分けてください。\n必ず「調査が必要そうな論点」を出してください。これは、記事だけでは断定できないが、生活者理解として検証する価値がある問いです。\n調査が必要そうな論点は、なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度を分けてください。\n商品開発・販促・チャネルなどの実行アクション提案は不要です。示唆はリサーチ課題・検証問いに寄せてください。\n可能ならJSONにも explanatory_hypotheses と research_needs を含め、各仮説に why_chain を3要素で入れてください。`; 
 }
 
 function getWhyChain(h: ExplanatoryHypothesis): WhyChainItem[] {
@@ -201,6 +214,7 @@ export function ChatPanel() {
       }));
 
   const hypotheses = Array.isArray(answer?.explanatory_hypotheses) ? answer.explanatory_hypotheses : [];
+  const researchNeeds = Array.isArray(answer?.research_needs) ? answer.research_needs : [];
 
   return (
     <div className="space-y-5">
@@ -209,7 +223,7 @@ export function ChatPanel() {
           <div>
             <h1 className="text-xl font-black">チャット分析</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              自然言語で分析指示を入力します。レポートには生活者行動を説明する仮説とWHY3段階の掘り下げも含めます。
+              自然言語で分析指示を入力します。レポートには生活者行動を説明する仮説、WHY3段階、調査が必要そうな論点も含めます。
             </p>
           </div>
           <div className="flex gap-2">
@@ -298,7 +312,7 @@ export function ChatPanel() {
                       {h.underlying_motive && <p className="mt-2 text-zinc-700"><b>背後心理：</b>{h.underlying_motive}</p>}
                       {h.mechanism && <p className="mt-1 text-zinc-700"><b>発生メカニズム：</b>{h.mechanism}</p>}
                       {h.alternative_read && <p className="mt-1 text-zinc-700"><b>別解釈：</b>{h.alternative_read}</p>}
-                      {h.marketing_implication && <p className="mt-1 text-zinc-700"><b>示唆：</b>{h.marketing_implication}</p>}
+                      {(h.research_implication || h.marketing_implication) && <p className="mt-1 text-zinc-700"><b>リサーチ上の意味：</b>{h.research_implication || h.marketing_implication}</p>}
                       <div className="mt-2 flex flex-wrap gap-2 text-xs">
                         {h.confidence && <span className="badge">confidence: {h.confidence}</span>}
                         {(h.evidence_article_ids || []).map((id) => <span key={id} className="badge">記事 {id}</span>)}
@@ -306,6 +320,30 @@ export function ChatPanel() {
                     </div>
                   );
                 })}
+              </div>
+            </section>
+          )}
+
+          {researchNeeds.length > 0 && (
+            <section>
+              <h2 className="mb-2 font-bold">調査が必要そうな論点</h2>
+              <div className="grid gap-3">
+                {researchNeeds.map((need, index) => (
+                  <div key={index} className="rounded-xl border border-zinc-200 p-3 text-sm leading-6">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold">{need.theme || `調査論点 ${index + 1}`}</p>
+                      {need.priority && <span className="badge">priority: {need.priority}</span>}
+                      {need.confidence && <span className="badge">confidence: {need.confidence}</span>}
+                    </div>
+                    {need.why_research_needed && <p className="mt-2 text-zinc-700"><b>調査が必要な理由：</b>{need.why_research_needed}</p>}
+                    {need.hypothesis_to_test && <p className="mt-1 text-zinc-700"><b>検証仮説：</b>{need.hypothesis_to_test}</p>}
+                    {Array.isArray(need.unknowns) && need.unknowns.length > 0 && <p className="mt-1 text-zinc-700"><b>未解明な点：</b>{need.unknowns.join(' / ')}</p>}
+                    {Array.isArray(need.signals_from_articles) && need.signals_from_articles.length > 0 && <p className="mt-1 text-zinc-700"><b>記事からの兆し：</b>{need.signals_from_articles.join(' / ')}</p>}
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                      {(need.evidence_article_ids || []).map((id) => <span key={id} className="badge">記事 {id}</span>)}
+                    </div>
+                  </div>
+                ))}
               </div>
             </section>
           )}

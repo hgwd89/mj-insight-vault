@@ -1,15 +1,20 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const MAX_FILES = 20;
 const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
+const DRAFT_DB = 'mj-upload-draft-v1';
+const DRAFT_STORE = 'draft';
+const DRAFT_KEY = 'current';
 
 type Row = { name: string; status: string; note?: string };
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
+type StoredDraftFile = { name: string; type: string; lastModified: number; blob: Blob };
+type UploadDraft = { memo: string; date: string; autoOcr: boolean; files: StoredDraftFile[]; savedAt: number };
 
 function isBadFormat(file: File) {
   return /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
@@ -19,6 +24,61 @@ function sameNameIndexes(list: File[]) {
   const counts = new Map<string, number[]>();
   list.forEach((file, index) => counts.set(file.name, [...(counts.get(file.name) || []), index]));
   return Array.from(counts.entries()).filter(([, indexes]) => indexes.length > 1);
+}
+
+function openDraftDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is unavailable'));
+      return;
+    }
+    const request = indexedDB.open(DRAFT_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DRAFT_STORE)) request.result.createObjectStore(DRAFT_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('draft db error'));
+  });
+}
+
+async function readDraft(): Promise<UploadDraft | null> {
+  const db = await openDraftDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DRAFT_STORE, 'readonly');
+    const request = tx.objectStore(DRAFT_STORE).get(DRAFT_KEY);
+    request.onsuccess = () => resolve((request.result as UploadDraft | undefined) || null);
+    request.onerror = () => reject(request.error || new Error('draft read error'));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function writeDraft(draft: UploadDraft) {
+  const db = await openDraftDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_STORE, 'readwrite');
+    tx.objectStore(DRAFT_STORE).put(draft, DRAFT_KEY);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error || new Error('draft write error')); };
+  });
+}
+
+async function clearDraft() {
+  const db = await openDraftDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_STORE, 'readwrite');
+    tx.objectStore(DRAFT_STORE).delete(DRAFT_KEY);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error || new Error('draft clear error')); };
+  });
+}
+
+function toStoredFile(file: File): StoredDraftFile {
+  return { name: file.name, type: file.type, lastModified: file.lastModified, blob: file };
+}
+
+function fromStoredFile(file: StoredDraftFile) {
+  return new File([file.blob], file.name, { type: file.type, lastModified: file.lastModified });
 }
 
 async function shrink(file: File): Promise<File> {
@@ -50,9 +110,52 @@ export function UploadFormStable() {
   const [rows, setRows] = useState<Row[]>([]);
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
 
   const sameNames = useMemo(() => sameNameIndexes(files), [files]);
   const sameNameSet = useMemo(() => new Set(sameNames.flatMap(([, indexes]) => indexes)), [sameNames]);
+
+  useEffect(() => {
+    let cancelled = false;
+    readDraft()
+      .then((draft) => {
+        if (cancelled || !draft) return;
+        setMemo(draft.memo || '');
+        setDate(draft.date || '');
+        setAutoOcr(draft.autoOcr !== false);
+        const restoredFiles = (draft.files || []).map(fromStoredFile).slice(0, MAX_FILES);
+        if (restoredFiles.length) {
+          setFiles(restoredFiles);
+          setMessage(`前回選択した画像 ${restoredFiles.length}枚を復元しました`);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => { if (!cancelled) setDraftReady(true); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!draftReady) return;
+    const timer = window.setTimeout(() => {
+      const hasDraft = files.length > 0 || memo.trim() || date.trim() || autoOcr !== true;
+      if (!hasDraft) {
+        clearDraft().catch(() => undefined);
+        return;
+      }
+      writeDraft({ memo, date, autoOcr, files: files.map(toStoredFile), savedAt: Date.now() }).catch(() => undefined);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [files, memo, date, autoOcr, draftReady]);
+
+  useEffect(() => {
+    const handler = (event: BeforeUnloadEvent) => {
+      if (!busy) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [busy]);
 
   function choose(list: File[]) {
     const next = list.slice(0, MAX_FILES);
@@ -61,7 +164,7 @@ export function UploadFormStable() {
     setResult(null);
     const found = sameNameIndexes(next);
     if (found.length) setMessage('同じファイル名があります。不要な方を外してからアップロードしてください。');
-    else setMessage(list.length > MAX_FILES ? `最大${MAX_FILES}枚に絞りました` : '');
+    else setMessage(list.length > MAX_FILES ? `最大${MAX_FILES}枚に絞りました` : '選択内容を一時保存しました');
   }
 
   function removeFile(index: number) {
@@ -69,7 +172,14 @@ export function UploadFormStable() {
     setFiles(next);
     setRows([]);
     setResult(null);
-    setMessage(sameNameIndexes(next).length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '');
+    setMessage(sameNameIndexes(next).length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '選択内容を更新しました');
+  }
+
+  function clearSelection() {
+    setFiles([]);
+    setRows([]);
+    setResult(null);
+    setMessage('選択中の画像をクリアしました');
   }
 
   function keepFirstSameNames() {
@@ -168,7 +278,10 @@ export function UploadFormStable() {
       }
       setResult({ batchId, selected: files.length, saved, ocr, failed, articles });
       setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
-      if (saved > 0) setFiles([]);
+      if (saved > 0) {
+        setFiles([]);
+        clearDraft().catch(() => undefined);
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '失敗しました');
     } finally {
@@ -192,7 +305,7 @@ export function UploadFormStable() {
 
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
-    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、OCRと記事候補化まで実行します。</p>
+    <p className="mt-2 text-sm leading-6 text-zinc-600">選択中の画像はブラウザ内に一時保存されます。ページを閉じても、次回この画面を開くと復元します。</p>
     <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
       <b>使い方</b><br />
       1. 紙面の日付が分かる場合は「記事日付」に入力<br />
@@ -206,7 +319,7 @@ export function UploadFormStable() {
       <input className="input" value={date} onChange={(e) => setDate(e.target.value)} placeholder="記事日付：例 2026-05-13" />
       <label className="flex gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm"><input type="checkbox" checked={autoOcr} onChange={(e) => setAutoOcr(e.target.checked)} />保存後にOCR・記事化する</label>
       <input className="input" type="file" accept="image/*,.heic,.heif" multiple onChange={(e) => choose(Array.from(e.target.files || []))} disabled={busy} />
-      <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}/{MAX_FILES}枚</span>{files.length > 0 && <button className="btn" onClick={() => { setFiles([]); setRows([]); setResult(null); }} disabled={busy}>全てクリア</button>}</div>
+      <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}/{MAX_FILES}枚</span>{files.length > 0 && <button className="btn" onClick={clearSelection} disabled={busy}>選択をクリア</button>}</div>
 
       {sameNames.length > 0 && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">

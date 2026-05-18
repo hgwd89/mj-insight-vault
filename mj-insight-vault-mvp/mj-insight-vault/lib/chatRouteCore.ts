@@ -12,11 +12,13 @@ type Scope = 'all' | 'recent_30d' | 'latest_batch';
 type Template = 'auto' | 'trend' | 'why' | 'research' | 'proposal' | 'method' | 'news_list';
 type Turn = { role: 'user' | 'assistant'; content: string };
 type AnalysisMode = 'serious_report' | 'quick_scan';
+type RetrievalMode = 'focused_retrieval' | 'wide_all_data_scan';
 
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, batch_id, headline, article_date, ocr_text, status, created_at';
 const LIGHT_WORDS = /軽く|ざっくり|簡単|概要|一覧|傾向だけ|軽量|速報|まずは|ラフ/i;
+const ALL_DATA_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 
 function selectableModels() {
   return Array.from(new Set([TEXT_MODEL, ...(process.env.OPENAI_CHAT_MODELS || '').split(',').map((v) => v.trim()).filter(Boolean), ...MODELS].filter(Boolean)));
@@ -26,9 +28,10 @@ function normScope(v: unknown): Scope { return v === 'recent_30d' || v === 'late
 function normTemplate(v: unknown): Template { return v === 'trend' || v === 'why' || v === 'research' || v === 'proposal' || v === 'method' || v === 'news_list' ? v : 'auto'; }
 function active(a: Article) { return !a.status || !HIDDEN.has(a.status); }
 function excerpt(a: Article) { return (a.ocr_text || '').replace(/\s+/g, ' ').slice(0, 260); }
+function allDataQuery(q: string, scope: Scope) { return scope === 'all' && ALL_DATA_WORDS.test(q); }
 function words(q: string) {
   return q.replace(/[、。・「」『』（）()]/g, ' ').split(/\s+/)
-    .map((w) => w.replace(/(記事|分析|整理|して|出して|今月|関連|だけ|業界|トレンド|市場|リサーチ|課題)/g, ''))
+    .map((w) => w.replace(/(記事|分析|整理|して|出して|今月|関連|だけ|業界|トレンド|市場|リサーチ|課題|全データ|全記事|全部|全体|全件|すべて|全て)/g, ''))
     .filter((w) => w.length >= 2).slice(0, 10);
 }
 function turns(v: unknown): Turn[] {
@@ -41,10 +44,18 @@ function turns(v: unknown): Turn[] {
   }).filter(Boolean).slice(-8) as Turn[];
 }
 function cards(items: Article[]) {
-  return items.slice(0, 12).map((a) => ({ article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', reason: '根拠候補', confidence: a.article_date ? 'medium' : 'low' }));
+  return items.slice(0, 18).map((a) => ({ article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', reason: '根拠候補', confidence: a.article_date ? 'medium' : 'low' }));
 }
 function evidence(items: Article[]) {
-  return items.slice(0, 10).map((a) => ({ claim: '根拠として参照', article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', excerpt: excerpt(a), confidence: 'medium' }));
+  return items.slice(0, 14).map((a) => ({ claim: '根拠として参照', article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', excerpt: excerpt(a), confidence: 'medium' }));
+}
+function uniq(rows: Article[]) {
+  const seen = new Set<string>();
+  return rows.filter(active).filter((a) => {
+    if (seen.has(a.id)) return false;
+    seen.add(a.id);
+    return true;
+  });
 }
 function resolveModel(requested: string, q: string, template: Template) {
   const analysis_mode: AnalysisMode = requested === 'gpt-5' && !LIGHT_WORDS.test(q) && template !== 'news_list' ? 'serious_report' : 'quick_scan';
@@ -61,14 +72,31 @@ function qualityGuard(mode: AnalysisMode) {
   if (mode === 'quick_scan') return 'For quick scan, be concise but still separate facts from hypotheses and include article IDs. Do not pretend to be final high-quality analysis.';
   return 'For serious report, do not stop at fact organization. Select useful lenses, explain why those lenses fit, build cross-article clusters, produce narrative, 3-level WHY chains, research questions, evidence strength, limits, and shallow-read warnings.';
 }
+function textLimit(count: number, retrievalMode: RetrievalMode) {
+  if (retrievalMode === 'wide_all_data_scan') {
+    if (count > 120) return 800;
+    if (count > 80) return 1000;
+    if (count > 50) return 1400;
+    return 2200;
+  }
+  return 4200;
+}
 async function latestBatchId() {
   const { data } = await supabaseAdmin.from('upload_batches').select('id, status, created_at').order('created_at', { ascending: false }).limit(20);
   return (data || []).find((b) => !HIDDEN.has(b.status))?.id || null;
 }
 async function retrieve(q: string, scope: Scope) {
-  const kw = words(q);
   const latest = scope === 'latest_batch' ? await latestBatchId() : null;
+  const wide = allDataQuery(q, scope);
   let rows: Article[] = [];
+
+  if (wide) {
+    const { data, error } = await supabaseAdmin.from('articles').select(SELECT).order('created_at', { ascending: false }).limit(160);
+    if (error) throw error;
+    return { articles: uniq((data || []) as Article[]).slice(0, 160), retrieval_mode: 'wide_all_data_scan' as RetrievalMode };
+  }
+
+  const kw = words(q);
   if (kw.length) {
     const clauses = kw.flatMap((k) => [`headline.ilike.%${k}%`, `ocr_text.ilike.%${k}%`]);
     const { data } = await supabaseAdmin.from('articles').select(SELECT).or(clauses.join(',')).order('created_at', { ascending: false }).limit(120);
@@ -78,27 +106,38 @@ async function retrieve(q: string, scope: Scope) {
     const { data } = await supabaseAdmin.from('articles').select(SELECT).order('created_at', { ascending: false }).limit(80);
     rows = [...rows, ...((data || []) as Article[])];
   }
-  const seen = new Set<string>();
-  return rows.filter(active).filter((a) => {
+  const filtered = uniq(rows).filter((a) => {
     if (scope === 'latest_batch' && latest && a.batch_id !== latest) return false;
     if (scope === 'recent_30d' && a.created_at && Date.now() - new Date(a.created_at).getTime() > 30 * 24 * 60 * 60 * 1000) return false;
-    if (seen.has(a.id)) return false;
-    seen.add(a.id);
     return true;
-  }).slice(0, 40);
+  });
+  return { articles: filtered.slice(0, 40), retrieval_mode: 'focused_retrieval' as RetrievalMode };
 }
-function basePayload(modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, items: Article[]) {
-  return { target_scope: scope, output_template: template, model_used: modelInfo.model, requested_model: modelInfo.requested_model, analysis_mode: modelInfo.analysis_mode, model_policy: modelInfo.model_policy, related_article_count: items.length, source_coverage: { article_count: items.length, coverage_note: items.length ? '対象記事から分析' : '分析対象の記事が不足しています。' }, cards: cards(items), evidence: evidence(items) };
+function basePayload(modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, items: Article[], retrievalMode: RetrievalMode) {
+  return {
+    target_scope: scope,
+    output_template: template,
+    model_used: modelInfo.model,
+    requested_model: modelInfo.requested_model,
+    analysis_mode: modelInfo.analysis_mode,
+    model_policy: modelInfo.model_policy,
+    retrieval_mode: retrievalMode,
+    related_article_count: items.length,
+    source_coverage: { article_count: items.length, coverage_note: retrievalMode === 'wide_all_data_scan' ? '全データ指示のため、キーワード検索ではなく広域スキャンで取得した記事群から分析' : items.length ? '対象記事から分析' : '分析対象の記事が不足しています。' },
+    cards: cards(items),
+    evidence: evidence(items)
+  };
 }
-async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, conversation: Turn[]) {
-  const base = basePayload(modelInfo, scope, template, items);
+async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, conversation: Turn[], retrievalMode: RetrievalMode) {
+  const base = basePayload(modelInfo, scope, template, items, retrievalMode);
   if (!items.length) return { report_title: '該当記事なし', answer_text: '指定範囲に分析対象の記事がありません。', table: [], ...base };
   const openai = getOpenAI();
   if (!openai) return { report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、該当記事${items.length}件のみ返します。`, table: [], ...base };
-  const articles = items.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', text: (a.ocr_text || '').slice(0, 4200) }));
-  const system = `${MJ_REPORT_SYSTEM_PROMPT}\n\n${qualityGuard(modelInfo.analysis_mode)}\nReturn selected_lenses, analysis_process, quality_score, and shallow_summary_check in JSON.`;
+  const limit = textLimit(items.length, retrievalMode);
+  const articles = items.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', created_at: a.created_at || null, text: (a.ocr_text || '').slice(0, limit) }));
+  const system = `${MJ_REPORT_SYSTEM_PROMPT}\n\n${qualityGuard(modelInfo.analysis_mode)}\nIf retrieval_mode is wide_all_data_scan, first map article diversity and avoid overfitting to a small subset. Return selected_lenses, analysis_process, quality_score, and shallow_summary_check in JSON.`;
   try {
-    const completion = await openai.chat.completions.create({ model: modelInfo.model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, analysis_mode: modelInfo.analysis_mode, requested_model: modelInfo.requested_model, model_used: modelInfo.model, articles }, null, 2) }] });
+    const completion = await openai.chat.completions.create({ model: modelInfo.model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, analysis_mode: modelInfo.analysis_mode, requested_model: modelInfo.requested_model, model_used: modelInfo.model, retrieval_mode: retrievalMode, article_count_sent: articles.length, article_text_limit: limit, articles }, null, 2) }] });
     const raw = completion.choices[0]?.message.content || '{}';
     const parsed = JSON.parse(raw);
     return { ...base, ...parsed, answer_text: typeof parsed.answer_text === 'string' ? parsed.answer_text : raw, evidence: Array.isArray(parsed.evidence_matrix) && parsed.evidence_matrix.length ? parsed.evidence_matrix : base.evidence, cards: Array.isArray(parsed.cards) && parsed.cards.length ? parsed.cards : base.cards };
@@ -118,18 +157,18 @@ export async function POST(req: NextRequest) {
     const targetScope = normScope(body.target_scope);
     const outputTemplate = normTemplate(body.output_template);
     const modelInfo = resolveModel(requested, q, outputTemplate);
-    const related = await retrieve(q, targetScope);
-    const answer = await analyze(q, related, modelInfo, targetScope, outputTemplate, turns(body.conversation));
+    const retrieval = await retrieve(q, targetScope);
+    const answer = await analyze(q, retrieval.articles, modelInfo, targetScope, outputTemplate, turns(body.conversation), retrieval.retrieval_mode);
     let report = null;
     let report_error = '';
     try {
-      const { data, error } = await supabaseAdmin.from('chat_reports').insert({ user_query: q, answer_text: answer.answer_text, answer_json: answer, related_article_ids: related.map((a) => a.id) }).select('*').single();
+      const { data, error } = await supabaseAdmin.from('chat_reports').insert({ user_query: q, answer_text: answer.answer_text, answer_json: answer, related_article_ids: retrieval.articles.map((a) => a.id) }).select('*').single();
       if (error) throw error;
       report = data;
     } catch (error) {
       report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
     }
-    return Response.json({ report, report_error, related_articles: related, selectable_models: selectableModels(), answer });
+    return Response.json({ report, report_error, related_articles: retrieval.articles, selectable_models: selectableModels(), answer });
   } catch (error) {
     return jsonError(error);
   }

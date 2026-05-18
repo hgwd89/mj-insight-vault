@@ -22,8 +22,7 @@ function normModel(v: unknown) { return typeof v === 'string' && selectableModel
 function normScope(v: unknown): Scope { return v === 'recent_30d' || v === 'latest_batch' ? v : 'all'; }
 function normTemplate(v: unknown): Template { return v === 'trend' || v === 'why' || v === 'research' || v === 'proposal' || v === 'method' || v === 'news_list' ? v : 'auto'; }
 function active(a: Article) { return !a.status || !HIDDEN.has(a.status); }
-function clean(s: string) { return s.replace(/[、。・「」『』（）()]/g, ' ').trim(); }
-function words(q: string) { return clean(q).split(/\s+/).map((w) => w.replace(/(記事|分析|整理|して|出して|今月|関連|だけ|業界|トレンド|市場|リサーチ|課題)/g, '')).filter((w) => w.length >= 2).slice(0, 10); }
+function words(q: string) { return q.replace(/[、。・「」『』（）()]/g, ' ').split(/\s+/).map((w) => w.replace(/(記事|分析|整理|して|出して|今月|関連|だけ|業界|トレンド|市場|リサーチ|課題)/g, '')).filter((w) => w.length >= 2).slice(0, 10); }
 function turns(v: unknown): Turn[] {
   if (!Array.isArray(v)) return [];
   return v.map((x) => {
@@ -72,9 +71,9 @@ async function analyze(q: string, items: Article[], model: string, scope: Scope,
   const openai = getOpenAI();
   if (!openai) return { report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、該当記事${items.length}件のみ返します。`, table: [], ...base };
   const articles = items.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', text: (a.ocr_text || '').slice(0, 4200) }));
-  const system = 'あなたは生活者理解に熟達したプロのマーケターです。MJ記事群を根拠に、生活者動向レポートをJSONで返してください。必須キー: report_title, answer_text, executive_summary, consumer_trend_narrative, key_findings, evidence, table, cards, limitations, next_questions, quality_score。重要主張は記事IDに接続し、記事にないことは断定しない。';
+  const system = 'Return JSON only. Analyze the supplied MJ article texts as consumer trend evidence. Required keys: report_title, answer_text, executive_summary, consumer_trend_narrative, key_findings, evidence, table, cards, limitations, next_questions, quality_score. Connect important claims to article IDs and do not assert unsupported claims.';
   try {
-    const completion = await openai.chat.completions.create({ model, temperature: 0.15, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, articles }, null, 2) }] });
+    const completion = await openai.chat.completions.create({ model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, articles }, null, 2) }] });
     const raw = completion.choices[0]?.message.content || '{}';
     const parsed = JSON.parse(raw);
     return { ...base, ...parsed, answer_text: typeof parsed.answer_text === 'string' ? parsed.answer_text : raw, evidence: Array.isArray(parsed.evidence) && parsed.evidence.length ? parsed.evidence : base.evidence, cards: Array.isArray(parsed.cards) && parsed.cards.length ? parsed.cards : base.cards };

@@ -16,7 +16,6 @@ type AnalysisMode = 'serious_report' | 'quick_scan';
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, batch_id, headline, article_date, ocr_text, status, created_at';
-const SERIOUS_WORDS = /本気|しっかり|詳細|深掘|深堀|高品質|レポート|インサイト|ナラティブ|構造|横断|説明仮説|仮説|調査|リサーチ|論点|WHY|why/i;
 const LIGHT_WORDS = /軽く|ざっくり|簡単|概要|一覧|傾向だけ|軽量|速報|まずは|ラフ/i;
 
 function selectableModels() {
@@ -25,7 +24,6 @@ function selectableModels() {
 function normModel(v: unknown) { return typeof v === 'string' && selectableModels().includes(v) ? v : TEXT_MODEL; }
 function normScope(v: unknown): Scope { return v === 'recent_30d' || v === 'latest_batch' ? v : 'all'; }
 function normTemplate(v: unknown): Template { return v === 'trend' || v === 'why' || v === 'research' || v === 'proposal' || v === 'method' || v === 'news_list' ? v : 'auto'; }
-function seriousTemplate(t: Template) { return t === 'trend' || t === 'why' || t === 'research' || t === 'proposal' || t === 'method'; }
 function active(a: Article) { return !a.status || !HIDDEN.has(a.status); }
 function excerpt(a: Article) { return (a.ocr_text || '').replace(/\s+/g, ' ').slice(0, 260); }
 function words(q: string) {
@@ -49,13 +47,18 @@ function evidence(items: Article[]) {
   return items.slice(0, 10).map((a) => ({ claim: '根拠として参照', article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', excerpt: excerpt(a), confidence: 'medium' }));
 }
 function resolveModel(requested: string, q: string, template: Template) {
-  const light = LIGHT_WORDS.test(q) || template === 'news_list';
-  const serious = !light && (requested === 'gpt-5' || seriousTemplate(template) || SERIOUS_WORDS.test(q));
-  if (serious) return { model: 'gpt-5', analysis_mode: 'serious_report' as AnalysisMode, requested_model: requested, model_policy: requested === 'gpt-5' ? '本気レポートとしてGPT-5を使用' : `本気レポート判定のため ${requested} から gpt-5 に自動昇格` };
-  return { model: requested, analysis_mode: 'quick_scan' as AnalysisMode, requested_model: requested, model_policy: '軽い傾向確認として選択モデルを使用' };
+  const analysis_mode: AnalysisMode = requested === 'gpt-5' && !LIGHT_WORDS.test(q) && template !== 'news_list' ? 'serious_report' : 'quick_scan';
+  return {
+    model: requested,
+    analysis_mode,
+    requested_model: requested,
+    model_policy: requested === 'gpt-5'
+      ? '選択されたGPT-5で本気レポートを実行'
+      : 'コスト抑制のため選択モデルをそのまま使用。自動でGPT-5には昇格しません'
+  };
 }
 function qualityGuard(mode: AnalysisMode) {
-  if (mode === 'quick_scan') return 'For quick scan, be concise but still separate facts from hypotheses and include article IDs.';
+  if (mode === 'quick_scan') return 'For quick scan, be concise but still separate facts from hypotheses and include article IDs. Do not pretend to be final high-quality analysis.';
   return 'For serious report, do not stop at fact organization. Select useful lenses, explain why those lenses fit, build cross-article clusters, produce narrative, 3-level WHY chains, research questions, evidence strength, limits, and shallow-read warnings.';
 }
 async function latestBatchId() {

@@ -17,7 +17,7 @@ const presets = [
   'この記事に似た記事を探して'
 ];
 
-const modelOptions = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] as const;
+const modelOptions = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] as const;
 
 const targetScopes = [
   { value: 'all', label: '全記事', description: '不要記事を除く全記事から検索。' },
@@ -167,6 +167,9 @@ type ChatAnswer = {
   target_scope?: string;
   output_template?: string;
   model_used?: string;
+  requested_model?: string;
+  analysis_mode?: string;
+  model_policy?: string;
   related_article_count?: number;
   [key: string]: unknown;
 };
@@ -179,6 +182,19 @@ type ConversationTurn = {
 function str(value: unknown) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+function modelLabel(model: ModelName) {
+  const labels: Record<ModelName, string> = {
+    'gpt-5': 'gpt-5｜本気レポート・高品質分析',
+    'gpt-5-mini': 'gpt-5-mini｜通常分析・軽めの傾向確認',
+    'gpt-5-nano': 'gpt-5-nano｜速報・粗い傾向確認',
+    'gpt-4.1': 'gpt-4.1｜旧標準',
+    'gpt-4.1-mini': 'gpt-4.1-mini｜旧軽量',
+    'gpt-4o': 'gpt-4o｜旧高品質',
+    'gpt-4o-mini': 'gpt-4o-mini｜旧軽量'
+  };
+  return labels[model];
 }
 
 function getField(row: Record<string, unknown>, keys: string[]) {
@@ -282,7 +298,7 @@ function evidenceExcerpt(text?: string | null) {
 }
 
 function buildReportQuery(userQuery: string) {
-  return `${userQuery}\n\n【レポート要件】\n目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n\n最重要: answer_text は必須です。空欄にしないでください。answer_text には、少なくとも「結論」「生活者動向のナラティブ」「説明仮説（WHY3段階）」「調査が必要そうな論点」「根拠と限界」を本文として書いてください。\n空のオブジェクト、空の見出し、値が入っていない配列要素は禁止です。値を埋められない項目は出力しないでください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。theme, why_research_needed, hypothesis_to_test, evidence_article_ids は必ず埋める。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。claim, article_id, evidence_excerpt, strength, limitation, research_need は必ず埋める。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`; 
+  return `${userQuery}\n\n【レポート要件】\n目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n\n最重要: answer_text は必須です。空欄にしないでください。answer_text には、少なくとも「結論」「生活者動向のナラティブ」「説明仮説（WHY3段階）」「調査が必要そうな論点」「根拠と限界」を本文として書いてください。\n空のオブジェクト、空の見出し、値が入っていない配列要素は禁止です。値を埋められない項目は出力しないでください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。theme, why_research_needed, hypothesis_to_test, evidence_article_ids は必ず埋める。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。claim, article_id, evidence_excerpt, strength, limitation, research_need は必ず埋める。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`;
 }
 
 function scoreValue(value: unknown) {
@@ -293,7 +309,7 @@ function scoreValue(value: unknown) {
 export function ChatPanel() {
   const password = useAppPassword();
   const [query, setQuery] = useState('');
-  const [model, setModel] = useState<ModelName>('gpt-4.1');
+  const [model, setModel] = useState<ModelName>('gpt-5');
   const [targetScope, setTargetScope] = useState<TargetScope>('all');
   const [outputTemplate, setOutputTemplate] = useState<OutputTemplate>('auto');
   const [busy, setBusy] = useState(false);
@@ -405,9 +421,9 @@ export function ChatPanel() {
           <label className="block">
             <span className="text-sm font-bold text-zinc-700">APIモデル</span>
             <select className="input mt-2" value={model} onChange={(e) => setModel(e.target.value as ModelName)} disabled={busy}>
-              {modelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+              {modelOptions.map((m) => <option key={m} value={m}>{modelLabel(m)}</option>)}
             </select>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">OpenAI APIへ渡すモデル名です。</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">本気レポートは gpt-5 推奨。軽く傾向を見る場合だけ mini / nano / 旧モデルを使います。</p>
           </label>
 
           <label className="block">
@@ -450,6 +466,8 @@ export function ChatPanel() {
               {answer.target_scope && <span className="badge">scope: {answer.target_scope}</span>}
               {answer.output_template && <span className="badge">template: {answer.output_template}</span>}
               {answer.model_used && <span className="badge">model: {answer.model_used}</span>}
+              {answer.analysis_mode && <span className="badge">mode: {answer.analysis_mode}</span>}
+              {answer.model_policy && <span className="badge">{answer.model_policy}</span>}
               {typeof answer.related_article_count === 'number' && <span className="badge">記事 {answer.related_article_count}</span>}
             </div>
             {answerText ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{answerText}</p> : <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800">本文が空で返っています。下の構造化セクションを表示しています。再実行すると本文も生成されます。</p>}

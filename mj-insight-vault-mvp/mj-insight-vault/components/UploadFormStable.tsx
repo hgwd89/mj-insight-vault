@@ -1,19 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
-const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中']);
+const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中', '再試行中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
-const DRAFT_DB = 'mj-upload-draft-v1';
-const DRAFT_STORE = 'draft';
-const DRAFT_KEY = 'current';
+const MAX_ATTEMPTS = 3;
 
 type Row = { name: string; status: string; note?: string };
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
-type StoredDraftFile = { name: string; type: string; lastModified: number; blob: Blob };
-type UploadDraft = { memo: string; date: string; autoOcr: boolean; files: StoredDraftFile[]; savedAt: number };
+
+type FailedFile = { file: File; row: Row };
 
 function isBadFormat(file: File) {
   return /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
@@ -25,66 +23,38 @@ function sameNameIndexes(list: File[]) {
   return Array.from(counts.entries()).filter(([, indexes]) => indexes.length > 1);
 }
 
-function openDraftDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      reject(new Error('IndexedDB is unavailable'));
-      return;
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function retryDelay(attempt: number) {
+  return Math.min(8000, 1000 * Math.pow(2, attempt - 1));
+}
+
+function errMsg(error: unknown) {
+  return error instanceof Error ? error.message : '失敗';
+}
+
+async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, message: string) => void): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_ATTEMPTS) break;
+      onRetry(attempt + 1, errMsg(error));
+      await sleep(retryDelay(attempt));
     }
-    const request = indexedDB.open(DRAFT_DB, 1);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(DRAFT_STORE)) request.result.createObjectStore(DRAFT_STORE);
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('draft db error'));
-  });
-}
-
-async function readDraft(): Promise<UploadDraft | null> {
-  const db = await openDraftDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DRAFT_STORE, 'readonly');
-    const request = tx.objectStore(DRAFT_STORE).get(DRAFT_KEY);
-    request.onsuccess = () => resolve((request.result as UploadDraft | undefined) || null);
-    request.onerror = () => reject(request.error || new Error('draft read error'));
-    tx.oncomplete = () => db.close();
-    tx.onerror = () => db.close();
-  });
-}
-
-async function writeDraft(draft: UploadDraft) {
-  const db = await openDraftDb();
-  return new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(DRAFT_STORE, 'readwrite');
-    tx.objectStore(DRAFT_STORE).put(draft, DRAFT_KEY);
-    tx.oncomplete = () => { db.close(); resolve(); };
-    tx.onerror = () => { db.close(); reject(tx.error || new Error('draft write error')); };
-  });
-}
-
-async function clearDraft() {
-  const db = await openDraftDb();
-  return new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(DRAFT_STORE, 'readwrite');
-    tx.objectStore(DRAFT_STORE).delete(DRAFT_KEY);
-    tx.oncomplete = () => { db.close(); resolve(); };
-    tx.onerror = () => { db.close(); reject(tx.error || new Error('draft clear error')); };
-  });
-}
-
-function toStoredFile(file: File): StoredDraftFile {
-  return { name: file.name, type: file.type, lastModified: file.lastModified, blob: file };
-}
-
-function fromStoredFile(file: StoredDraftFile) {
-  return new File([file.blob], file.name, { type: file.type, lastModified: file.lastModified });
+  }
+  throw lastError;
 }
 
 async function shrink(file: File): Promise<File> {
   if (isBadFormat(file)) throw new Error('JPGまたはPNGに変換してください');
   const bitmap = await createImageBitmap(file);
   const maxSide = Math.max(bitmap.width, bitmap.height);
-  const scale = Math.min(1, 2200 / maxSide);
+  const scale = Math.min(1, 2800 / maxSide);
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -93,7 +63,7 @@ async function shrink(file: File): Promise<File> {
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((b) => b ? resolve(b) : reject(new Error('画像圧縮に失敗しました')), 'image/jpeg', 0.82);
+    canvas.toBlob((b) => b ? resolve(b) : reject(new Error('画像圧縮に失敗しました')), 'image/jpeg', 0.9);
   });
   const base = file.name.replace(/\.[^.]+$/, '') || 'image';
   return new File([blob], `${base}.jpg`, { type: 'image/jpeg' });
@@ -109,61 +79,22 @@ export function UploadFormStable() {
   const [rows, setRows] = useState<Row[]>([]);
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
-  const [draftReady, setDraftReady] = useState(false);
+  const [failedFiles, setFailedFiles] = useState<FailedFile[]>([]);
 
   const sameNames = useMemo(() => sameNameIndexes(files), [files]);
   const sameNameSet = useMemo(() => new Set(sameNames.flatMap(([, indexes]) => indexes)), [sameNames]);
 
-  useEffect(() => {
-    let cancelled = false;
-    readDraft()
-      .then((draft) => {
-        if (cancelled || !draft) return;
-        setMemo(draft.memo || '');
-        setDate(draft.date || '');
-        setAutoOcr(draft.autoOcr !== false);
-        const restoredFiles = (draft.files || []).map(fromStoredFile);
-        if (restoredFiles.length) {
-          setFiles(restoredFiles);
-          setMessage(`前回選択した画像 ${restoredFiles.length}枚を復元しました`);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => { if (!cancelled) setDraftReady(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    if (!draftReady) return;
-    const timer = window.setTimeout(() => {
-      const hasDraft = files.length > 0 || memo.trim() || date.trim() || autoOcr !== true;
-      if (!hasDraft) {
-        clearDraft().catch(() => undefined);
-        return;
-      }
-      writeDraft({ memo, date, autoOcr, files: files.map(toStoredFile), savedAt: Date.now() }).catch(() => undefined);
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [files, memo, date, autoOcr, draftReady]);
-
-  useEffect(() => {
-    const handler = (event: BeforeUnloadEvent) => {
-      if (!busy) return;
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [busy]);
+  function patchRow(index: number, row: Partial<Row>) {
+    setRows((prev) => prev.map((r, i) => i === index ? { ...r, ...row } : r));
+  }
 
   function choose(list: File[]) {
-    const next = list;
-    setFiles(next);
+    setFiles(list);
     setRows([]);
     setResult(null);
-    const found = sameNameIndexes(next);
-    if (found.length) setMessage('同じファイル名があります。不要な方を外してからアップロードしてください。');
-    else setMessage('選択内容を一時保存しました');
+    setFailedFiles([]);
+    const found = sameNameIndexes(list);
+    setMessage(found.length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '選択しました');
   }
 
   function removeFile(index: number) {
@@ -171,13 +102,14 @@ export function UploadFormStable() {
     setFiles(next);
     setRows([]);
     setResult(null);
-    setMessage(sameNameIndexes(next).length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '選択内容を更新しました');
+    setMessage(sameNameIndexes(next).length ? '同じファイル名があります。不要な方を外してください。' : '選択内容を更新しました');
   }
 
   function clearSelection() {
     setFiles([]);
     setRows([]);
     setResult(null);
+    setFailedFiles([]);
     setMessage('選択中の画像をクリアしました');
   }
 
@@ -194,15 +126,19 @@ export function UploadFormStable() {
     setMessage('同じファイル名の2件目以降を外しました');
   }
 
-  function patchRow(index: number, row: Partial<Row>) {
-    setRows((prev) => prev.map((r, i) => i === index ? { ...r, ...row } : r));
+  function keepFailedOnly() {
+    const onlyFailed = failedFiles.map((x) => x.file);
+    setFiles(onlyFailed);
+    setRows(failedFiles.map((x) => ({ ...x.row, status: '待機', note: '再アップロード対象' })));
+    setResult(null);
+    setMessage(`失敗した画像 ${onlyFailed.length}枚だけを再選択しました。再度アップロードできます。`);
   }
 
-  async function startBatch() {
+  async function startBatch(imageCount = files.length) {
     const res = await fetch('/api/upload/start', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-app-password': password },
-      body: JSON.stringify({ memo, article_date: date.trim(), image_count: files.length })
+      body: JSON.stringify({ memo, article_date: date.trim(), image_count: imageCount })
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || '開始に失敗しました');
@@ -238,7 +174,7 @@ export function UploadFormStable() {
 
   async function submit() {
     if (!files.length || busy) return;
-    if (sameNameIndexes(files).length) {
+    if (sameNames.length) {
       setMessage('同じファイル名があります。不要な方を外してからアップロードしてください。');
       return;
     }
@@ -246,43 +182,65 @@ export function UploadFormStable() {
       setMessage('JPGまたはPNGに変換してください');
       return;
     }
+
+    const targetFiles = [...files];
     setBusy(true);
     setResult(null);
-    setRows(files.map((f) => ({ name: f.name, status: '待機' })));
-    setMessage('まとめて処理中です');
+    setFailedFiles([]);
+    setRows(targetFiles.map((f) => ({ name: f.name, status: '待機' })));
+    setMessage('まとめて処理中です。失敗時は最大3回まで自動再試行します。');
 
     let batchId = '';
     let saved = 0;
     let ocr = 0;
     let failed = 0;
     let articles = 0;
+    const failedNext: FailedFile[] = [];
+
     try {
-      batchId = await startBatch();
-      for (let i = 0; i < files.length; i++) {
+      batchId = await withRetry(
+        () => startBatch(targetFiles.length),
+        (attempt, msg) => setMessage(`開始に失敗しました。${attempt}/${MAX_ATTEMPTS}回目を再試行中：${msg}`)
+      );
+
+      for (let i = 0; i < targetFiles.length; i++) {
         try {
-          const imageId = await uploadImage(batchId, files[i], i);
+          const imageId = await withRetry(
+            () => uploadImage(batchId, targetFiles[i], i),
+            (attempt, msg) => patchRow(i, { status: '再試行中', note: `保存 ${attempt}/${MAX_ATTEMPTS}回目：${msg}` })
+          );
           saved += 1;
           if (autoOcr) {
-            const count = await runOcr(imageId, i);
+            const count = await withRetry(
+              () => runOcr(imageId, i),
+              (attempt, msg) => patchRow(i, { status: '再試行中', note: `OCR ${attempt}/${MAX_ATTEMPTS}回目：${msg}` })
+            );
             ocr += 1;
             articles += count;
             patchRow(i, { status: '完了', note: `記事 ${count}件` });
           } else {
             patchRow(i, { status: 'OCR待ち' });
           }
-        } catch (e) {
+        } catch (error) {
           failed += 1;
-          patchRow(i, { status: '失敗', note: e instanceof Error ? e.message : '失敗' });
+          const row = { name: targetFiles[i].name, status: '失敗', note: `${MAX_ATTEMPTS}回試行後に失敗：${errMsg(error)}` };
+          failedNext.push({ file: targetFiles[i], row });
+          patchRow(i, row);
         }
       }
-      setResult({ batchId, selected: files.length, saved, ocr, failed, articles });
-      setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
-      if (saved > 0) {
+
+      setFailedFiles(failedNext);
+      setResult({ batchId, selected: targetFiles.length, saved, ocr, failed, articles });
+      if (failedNext.length) {
+        setFiles(failedNext.map((x) => x.file));
+        setRows(failedNext.map((x) => x.row));
+        setMessage(`完了：成功 ${saved}枚 / 失敗 ${failedNext.length}枚。失敗分だけ画面に残しました。再度アップロードできます。`);
+      } else {
         setFiles([]);
-        clearDraft().catch(() => undefined);
+        setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
       }
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : '失敗しました');
+    } catch (error) {
+      setMessage(`${MAX_ATTEMPTS}回試行後に失敗しました：${errMsg(error)}`);
     } finally {
       setBusy(false);
     }
@@ -294,51 +252,41 @@ export function UploadFormStable() {
   const activeRow = activeIndex >= 0 ? rows[activeIndex] : null;
   const failedCount = rows.filter((row) => row.status === '失敗').length;
   const progressPercent = totalCount ? Math.round((finishedCount / totalCount) * 100) : 0;
-  const activeLabel = activeRow
-    ? `現在処理中：${activeIndex + 1}/${totalCount} ${activeRow.status}`
-    : busy && totalCount
-      ? `処理準備中：0/${totalCount}`
-      : totalCount && finishedCount === totalCount
-        ? `処理完了：${finishedCount}/${totalCount}`
-        : '';
+  const activeLabel = activeRow ? `現在処理中：${activeIndex + 1}/${totalCount} ${activeRow.status}` : busy && totalCount ? `処理準備中：0/${totalCount}` : totalCount && finishedCount === totalCount ? `処理完了：${finishedCount}/${totalCount}` : '';
 
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
-    <p className="mt-2 text-sm leading-6 text-zinc-600">選択中の画像はブラウザ内に一時保存されます。ページを閉じても、次回この画面を開くと復元します。</p>
+    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、OCRと記事候補化まで実行します。失敗した画像は画面に残るので、その分だけ再アップロードできます。</p>
     <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
       <b>使い方</b><br />
       1. 紙面の日付が分かる場合は「記事日付」に入力<br />
       2. 画像をまとめて選択<br />
       3. 同じファイル名がある場合は不要な方を外す<br />
       4. 「まとめてアップロードして記事化」を押す<br />
-      5. 完了後は「記事一覧」または「アップロード詳細」で確認
+      5. 失敗した画像がある場合は、その画像だけが残るので再度アップロード
     </div>
+
     <div className="mt-5 space-y-4">
       <textarea className="input min-h-20" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="メモ：例 2026年5月中旬 / 食品・AI関連多め" />
       <input className="input" value={date} onChange={(e) => setDate(e.target.value)} placeholder="記事日付：例 2026-05-13" />
       <label className="flex gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm"><input type="checkbox" checked={autoOcr} onChange={(e) => setAutoOcr(e.target.checked)} />保存後にOCR・記事化する</label>
       <input className="input" type="file" accept="image/*,.heic,.heif" multiple onChange={(e) => choose(Array.from(e.target.files || []))} disabled={busy} />
-      <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}枚</span>{files.length > 0 && <button className="btn" onClick={clearSelection} disabled={busy}>選択をクリア</button>}</div>
+      <div className="flex flex-wrap gap-3 text-sm text-zinc-600"><span>選択中：{files.length}枚</span>{files.length > 0 && <button className="btn" onClick={clearSelection} disabled={busy}>選択をクリア</button>}{failedFiles.length > 0 && <button className="btn" onClick={keepFailedOnly} disabled={busy}>失敗分だけ再選択</button>}</div>
 
-      {files.length > 30 && !busy && <p className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900">選択数が多いほど処理時間と失敗率は上がります。制限は外していますが、失敗した場合は分割してください。</p>}
+      {files.length > 30 && !busy && <p className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900">選択数が多いほど処理時間と失敗率は上がります。失敗した場合は失敗分だけ再アップロードできます。</p>}
 
       {sameNames.length > 0 && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div><h2 className="font-bold">同じファイル名があります</h2><p className="mt-1">このままではアップロードできません。不要な方を外してください。</p></div>
-          <button className="btn" onClick={keepFirstSameNames} disabled={busy}>2件目以降を外す</button>
-        </div>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><h2 className="font-bold">同じファイル名があります</h2><p className="mt-1">このままではアップロードできません。不要な方を外してください。</p></div><button className="btn" onClick={keepFirstSameNames} disabled={busy}>2件目以降を外す</button></div>
         <ul className="mt-3 space-y-1">{sameNames.map(([name, indexes]) => <li key={name}>{name}：{indexes.map((index) => `${index + 1}番`).join(' / ')}</li>)}</ul>
       </div>}
 
       {(busy || rows.length > 0) && totalCount > 0 && <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <div><h2 className="font-bold">処理状況</h2><p className="mt-1 text-sm leading-6 text-zinc-600">{activeLabel || `処理済み：${finishedCount}/${totalCount}`}</p></div>
-          <div className="flex flex-wrap gap-2 text-xs text-zinc-600"><span className="badge">完了 {finishedCount}/{totalCount}</span><span className="badge">失敗 {failedCount}</span><span className="badge">{progressPercent}%</span></div>
-        </div>
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between"><div><h2 className="font-bold">処理状況</h2><p className="mt-1 text-sm leading-6 text-zinc-600">{activeLabel || `処理済み：${finishedCount}/${totalCount}`}</p></div><div className="flex flex-wrap gap-2 text-xs text-zinc-600"><span className="badge">完了 {finishedCount}/{totalCount}</span><span className="badge">失敗 {failedCount}</span><span className="badge">{progressPercent}%</span></div></div>
         <div className="mt-3 h-3 overflow-hidden rounded-full bg-zinc-200"><div className="h-full rounded-full bg-zinc-900 transition-all duration-300" style={{ width: `${progressPercent}%` }} /></div>
       </div>}
 
       {files.length > 0 && <ul className="max-h-64 overflow-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm">{files.map((f, i) => <li key={`${f.name}-${i}`} className="flex justify-between gap-3 border-b border-zinc-200 py-2 last:border-b-0"><div>{i + 1}. {f.name}{sameNameSet.has(i) && <span className="ml-2 rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">同名</span>}<p className={rows[i]?.status === '失敗' ? 'text-xs text-red-600' : 'text-xs text-zinc-500'}>{rows[i]?.status || '待機'} {rows[i]?.note || ''}</p></div><button className="btn" onClick={() => removeFile(i)} disabled={busy}>{sameNameSet.has(i) ? '外す' : '削除'}</button></li>)}</ul>}
+
       <button className="btn btn-primary" onClick={submit} disabled={!files.length || busy || sameNames.length > 0}>{busy ? '処理中' : autoOcr ? 'まとめてアップロードして記事化' : 'まとめてアップロード'}</button>
       {message && <p className="text-sm leading-6 text-zinc-700">{message}</p>}
       {result && <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><h2 className="font-bold">処理サマリー</h2><div className="mt-3 grid gap-2 text-sm md:grid-cols-5"><div className="rounded-xl bg-white p-3"><b>{result.selected}</b><br />選択</div><div className="rounded-xl bg-white p-3"><b>{result.saved}</b><br />保存</div><div className="rounded-xl bg-white p-3"><b>{result.ocr}</b><br />OCR</div><div className="rounded-xl bg-white p-3"><b>{result.failed}</b><br />失敗</div><div className="rounded-xl bg-white p-3"><b>{result.articles}</b><br />記事</div></div><div className="mt-4 flex flex-wrap gap-2"><Link className="btn btn-primary" href={`/batches/${result.batchId}`}>アップロード詳細</Link><Link className="btn" href="/articles">記事一覧</Link><Link className="btn" href="/chat">Chatで分析</Link></div></div>}

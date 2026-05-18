@@ -7,6 +7,8 @@ import { useAppPassword } from '@/components/PasswordGate';
 const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中', '再試行中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 const MAX_ATTEMPTS = 3;
+const OCR_MAX_IMAGE_SIDE = 4200;
+const OCR_JPEG_QUALITY = 0.95;
 
 type Row = { name: string; status: string; note?: string };
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
@@ -54,7 +56,7 @@ async function shrink(file: File): Promise<File> {
   if (isBadFormat(file)) throw new Error('JPGまたはPNGに変換してください');
   const bitmap = await createImageBitmap(file);
   const maxSide = Math.max(bitmap.width, bitmap.height);
-  const scale = Math.min(1, 2800 / maxSide);
+  const scale = Math.min(1, OCR_MAX_IMAGE_SIDE / maxSide);
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -63,7 +65,7 @@ async function shrink(file: File): Promise<File> {
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((b) => b ? resolve(b) : reject(new Error('画像圧縮に失敗しました')), 'image/jpeg', 0.9);
+    canvas.toBlob((b) => b ? resolve(b) : reject(new Error('画像圧縮に失敗しました')), 'image/jpeg', OCR_JPEG_QUALITY);
   });
   const base = file.name.replace(/\.[^.]+$/, '') || 'image';
   return new File([blob], `${base}.jpg`, { type: 'image/jpeg' });
@@ -153,7 +155,7 @@ export function UploadFormStable() {
     form.set('index', String(index + 1));
     form.set('article_date', date.trim());
     form.set('file', out);
-    patchRow(index, { status: '保存中', note: `${(out.size / 1024 / 1024).toFixed(1)}MB` });
+    patchRow(index, { status: '保存中', note: `${(out.size / 1024 / 1024).toFixed(1)}MB / OCR高画質` });
     const res = await fetch('/api/upload/image', { method: 'POST', headers: { 'x-app-password': password }, body: form });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || '保存に失敗しました');
@@ -188,7 +190,7 @@ export function UploadFormStable() {
     setResult(null);
     setFailedFiles([]);
     setRows(targetFiles.map((f) => ({ name: f.name, status: '待機' })));
-    setMessage('まとめて処理中です。失敗時は最大3回まで自動再試行します。');
+    setMessage('まとめて処理中です。失敗時は最大3回まで自動再試行します。OCR高画質設定で保存します。');
 
     let batchId = '';
     let saved = 0;
@@ -263,7 +265,8 @@ export function UploadFormStable() {
       2. 画像をまとめて選択<br />
       3. 同じファイル名がある場合は不要な方を外す<br />
       4. 「まとめてアップロードして記事化」を押す<br />
-      5. 失敗した画像がある場合は、その画像だけが残るので再度アップロード
+      5. 失敗した画像がある場合は、その画像だけが残るので再度アップロード<br />
+      <span className="text-zinc-500">OCRは最大辺{OCR_MAX_IMAGE_SIDE}px・JPEG品質{OCR_JPEG_QUALITY}の高画質設定で保存します。</span>
     </div>
 
     <div className="mt-5 space-y-4">

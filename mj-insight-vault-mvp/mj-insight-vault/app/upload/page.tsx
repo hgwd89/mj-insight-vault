@@ -1,9 +1,11 @@
 import Link from 'next/link';
 import { UploadFormStable } from '@/components/UploadFormStable';
+import { UploadDataResetPanel } from '@/components/UploadDataResetPanel';
 
 export default function UploadPage() {
   return (
     <div className="space-y-4">
+      <UploadDataResetPanel />
       <UploadFormStable />
       <div className="card p-5">
         <h2 className="font-bold">アップロード履歴</h2>

@@ -7,7 +7,7 @@ import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
 import { embedText } from '@/lib/openai';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;

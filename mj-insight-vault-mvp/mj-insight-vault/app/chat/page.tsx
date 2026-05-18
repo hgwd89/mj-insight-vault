@@ -1,2 +1,2 @@
-import { ChatPanel } from '@/components/ChatPanel';
-export default function ChatPage() { return <ChatPanel />; }
+import { ChatPanelModelOptionsPatch } from '@/components/ChatPanelModelOptionsPatch';
+export default function ChatPage() { return <ChatPanelModelOptionsPatch />; }

@@ -11,7 +11,37 @@ type ConversationTurn = {
   content: string;
 };
 
+type RelatedArticle = {
+  id: string;
+  headline: string | null;
+  article_date: string | null;
+  ocr_text: string | null;
+  status: string | null;
+  created_at: string | null;
+  article_tags?: { tag_type: string; tag_name: string }[];
+};
+
 const DEFAULT_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+
+function articleUrl(articleId: string) {
+  return `/articles/${articleId}`;
+}
+
+function articleLabel(article: RelatedArticle) {
+  return `${article.headline || '無題の記事'}｜${article.article_date || '日付不明'}`;
+}
+
+function articleLink(article: RelatedArticle) {
+  return `[${articleLabel(article)}](${articleUrl(article.id)})`;
+}
+
+function addArticleLinks(article: RelatedArticle) {
+  return {
+    ...article,
+    article_url: articleUrl(article.id),
+    article_link: articleLink(article)
+  };
+}
 
 function getSelectableModels() {
   const fromEnv = (process.env.OPENAI_CHAT_MODELS || '')
@@ -113,7 +143,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (reportError) throw reportError;
 
     const articleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
-    let articles: unknown[] = [];
+    let articles: ReturnType<typeof addArticleLinks>[] = [];
 
     if (articleIds.length > 0) {
       const { data, error } = await supabaseAdmin
@@ -123,8 +153,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
       if (error) throw error;
 
-      const byId = new Map((data || []).map((article) => [article.id, article]));
-      articles = articleIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
+      const byId = new Map(((data || []) as RelatedArticle[]).map((article) => [article.id, article]));
+      articles = articleIds
+        .map((articleId: string) => byId.get(articleId))
+        .filter(Boolean)
+        .map((article) => addArticleLinks(article as RelatedArticle));
     }
 
     const openai = getOpenAI();
@@ -145,6 +178,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       '役割は、分析観点の追加、WHYの深掘り、仮説の再整理、根拠記事への立ち戻り、リサーチ課題化、提案書化です。',
       '回答は必ずJSONで返し、answer_text, suggested_next_angles, referenced_articles を含めてください。',
       '記事にない内容は断定せず、仮説と明記してください。',
+      '根拠を示す場合、UUIDだけでなく article_link を使い、answer_text では [記事タイトル｜日付](/articles/id) 形式で書いてください。',
+      'referenced_articles には article_id, headline, article_date, article_url, article_link, reason を入れてください。',
       '日付が不明な記事は日付不明と明記してください。',
       '日本語で、実務で使える粒度にしてください。'
     ].join('\n');
@@ -158,7 +193,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         {
           role: 'user',
           content: JSON.stringify({
-            instruction: '以下は既存レポートと根拠記事です。この内容を会話の前提にしてください。',
+            instruction: '以下は既存レポートと根拠記事です。この内容を会話の前提にしてください。根拠提示では article_link を優先してください。',
             report: {
               id: report.id,
               original_query: report.user_query,

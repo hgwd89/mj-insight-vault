@@ -3,6 +3,7 @@ import './globals.css';
 import { AppShell } from '@/components/AppShell';
 import { PasswordGate } from '@/components/PasswordGate';
 import { UploadJobProvider } from '@/components/UploadJobProvider';
+import { ChatJobStatusProvider } from '@/components/ChatJobStatusProvider';
 
 export const metadata: Metadata = {
   title: 'MJ Insight Vault',
@@ -22,7 +23,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <PasswordGate>
           <UploadJobProvider>
-            <AppShell>{children}</AppShell>
+            <ChatJobStatusProvider>
+              <AppShell>{children}</AppShell>
+            </ChatJobStatusProvider>
           </UploadJobProvider>
         </PasswordGate>
       </body>

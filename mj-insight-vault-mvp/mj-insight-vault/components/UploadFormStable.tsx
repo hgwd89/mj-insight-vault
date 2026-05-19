@@ -53,6 +53,19 @@ function formatSavedAt(value: number) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function isRestorableRow(row?: Row) {
+  return !row || (row.status !== '完了' && row.status !== 'OCR待ち');
+}
+
+function toRestoredRow(file: File, row?: Row): Row {
+  if (row?.status === '失敗') return row;
+  return {
+    name: row?.name || file.name,
+    status: '待機',
+    note: row ? `復元した未完了アップロード（元状態：${row.status}）` : '復元した未完了アップロード'
+  };
+}
+
 async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, message: string) => void): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -106,6 +119,7 @@ export function UploadFormStable() {
   const sameNames = useMemo(() => sameNameIndexes(files), [files]);
   const sameNameSet = useMemo(() => new Set(sameNames.flatMap(([, indexes]) => indexes)), [sameNames]);
   const recoverableFailedCount = recoverableDraft?.rows.filter((row) => row.status === '失敗').length || 0;
+  const recoverableTargetCount = recoverableDraft ? recoverableDraft.files.filter((_, index) => isRestorableRow(recoverableDraft.rows[index])).length : 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -203,21 +217,39 @@ export function UploadFormStable() {
 
   function restoreDraft() {
     if (!recoverableDraft) return;
-    const restoredFiles = (recoverableDraft.files || []).map(storedDraftFileToFile);
-    const restoredRows = (recoverableDraft.rows || []).map((row) => ({ ...row }));
+    const allFiles = (recoverableDraft.files || []).map(storedDraftFileToFile);
+    const allRows = recoverableDraft.rows || [];
+    const pairs = allFiles
+      .map((file, index) => ({ file, row: allRows[index] }))
+      .filter(({ row }) => isRestorableRow(row));
+
+    if (!pairs.length) {
+      setFiles([]);
+      setRows([]);
+      setResult(null);
+      setFailedFiles([]);
+      setBatchIdState('');
+      setRecoverableDraft(null);
+      clearUploadDraft();
+      setMessage('前回のアップロードはすべて処理済みだったため、復元対象はありません。');
+      return;
+    }
+
+    const restoredFiles = pairs.map(({ file }) => file);
+    const restoredRows = pairs.map(({ file, row }) => toRestoredRow(file, row));
     setFiles(restoredFiles);
     setRows(restoredRows);
     setMemo(recoverableDraft.memo || '');
     setDate(recoverableDraft.date || '');
     setAutoOcr(recoverableDraft.autoOcr !== false);
-    setBatchIdState(recoverableDraft.batchId || '');
+    setBatchIdState('');
     setResult(null);
     setFailedFiles(restoredRows
       .map((row, index) => row.status === '失敗' && restoredFiles[index] ? { file: restoredFiles[index], row } : null)
       .filter((item): item is FailedFile => Boolean(item)));
     setRecoverableDraft(null);
     setDraftStatus('');
-    setMessage('前回の未完了アップロードを復元しました。必要に応じて再度アップロードしてください。');
+    setMessage(`前回の未完了・失敗アップロード ${restoredFiles.length}枚を復元しました。必要に応じて再度アップロードしてください。`);
   }
 
   function keepFirstSameNames() {
@@ -387,8 +419,8 @@ export function UploadFormStable() {
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <h2 className="font-bold">前回の未完了アップロードがあります</h2>
-          <p className="mt-1">画像 {recoverableDraft.files.length}枚 / 失敗 {recoverableFailedCount}件 / 最終保存 {formatSavedAt(recoverableDraft.savedAt)}</p>
-          <p className="mt-1 text-amber-900">自動では再開しません。復元後に必要な分だけ再度アップロードしてください。</p>
+          <p className="mt-1">復元対象 {recoverableTargetCount}枚 / 保存画像 {recoverableDraft.files.length}枚 / 失敗 {recoverableFailedCount}件 / 最終保存 {formatSavedAt(recoverableDraft.savedAt)}</p>
+          <p className="mt-1 text-amber-900">自動では再開しません。復元後に未完了・失敗分だけ再度アップロードしてください。</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button className="btn btn-primary" onClick={restoreDraft} disabled={busy}>前回の未完了アップロードを復元</button>

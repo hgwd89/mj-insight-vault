@@ -17,6 +17,7 @@ const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 const MAX_ATTEMPTS = 3;
 const OCR_MAX_IMAGE_SIDE = 4200;
 const OCR_JPEG_QUALITY = 0.95;
+const CLEAR_AFTER_SUCCESS_KEY = 'mj-upload-draft-clear-after-success';
 
 type Row = { name: string; status: string; note?: string };
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
@@ -64,6 +65,32 @@ function toRestoredRow(file: File, row?: Row): Row {
     status: '待機',
     note: row ? `復元した未完了アップロード（元状態：${row.status}）` : '復元した未完了アップロード'
   };
+}
+
+function markUploadDraftClearedAfterSuccess() {
+  try {
+    localStorage.setItem(CLEAR_AFTER_SUCCESS_KEY, '1');
+  } catch {
+    // Best-effort only.
+  }
+}
+
+function forgetUploadDraftClearedAfterSuccess() {
+  try {
+    localStorage.removeItem(CLEAR_AFTER_SUCCESS_KEY);
+  } catch {
+    // Best-effort only.
+  }
+}
+
+function consumeUploadDraftClearedAfterSuccess() {
+  try {
+    const shouldClear = localStorage.getItem(CLEAR_AFTER_SUCCESS_KEY) === '1';
+    if (shouldClear) localStorage.removeItem(CLEAR_AFTER_SUCCESS_KEY);
+    return shouldClear;
+  } catch {
+    return false;
+  }
 }
 
 async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, message: string) => void): Promise<T> {
@@ -123,6 +150,14 @@ export function UploadFormStable() {
 
   useEffect(() => {
     let cancelled = false;
+    if (consumeUploadDraftClearedAfterSuccess()) {
+      clearUploadDraft()
+        .finally(() => {
+          if (!cancelled) setDraftReady(true);
+        });
+      return () => { cancelled = true; };
+    }
+
     readUploadDraft()
       .then((draft) => {
         if (cancelled || !draft) return;
@@ -152,6 +187,7 @@ export function UploadFormStable() {
     const completedWithoutFailures = result?.failed === 0 && files.length === 0 && rows.length === 0 && !batchIdState;
     const completedRowsWithoutFailures = files.length > 0 && rows.length === files.length && rows.every((row) => row.status === '完了' || row.status === 'OCR待ち');
     if (completedWithoutFailures || completedRowsWithoutFailures) {
+      markUploadDraftClearedAfterSuccess();
       const timer = window.setTimeout(() => {
         clearUploadDraft();
       }, 600);
@@ -164,10 +200,12 @@ export function UploadFormStable() {
 
     const timer = window.setTimeout(() => {
       if (!hasLocalDraft && autoOcr === true) {
+        forgetUploadDraftClearedAfterSuccess();
         clearUploadDraft();
         return;
       }
 
+      forgetUploadDraftClearedAfterSuccess();
       writeUploadDraft({
         version: 1,
         memo,
@@ -393,6 +431,7 @@ export function UploadFormStable() {
         setRows([]);
         setFailedFiles([]);
         setBatchIdState('');
+        markUploadDraftClearedAfterSuccess();
         clearUploadDraft();
         setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
       }

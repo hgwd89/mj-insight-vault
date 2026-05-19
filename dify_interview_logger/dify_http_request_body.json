@@ -1,0 +1,13 @@
+{
+  "event": "message",
+  "interview_id": "{{#sys.conversation_id#}}",
+  "user_id": "{{#sys.user_id#}}",
+  "conversation_id": "{{#sys.conversation_id#}}",
+  "name": "{{#1743130596309.name#}}",
+  "user_age": "{{#1743130596309.user_age#}}",
+  "user_location": "{{#1743130596309.user_location#}}",
+  "son_name": "{{#1743130596309.son_name#}}",
+  "son_age": "{{#1743130596309.son_age#}}",
+  "user_input": "{{#sys.query#}}",
+  "llm_reply": "{{#llm.text#}}"
+}

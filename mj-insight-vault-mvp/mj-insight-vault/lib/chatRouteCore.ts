@@ -14,6 +14,8 @@ type Turn = { role: 'user' | 'assistant'; content: string };
 type AnalysisMode = 'serious_report' | 'quick_scan';
 type RetrievalMode = 'focused_retrieval' | 'wide_all_data_scan';
 type OpenAIClient = NonNullable<ReturnType<typeof getOpenAI>>;
+type ProgressUpdate = { progress: number; stage: string };
+type ProgressReporter = (update: ProgressUpdate) => void | Promise<void>;
 type ScanOutcome = {
   scan_enabled: boolean;
   scan_model: string;
@@ -102,6 +104,14 @@ function uniq(rows: Article[]) {
 function stringArray(v: unknown) {
   return Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean) : [];
 }
+async function reportProgress(onProgress: ProgressReporter | undefined, progress: number, stage: string) {
+  if (!onProgress) return;
+  try {
+    await onProgress({ progress, stage });
+  } catch {
+    // Progress reporting must never break report generation.
+  }
+}
 function resolveModel(requested: string, q: string, template: Template) {
   const analysis_mode: AnalysisMode = requested === 'gpt-5' && !LIGHT_WORDS.test(q) && template !== 'news_list' ? 'serious_report' : 'quick_scan';
   return {
@@ -141,15 +151,17 @@ function selectArticles(items: Article[], ids: string[], max: number) {
   const backfill = items.filter((a) => !used.has(a.id)).slice(0, Math.max(0, max - selected.length));
   return [...selected, ...backfill].slice(0, max);
 }
-async function scanArticles(openai: OpenAIClient, q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, retrievalMode: RetrievalMode, template: Template): Promise<ScanOutcome> {
+async function scanArticles(openai: OpenAIClient, q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, retrievalMode: RetrievalMode, template: Template, onProgress?: ProgressReporter): Promise<ScanOutcome> {
   const maxFinal = reportArticleLimit(modelInfo.analysis_mode, retrievalMode);
   const scanner = scanModel();
 
   if (retrievalMode !== 'wide_all_data_scan' || items.length <= maxFinal) {
+    await reportProgress(onProgress, 42, '記事候補を確定中');
     return { scan_enabled: false, scan_model: 'none', article_count_scanned: items.length, article_count_for_report: items.length, selected_article_ids: items.map((a) => a.id), scan_summary: null, final_articles: items };
   }
 
   try {
+    await reportProgress(onProgress, 38, `全${items.length}件を低コストスキャン中`);
     const limit = scanTextLimit(items.length);
     const scanInput = items.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_url: articleUrl(a.id), article_link: articleLink(a), text: (a.ocr_text || '').slice(0, limit) }));
     const scanSystem = `Return JSON only. This is a low-cost screening step before final report writing. Do not write the final report. Map the diversity of MJ articles, cluster consumer signals, remove weak/noisy articles, and choose the most useful article IDs for final analysis. Select at most ${maxFinal} article IDs. Required keys: coverage_map, clusters, selected_article_ids, rejected_or_low_priority_ids, scan_notes.`;
@@ -165,9 +177,11 @@ async function scanArticles(openai: OpenAIClient, q: string, items: Article[], m
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const ids = stringArray(parsed.selected_article_ids).slice(0, maxFinal);
     const finalArticles = selectArticles(items, ids, maxFinal);
+    await reportProgress(onProgress, 55, `最終分析に使う${finalArticles.length}件を選抜済み`);
     return { scan_enabled: true, scan_model: scanner, article_count_scanned: items.length, article_count_for_report: finalArticles.length, selected_article_ids: finalArticles.map((a) => a.id), scan_summary: parsed, final_articles: finalArticles };
   } catch (error) {
     const finalArticles = items.slice(0, maxFinal);
+    await reportProgress(onProgress, 50, `スキャン失敗。先頭${finalArticles.length}件で最終分析へ継続`);
     return { scan_enabled: true, scan_model: scanner, article_count_scanned: items.length, article_count_for_report: finalArticles.length, selected_article_ids: finalArticles.map((a) => a.id), scan_summary: null, scan_error: error instanceof Error ? error.message : 'scan failed', final_articles: finalArticles };
   }
 }
@@ -226,56 +240,71 @@ function basePayload(modelInfo: ReturnType<typeof resolveModel>, scope: Scope, t
     evidence: evidence(reportItems)
   };
 }
-async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, conversation: Turn[], retrievalMode: RetrievalMode) {
+async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, conversation: Turn[], retrievalMode: RetrievalMode, onProgress?: ProgressReporter) {
   if (!items.length) {
     const emptyScan: ScanOutcome = { scan_enabled: false, scan_model: 'none', article_count_scanned: 0, article_count_for_report: 0, selected_article_ids: [], scan_summary: null, final_articles: [] };
+    await reportProgress(onProgress, 70, '分析対象の記事がありません');
     return { report_title: '該当記事なし', answer_text: '指定範囲に分析対象の記事がありません。', table: [], ...basePayload(modelInfo, scope, template, [], [], retrievalMode, emptyScan) };
   }
   const openai = getOpenAI();
   if (!openai) {
     const noScan: ScanOutcome = { scan_enabled: false, scan_model: 'none', article_count_scanned: items.length, article_count_for_report: items.length, selected_article_ids: items.map((a) => a.id), scan_summary: null, final_articles: items };
+    await reportProgress(onProgress, 70, 'OPENAI_API_KEY未設定のため記事一覧のみ返却');
     return { report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、該当記事${items.length}件のみ返します。`, table: [], ...basePayload(modelInfo, scope, template, items, items, retrievalMode, noScan) };
   }
 
-  const scan = await scanArticles(openai, q, items, modelInfo, retrievalMode, template);
+  const scan = await scanArticles(openai, q, items, modelInfo, retrievalMode, template, onProgress);
   const reportItems = scan.final_articles;
   const base = basePayload(modelInfo, scope, template, items, reportItems, retrievalMode, scan);
   const limit = finalTextLimit(reportItems.length, retrievalMode);
   const articles = reportItems.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_url: articleUrl(a.id), article_link: articleLink(a), created_at: a.created_at || null, text: (a.ocr_text || '').slice(0, limit) }));
   const system = `${MJ_REPORT_SYSTEM_PROMPT}\n\n${qualityGuard(modelInfo.analysis_mode)}\nIf scan_enabled is true, use scan_summary to preserve article diversity and do not overfit to one cluster. Use article_link or [headline｜date](article_url) in answer_text whenever citing evidence. Return selected_lenses, analysis_process, quality_score, and shallow_summary_check in JSON.`;
   try {
+    await reportProgress(onProgress, 68, `${modelInfo.model}で最終レポートを生成中`);
     const completion = await openai.chat.completions.create({ model: modelInfo.model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, analysis_mode: modelInfo.analysis_mode, requested_model: modelInfo.requested_model, model_used: modelInfo.model, retrieval_mode: retrievalMode, scan_enabled: scan.scan_enabled, scan_model: scan.scan_model, article_count_scanned: scan.article_count_scanned, article_count_for_report: scan.article_count_for_report, scan_summary: scan.scan_summary, article_text_limit: limit, articles }, null, 2) }] });
+    await reportProgress(onProgress, 88, 'レポート出力を整形中');
     const raw = completion.choices[0]?.message.content || '{}';
     const parsed = JSON.parse(raw);
     return { ...base, ...parsed, answer_text: typeof parsed.answer_text === 'string' ? parsed.answer_text : raw, evidence: Array.isArray(parsed.evidence_matrix) && parsed.evidence_matrix.length ? parsed.evidence_matrix : base.evidence, cards: Array.isArray(parsed.cards) && parsed.cards.length ? parsed.cards : base.cards };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI analysis failed';
+    await reportProgress(onProgress, 88, 'OpenAI分析エラーを整理中');
     return { report_title: '分析エラー', answer_text: `OpenAI分析でエラーが出ました。取得${items.length}件、最終投入${reportItems.length}件までは完了しています。エラー: ${message}`, table: [], ...base };
   }
+}
+
+export async function runChatAnalysis(body: Record<string, unknown>, onProgress?: ProgressReporter) {
+  const q = body.query;
+  if (!q || typeof q !== 'string') throw new Error('query is required');
+  await reportProgress(onProgress, 8, '分析リクエストを受付');
+  const requested = normModel(body.model);
+  const targetScope = normScope(body.target_scope);
+  const outputTemplate = normTemplate(body.output_template);
+  const modelInfo = resolveModel(requested, q, outputTemplate);
+  await reportProgress(onProgress, 18, '関連記事を取得中');
+  const retrieval = await retrieve(q, targetScope);
+  await reportProgress(onProgress, 30, `${retrieval.articles.length}件の記事を取得`);
+  const answer = await analyze(q, retrieval.articles, modelInfo, targetScope, outputTemplate, turns(body.conversation), retrieval.retrieval_mode, onProgress);
+  let report = null;
+  let report_error = '';
+  await reportProgress(onProgress, 94, '分析履歴を保存中');
+  try {
+    const { data, error } = await supabaseAdmin.from('chat_reports').insert({ user_query: q, answer_text: answer.answer_text, answer_json: answer, related_article_ids: retrieval.articles.map((a) => a.id) }).select('*').single();
+    if (error) throw error;
+    report = data;
+  } catch (error) {
+    report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
+  }
+  await reportProgress(onProgress, 100, report_error ? 'レポート生成完了。履歴保存に警告あり' : 'レポート生成完了');
+  return { report, report_error, related_articles: retrieval.articles, selectable_models: selectableModels(), answer };
 }
 
 export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
     const body = await req.json();
-    const q = body.query;
-    if (!q || typeof q !== 'string') return Response.json({ error: 'query is required' }, { status: 400 });
-    const requested = normModel(body.model);
-    const targetScope = normScope(body.target_scope);
-    const outputTemplate = normTemplate(body.output_template);
-    const modelInfo = resolveModel(requested, q, outputTemplate);
-    const retrieval = await retrieve(q, targetScope);
-    const answer = await analyze(q, retrieval.articles, modelInfo, targetScope, outputTemplate, turns(body.conversation), retrieval.retrieval_mode);
-    let report = null;
-    let report_error = '';
-    try {
-      const { data, error } = await supabaseAdmin.from('chat_reports').insert({ user_query: q, answer_text: answer.answer_text, answer_json: answer, related_article_ids: retrieval.articles.map((a) => a.id) }).select('*').single();
-      if (error) throw error;
-      report = data;
-    } catch (error) {
-      report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
-    }
-    return Response.json({ report, report_error, related_articles: retrieval.articles, selectable_models: selectableModels(), answer });
+    const result = await runChatAnalysis(body);
+    return Response.json(result);
   } catch (error) {
     return jsonError(error);
   }

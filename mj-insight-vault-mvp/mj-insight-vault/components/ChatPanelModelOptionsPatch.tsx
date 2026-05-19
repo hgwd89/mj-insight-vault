@@ -1,24 +1,28 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChatPanel } from '@/components/ChatPanel';
 
 const ALL_DATA_RE = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/;
 const DEEP_RE = /本気|しっかり|詳細|深掘|深堀|高品質|レポート|インサイト|ナラティブ|構造|横断|説明仮説|仮説|調査|リサーチ|論点|WHY|why/;
 const LIGHT_RE = /軽く|ざっくり|簡単|概要|一覧|傾向だけ|軽量|速報|まずは|ラフ/;
-const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v1';
+const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v2';
 const CHAT_RUN_EVENT = 'mj-chat-run-state';
 
 type JsonRecord = Record<string, unknown>;
+type ChatRunStatus = 'queued' | 'running' | 'complete' | 'error';
 type ChatRunState = {
-  status: 'running' | 'complete' | 'error';
+  status: ChatRunStatus;
   query: string;
   model?: string;
   target_scope?: string;
   output_template?: string;
   started_at: number;
   updated_at: number;
+  progress?: number;
+  stage?: string;
+  job_id?: string;
   report_id?: string;
   report_title?: string;
   answer_preview?: string;
@@ -32,6 +36,11 @@ function isRecord(value: unknown): value is JsonRecord {
 function text(value: unknown) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+function num(value: unknown, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function mdList(values: unknown[]) {
@@ -168,6 +177,19 @@ function reportIdFromJson(json: unknown) {
   return text(json.report.id);
 }
 
+function isDirectChatEndpoint(target: string) {
+  try {
+    const url = target.startsWith('http') ? new URL(target) : new URL(target, window.location.origin);
+    return url.pathname === '/api/chat';
+  } catch {
+    return target === '/api/chat';
+  }
+}
+
+function requestHeaders(init: RequestInit | undefined) {
+  return init?.headers || { 'content-type': 'application/json' };
+}
+
 function writeChatRunState(next: ChatRunState | null) {
   if (typeof window === 'undefined') return;
   try {
@@ -183,10 +205,48 @@ function readChatRunState(): ChatRunState | null {
   if (typeof window === 'undefined') return null;
   try {
     const parsed = safeJsonParse(window.sessionStorage.getItem(CHAT_RUN_STORAGE_KEY));
-    if (parsed.status === 'running' || parsed.status === 'complete' || parsed.status === 'error') return parsed as ChatRunState;
+    if (parsed.status === 'queued' || parsed.status === 'running' || parsed.status === 'complete' || parsed.status === 'error') return parsed as ChatRunState;
     return null;
   } catch {
     return null;
+  }
+}
+
+function stateFromJob(job: JsonRecord, fallback: ChatRunState): ChatRunState {
+  const statusRaw = text(job.status);
+  const status: ChatRunStatus = statusRaw === 'completed' ? 'complete' : statusRaw === 'failed' ? 'error' : statusRaw === 'queued' ? 'queued' : 'running';
+  const result = isRecord(job.result_json) ? job.result_json : {};
+  const answer = isRecord(result.answer) ? result.answer : {};
+  const reportId = text(job.report_id) || reportIdFromJson(result);
+  return {
+    ...fallback,
+    status,
+    job_id: text(job.id) || fallback.job_id,
+    progress: num(job.progress, fallback.progress || 0),
+    stage: text(job.stage) || fallback.stage,
+    updated_at: job.updated_at ? new Date(text(job.updated_at)).getTime() : Date.now(),
+    report_id: reportId || fallback.report_id,
+    report_title: reportTitleFromAnswer(answer) || fallback.report_title,
+    answer_preview: answerPreview(answer) || fallback.answer_preview,
+    error: text(job.error_message) || fallback.error
+  };
+}
+
+async function fetchJob(originalFetch: typeof window.fetch, jobId: string, headers: HeadersInit, fallback: ChatRunState) {
+  const response = await originalFetch(`/api/chat/jobs/${jobId}`, { headers });
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error || 'ジョブ状態の取得に失敗しました');
+  if (!isRecord(json.job)) return fallback;
+  return stateFromJob(json.job, fallback);
+}
+
+async function pollJobUntilDone(originalFetch: typeof window.fetch, jobId: string, headers: HeadersInit, fallback: ChatRunState) {
+  let current = fallback;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    current = await fetchJob(originalFetch, jobId, headers, current);
+    writeChatRunState(current);
+    if (current.status === 'complete' || current.status === 'error') return current;
   }
 }
 
@@ -196,72 +256,86 @@ function patchFetch() {
 
   const patched: typeof window.fetch & { __chatPatched?: boolean } = async (...args) => {
     const target = typeof args[0] === 'string' ? args[0] : args[0] instanceof Request ? args[0].url : String(args[0]);
-    if (!target.includes('/api/chat')) return original(...args);
+    if (!isDirectChatEndpoint(target)) return original(...args);
 
-    const init = args[1];
-    const body = isRecord(init) ? init.body : undefined;
-    const requestBody = safeJsonParse(body);
+    const init = args[1] as RequestInit | undefined;
+    const requestBody = safeJsonParse(init?.body);
+    const headers = requestHeaders(init);
     const startedAt = Date.now();
-    const baseRun: ChatRunState = {
-      status: 'running',
+    let runState: ChatRunState = {
+      status: 'queued',
       query: stripReportInstruction(text(requestBody.query) || currentQuery()),
       model: text(requestBody.model || selectedModel()),
       target_scope: text(requestBody.target_scope || selectedScope()),
       output_template: text(requestBody.output_template),
       started_at: startedAt,
-      updated_at: startedAt
+      updated_at: startedAt,
+      progress: 1,
+      stage: 'ジョブを作成中'
     };
 
-    writeChatRunState(baseRun);
+    writeChatRunState(runState);
 
     try {
-      const response = await original(...args);
+      const createResponse = await original('/api/chat/jobs', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody)
+      });
+      const createJson = await createResponse.json();
+      if (!createResponse.ok || !isRecord(createJson.job)) throw new Error(createJson.error || 'ジョブ作成に失敗しました');
+      runState = stateFromJob(createJson.job, runState);
+      writeChatRunState(runState);
 
-      try {
-        const clone = response.clone();
-        const json = await clone.json();
-        const normalized = normalizeChatJson(json);
-        const normalizedRecord = isRecord(normalized) ? normalized : {};
-        const answer = normalizedRecord.answer;
-        const now = Date.now();
+      const jobId = runState.job_id || text(createJson.job.id);
+      if (!jobId) throw new Error('ジョブIDを取得できませんでした');
 
-        if (response.ok) {
-          writeChatRunState({
-            ...baseRun,
-            status: 'complete',
-            updated_at: now,
-            report_id: reportIdFromJson(normalizedRecord),
-            report_title: reportTitleFromAnswer(answer),
-            answer_preview: answerPreview(answer)
-          });
-        } else {
-          writeChatRunState({
-            ...baseRun,
-            status: 'error',
-            updated_at: now,
-            error: text(normalizedRecord.error) || response.statusText || '分析に失敗しました'
-          });
-        }
+      runState = { ...runState, status: 'running', progress: Math.max(5, runState.progress || 5), stage: '分析実行を開始', updated_at: Date.now() };
+      writeChatRunState(runState);
 
-        return new Response(JSON.stringify(normalized), {
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers
-        });
-      } catch {
-        if (!response.ok) {
-          writeChatRunState({ ...baseRun, status: 'error', updated_at: Date.now(), error: response.statusText || '分析に失敗しました' });
-        }
-        return response;
+      const runPromise = original(`/api/chat/jobs/${jobId}/run`, { method: 'POST', headers });
+      const pollPromise = pollJobUntilDone(original, jobId, headers, runState).catch(() => runState);
+      const runResponse = await runPromise;
+      const runJson = await runResponse.json();
+      const latestState = await pollPromise;
+
+      if (!runResponse.ok) {
+        const errorState: ChatRunState = { ...latestState, status: 'error', progress: 100, stage: '分析に失敗しました', error: text(runJson.error) || runResponse.statusText || '分析に失敗しました', updated_at: Date.now() };
+        writeChatRunState(errorState);
+        return new Response(JSON.stringify({ error: errorState.error }), { status: runResponse.status, statusText: runResponse.statusText, headers: runResponse.headers });
       }
+
+      const result = isRecord(runJson.result) ? normalizeChatJson(runJson.result) : isRecord(runJson.job) && isRecord(runJson.job.result_json) ? normalizeChatJson(runJson.job.result_json) : runJson;
+      const resultRecord = isRecord(result) ? result : {};
+      const answer = resultRecord.answer;
+      const completed: ChatRunState = {
+        ...latestState,
+        status: 'complete',
+        progress: 100,
+        stage: 'レポート生成完了',
+        updated_at: Date.now(),
+        report_id: reportIdFromJson(resultRecord) || latestState.report_id,
+        report_title: reportTitleFromAnswer(answer) || latestState.report_title,
+        answer_preview: answerPreview(answer) || latestState.answer_preview
+      };
+      writeChatRunState(completed);
+
+      return new Response(JSON.stringify(result), {
+        status: runResponse.status,
+        statusText: runResponse.statusText,
+        headers: runResponse.headers
+      });
     } catch (error) {
-      writeChatRunState({
-        ...baseRun,
+      const errorState: ChatRunState = {
+        ...runState,
         status: 'error',
+        progress: 100,
+        stage: '分析に失敗しました',
         updated_at: Date.now(),
         error: error instanceof Error ? error.message : '分析に失敗しました'
-      });
-      throw error;
+      };
+      writeChatRunState(errorState);
+      return new Response(JSON.stringify({ error: errorState.error }), { status: 500, statusText: 'Chat job failed' });
     }
   };
 
@@ -345,18 +419,58 @@ function formatTime(value: number) {
   return new Date(value).toLocaleString('ja-JP');
 }
 
-function RunStatusCard({ run, onClear }: { run: ChatRunState; onClear: () => void }) {
-  if (run.status === 'running') {
+function progressLabel(run: ChatRunState) {
+  const p = Math.max(0, Math.min(100, Math.round(run.progress || 0)));
+  if (run.status === 'complete') return '100%';
+  if (run.status === 'error') return '停止';
+  return `${p}%`;
+}
+
+function estimateText(run: ChatRunState) {
+  if (run.status === 'complete') return '完了';
+  if (run.status === 'error') return 'エラー終了';
+  const progress = Math.max(1, Math.min(99, run.progress || 1));
+  const elapsed = Date.now() - run.started_at;
+  if (elapsed < 5000 || progress < 10) return '所要時間を推定中';
+  const total = elapsed / (progress / 100);
+  const remainMs = Math.max(0, total - elapsed);
+  const remainSec = Math.ceil(remainMs / 1000);
+  if (remainSec < 60) return `残り約${remainSec}秒`;
+  return `残り約${Math.ceil(remainSec / 60)}分`;
+}
+
+function ProgressBar({ run }: { run: ChatRunState }) {
+  const progress = Math.max(0, Math.min(100, Math.round(run.progress || (run.status === 'running' ? 8 : 0))));
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between text-xs font-bold">
+        <span>{run.stage || (run.status === 'queued' ? '待機中' : '分析中')}</span>
+        <span>{progressLabel(run)}</span>
+      </div>
+      <div className="mt-2 h-3 overflow-hidden rounded-full bg-white/70 ring-1 ring-black/10">
+        <div className="h-full rounded-full bg-zinc-900 transition-all duration-500" style={{ width: `${progress}%` }} />
+      </div>
+      <p className="mt-1 text-xs">{estimateText(run)}</p>
+    </div>
+  );
+}
+
+function RunStatusCard({ run, onClear, onRefresh }: { run: ChatRunState; onClear: () => void; onRefresh: () => void }) {
+  if (run.status === 'queued' || run.status === 'running') {
     return (
       <div className="card border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            <p className="font-bold">分析中です。ページ内で移動しても、この状態は保持されます。</p>
+          <div className="flex-1">
+            <p className="font-bold">分析中です。ページ移動・画面復帰後もジョブ状態を復元します。</p>
             <p className="mt-1">開始: {formatTime(run.started_at)} / モデル: {run.model || '不明'} / 対象: {run.target_scope || '不明'}</p>
             {run.query && <p className="mt-1 line-clamp-2">指示: {run.query}</p>}
-            <p className="mt-1 text-xs">完了後は分析履歴にも保存されます。ブラウザの完全更新やタブ終了では通信が中断される場合があります。</p>
+            <ProgressBar run={run} />
+            <p className="mt-2 text-xs">スマホ待ち受けから戻った場合も、保存されたjob_idから状態を再取得します。ただし、OSやブラウザが通信自体を強制終了した場合は再実行が必要になることがあります。</p>
           </div>
-          <Link className="btn shrink-0 bg-white" href="/reports">分析履歴</Link>
+          <div className="flex shrink-0 gap-2">
+            <button className="btn bg-white" type="button" onClick={onRefresh}>更新</button>
+            <Link className="btn bg-white" href="/reports">分析履歴</Link>
+          </div>
         </div>
       </div>
     );
@@ -366,10 +480,11 @@ function RunStatusCard({ run, onClear }: { run: ChatRunState; onClear: () => voi
     return (
       <div className="card border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-900">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            <p className="font-bold">前回の分析が完了しました。</p>
+          <div className="flex-1">
+            <p className="font-bold">分析が完了しました。</p>
             <p className="mt-1">完了: {formatTime(run.updated_at)}{run.report_title ? ` / ${run.report_title}` : ''}</p>
-            {run.answer_preview && <p className="mt-1 line-clamp-2">{run.answer_preview}</p>}
+            <ProgressBar run={run} />
+            {run.answer_preview && <p className="mt-2 line-clamp-2">{run.answer_preview}</p>}
           </div>
           <div className="flex shrink-0 gap-2">
             <Link className="btn bg-white" href={run.report_id ? `/reports/${run.report_id}` : '/reports'}>開く</Link>
@@ -383,9 +498,10 @@ function RunStatusCard({ run, onClear }: { run: ChatRunState; onClear: () => voi
   return (
     <div className="card border-red-200 bg-red-50 p-4 text-sm leading-6 text-red-800">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <p className="font-bold">前回の分析はエラーで終了しました。</p>
-          <p className="mt-1">{run.error || '不明なエラー'}</p>
+        <div className="flex-1">
+          <p className="font-bold">分析はエラーで終了しました。</p>
+          <ProgressBar run={run} />
+          <p className="mt-2">{run.error || '不明なエラー'}</p>
         </div>
         <button className="btn bg-white" type="button" onClick={onClear}>閉じる</button>
       </div>
@@ -395,9 +511,25 @@ function RunStatusCard({ run, onClear }: { run: ChatRunState; onClear: () => voi
 
 export function ChatPanelModelOptionsPatch() {
   const [runState, setRunState] = useState<ChatRunState | null>(null);
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+
+  async function refreshRunState(current = runState) {
+    if (!current?.job_id) return;
+    try {
+      const fetcher = originalFetchRef.current || window.fetch;
+      const next = await fetchJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
+      writeChatRunState(next);
+      setRunState(next);
+    } catch {
+      // Manual refresh should not break the page.
+    }
+  }
 
   useEffect(() => {
-    setRunState(readChatRunState());
+    const stored = readChatRunState();
+    setRunState(stored);
+    const original = window.fetch;
+    originalFetchRef.current = original;
     const restoreFetch = patchFetch();
     const onRunState = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as ChatRunState | null : readChatRunState();
@@ -421,6 +553,20 @@ export function ChatPanelModelOptionsPatch() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!runState?.job_id || (runState.status !== 'queued' && runState.status !== 'running')) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      if (cancelled) return;
+      await refreshRunState(readChatRunState() || runState);
+    }, 2500);
+    void refreshRunState(runState);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [runState?.job_id, runState?.status]);
+
   function clearRunState() {
     writeChatRunState(null);
     setRunState(null);
@@ -428,7 +574,7 @@ export function ChatPanelModelOptionsPatch() {
 
   return (
     <div className="space-y-4">
-      {runState && <RunStatusCard run={runState} onClear={clearRunState} />}
+      {runState && <RunStatusCard run={runState} onClear={clearRunState} onRefresh={() => refreshRunState()} />}
       <ChatPanel />
     </div>
   );

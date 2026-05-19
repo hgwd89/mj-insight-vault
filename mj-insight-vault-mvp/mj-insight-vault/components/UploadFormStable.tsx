@@ -150,7 +150,8 @@ export function UploadFormStable() {
     if (!draftReady) return;
 
     const completedWithoutFailures = result?.failed === 0 && files.length === 0 && rows.length === 0 && !batchIdState;
-    if (completedWithoutFailures) {
+    const completedRowsWithoutFailures = files.length > 0 && rows.length === files.length && rows.every((row) => row.status === '完了' || row.status === 'OCR待ち');
+    if (completedWithoutFailures || completedRowsWithoutFailures) {
       const timer = window.setTimeout(() => {
         clearUploadDraft();
       }, 600);

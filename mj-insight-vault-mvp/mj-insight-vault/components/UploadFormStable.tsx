@@ -349,6 +349,8 @@ export function UploadFormStable() {
         setMessage(`完了：成功 ${saved}枚 / 失敗 ${failedNext.length}枚。失敗分だけ画面に残しました。再度アップロードできます。`);
       } else {
         setFiles([]);
+        setRows([]);
+        setFailedFiles([]);
         setBatchIdState('');
         clearUploadDraft();
         setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');

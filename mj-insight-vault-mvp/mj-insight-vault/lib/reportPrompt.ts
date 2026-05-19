@@ -22,11 +22,19 @@ Universal analysis rules:
 3. Do not treat company actions as consumer insights. Infer what consumer constraint, anxiety, desire, or behavior may have made the action commercially meaningful, and label the inference strength.
 4. Identify tensions: convenience vs meaning, price vs dignity, health vs pleasure, automation vs trust, individuality vs belonging, efficiency vs experience, safety vs freedom, novelty vs familiarity.
 5. Find what consumers are adapting to, avoiding, preserving, outsourcing, rationalizing, compensating for, or trying to regain.
-6. Every important claim must include article IDs AND article titles/dates when available. UUID-only evidence is insufficient.
+6. Every important claim must include clickable article-title evidence links. UUID-only evidence is forbidden in answer_text.
 7. Avoid generic trend wording unless the deeper consumer mechanism is explained in concrete daily-life terms.
 8. The main objective is to find strong research themes, not to propose product actions.
 9. Weak evidence must be downgraded. If evidence is indirect or adjacent, write 仮説, 可能性, 未検証, or 調査が必要. Do not make it sound proven.
 10. If the article group does not directly support a requested theme, say so clearly in coverage_diagnosis and make the output a hypothesis map rather than a conclusion.
+
+Article citation/link rules:
+- The user should not have to read UUIDs to understand evidence.
+- In answer_text, cite evidence as Markdown links using article_link when provided, for example: [記事タイトル｜2026-05-18](/articles/article_id).
+- Do not write bare UUIDs in answer_text except inside a compact appendix or JSON fields.
+- In JSON, include both machine IDs and human-readable evidence: article_id, headline, article_date, article_url, article_link.
+- If an article has no headline, use 無題の記事｜日付不明, but still link to article_url.
+- Evidence_matrix entries must be human-readable and clickable in UI: headline, article_date, article_url, article_link are mandatory when available.
 
 Mandatory report-making process. You must internally complete these steps and expose the summary in analysis_process:
 Step 1. Evidence inventory:
@@ -59,7 +67,7 @@ D = Weak/speculative: the idea is interesting but not supported enough; it must 
 Noise = advertising, empty OCR, unrelated corporate info, or insufficient text. Do not use as a main evidence source.
 
 Claim discipline:
-- Important claims require claim, evidence_article_ids, evidence_article_titles, concrete_article_facts, evidence_strength, what_can_be_said, what_cannot_be_said, and research_need.
+- Important claims require claim, evidence_article_ids, evidence_article_titles, evidence_article_links, concrete_article_facts, evidence_strength, what_can_be_said, what_cannot_be_said, and research_need.
 - If evidence_strength is C or D, the answer_text must not use断定表現. Use 仮説, 可能性, 未検証, 調査で確認すべき.
 - Do not convert company initiatives directly into consumer truth. Example: a company launched a cooling product does not prove consumers want all cooling products; it suggests a demand signal only if sales, consumer comments, adoption, repeat purchase, or market response are present.
 - Do not hide uncertainty in polished wording. Make uncertainty visible.
@@ -68,8 +76,8 @@ Strict output schema rules:
 - answer_text MUST be a single Markdown string. Never return answer_text as an object or array.
 - executive_summary MUST be an array of short strings.
 - explanatory_hypotheses MUST be an array of objects. Do not use insight_hypotheses as the primary key.
-- cards MUST be an array of article card objects with article_id, headline, article_date, reason, confidence. Never return cards as strings.
-- evidence_matrix MUST be an array of evidence objects. Each object must include claim, article_id, headline, article_date, evidence_excerpt_or_fact, evidence_strength, limitation, what_can_be_said, what_cannot_be_said, research_need.
+- cards MUST be an array of article card objects with article_id, headline, article_date, article_url, article_link, reason, confidence. Never return cards as strings.
+- evidence_matrix MUST be an array of evidence objects. Each object must include claim, article_id, headline, article_date, article_url, article_link, evidence_excerpt_or_fact, evidence_strength, limitation, what_can_be_said, what_cannot_be_said, research_need.
 - refutation_audit MUST be an array. Each object must include target_claim, possible_counterargument, evidence_gap, downgrade_or_revision, falsification_condition.
 - hypothesis_comparison MUST be an array. Each object must include phenomenon, hypothesis_options, currently_strongest_read, why, what_needs_research.
 - quality_score MUST use these keys: evidence_strength, hypothesis_depth, research_potential, restraint, originality, overall, reason.
@@ -77,7 +85,7 @@ Strict output schema rules:
 
 Required answer_text Markdown structure:
 ## 0. カバレッジ診断
-Write target article count, direct evidence count, adjacent evidence count, weak/noise count, article-date gaps, topic bias, and the range of what can/cannot be said.
+Write target article count, direct evidence count, adjacent evidence count, weak/noise count, article-date gaps, topic bias, and the range of what can/cannot be said. Use clickable article-title links for examples.
 
 ## 1. 結論
 Write one sharp paragraph. It must distinguish conclusion from hypothesis. If evidence is indirect, say so.
@@ -86,7 +94,7 @@ Write one sharp paragraph. It must distinguish conclusion from hypothesis. If ev
 Do not use abstract labels alone. Explain concrete daily-life scenes: what people are facing, what they want to avoid, what they are trying to preserve or recover, and how their choice behavior changes.
 
 ## 3. 全体構造
-Write 4 to 6 layers. Each layer must include article titles/dates or article IDs and evidence strength labels.
+Write 4 to 6 layers. Each layer must include clickable article-title links and evidence strength labels.
 
 ## 4. 主要トレンド
 Write 5 to 8 trends. For each, include: article fact, consumer interpretation, evidence strength, and what cannot be concluded.
@@ -98,10 +106,10 @@ Write the most important hypotheses and three WHY levels. Each WHY level must be
 For each major claim, challenge it. State alternative explanations, weak points, overreach risks, and how the claim was revised or downgraded.
 
 ## 7. 根拠マトリクス
-For key claims, show article title/date, concrete fact, what can be said, what cannot be said, evidence strength, and research need. UUID-only references are not enough.
+For key claims, show clickable article title/date, concrete fact, what can be said, what cannot be said, evidence strength, and research need. UUID-only references are not enough.
 
 ## 8. 調査が必要そうな論点
-Write prioritized research themes. Do not write execution actions. Each theme must explain why research is needed, the unresolved question, hypothesis to test, evidence article IDs, evidence strength, and priority.
+Write prioritized research themes. Do not write execution actions. Each theme must explain why research is needed, the unresolved question, hypothesis to test, clickable evidence article links, evidence strength, and priority.
 
 ## 9. 根拠と限界
 Write strongest evidence, adjacent evidence, weak evidence, noise/excluded items, and what cannot be concluded yet.
@@ -113,7 +121,7 @@ Required JSON keys:
 report_title, answer_text, executive_summary, coverage_diagnosis, structure_layers, major_trends, cross_article_insights, consumer_narrative, explanatory_hypotheses, why_chains, hypothesis_comparison, tensions, research_needs, evidence_matrix, refutation_audit, weak_readings_to_avoid, limitations, cards, quality_score, selected_lenses, analysis_process, shallow_summary_check
 
 Final self-check before returning JSON:
-- Did I cite article titles/dates, not only IDs?
+- Did I cite clickable article-title/date links, not only IDs?
 - Did I clearly separate facts from hypotheses?
 - Did I refute my own major claims?
 - Did I downgrade weak claims instead of polishing them into certainty?

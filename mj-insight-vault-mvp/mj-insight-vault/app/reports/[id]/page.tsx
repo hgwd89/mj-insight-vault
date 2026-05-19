@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
 
@@ -38,6 +38,9 @@ type ReportChatAnswer = {
 };
 
 const modelOptions = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] as const;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const textTokenPattern = /(\[[^\]]+\]\([^)]+\)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+const markdownLinkPattern = /^\[([^\]]+)\]\(([^)]+)\)$/;
 
 type ModelName = typeof modelOptions[number];
 
@@ -60,6 +63,70 @@ function getReportTitle(report: Report) {
 
 function getPinned(report: Report) {
   return Boolean(report.answer_json?.pinned);
+}
+
+function articleLabel(article: Article) {
+  return `${article.headline || '無題の記事'}｜${article.article_date || '日付不明'}`;
+}
+
+function articleHref(articleId: string) {
+  return `/articles/${articleId}`;
+}
+
+function normalizeInternalHref(href: string) {
+  if (href.startsWith('/articles/')) return href;
+  try {
+    const url = new URL(href);
+    return url.pathname.startsWith('/articles/') ? url.pathname : '';
+  } catch {
+    return '';
+  }
+}
+
+function MarkdownText({ text, articles, className }: { text: string; articles: Article[]; className?: string }) {
+  const articleMap = useMemo(() => new Map(articles.map((article) => [article.id, article])), [articles]);
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(textTokenPattern)) {
+    const token = match[0];
+    const index = match.index || 0;
+    if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
+
+    const markdownLink = token.match(markdownLinkPattern);
+    if (markdownLink) {
+      const label = markdownLink[1];
+      const href = normalizeInternalHref(markdownLink[2]);
+      if (href) {
+        nodes.push(
+          <Link key={`${index}-${token}`} href={href} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">
+            {label}
+          </Link>
+        );
+      } else {
+        nodes.push(label);
+      }
+    } else if (uuidPattern.test(token)) {
+      const article = articleMap.get(token);
+      if (article) {
+        nodes.push(
+          <Link key={`${index}-${token}`} href={articleHref(article.id)} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">
+            {articleLabel(article)}
+          </Link>
+        );
+      } else {
+        nodes.push(token);
+      }
+    } else {
+      nodes.push(token);
+    }
+
+    lastIndex = index + token.length;
+  }
+
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+
+  return <div className={className}>{nodes}</div>;
 }
 
 function buildMarkdown(report: Report, articles: Article[], latestAnswer: ReportChatAnswer | null) {
@@ -87,7 +154,7 @@ function buildMarkdown(report: Report, articles: Article[], latestAnswer: Report
     lines.push('- 根拠記事なし');
   } else {
     for (const article of articles) {
-      lines.push(`- ${article.article_date || '日付不明'}｜${article.headline || '無題の記事'}｜${article.id}`);
+      lines.push(`- [${articleLabel(article)}](${articleHref(article.id)})`);
     }
   }
 
@@ -254,7 +321,7 @@ export default function ReportDetailPage() {
         <p className="mt-2 rounded-xl bg-zinc-50 p-3 text-sm leading-7">{report.user_query}</p>
 
         <h2 className="mt-5 font-bold">元レポート</h2>
-        <p className="mt-2 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700">{getInitialAnswer(report)}</p>
+        <MarkdownText text={getInitialAnswer(report)} articles={articles} className="mt-2 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700" />
       </section>
 
       <section className="card p-5">
@@ -291,7 +358,7 @@ export default function ReportDetailPage() {
             {conversation.map((turn, index) => (
               <div key={index} className="text-sm leading-6">
                 <b>{turn.role === 'user' ? 'あなた' : 'MJ記事エージェント'}：</b>
-                <span className="whitespace-pre-wrap">{turn.content}</span>
+                <MarkdownText text={turn.content} articles={articles} className="inline whitespace-pre-wrap" />
               </div>
             ))}
           </div>
@@ -319,7 +386,7 @@ export default function ReportDetailPage() {
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {latestAnswer.model_used && <span className="badge">model: {latestAnswer.model_used}</span>}
           </div>
-          <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{getAnswerText(latestAnswer)}</p>
+          <MarkdownText text={getAnswerText(latestAnswer)} articles={articles} className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700" />
 
           {Array.isArray(latestAnswer.suggested_next_angles) && latestAnswer.suggested_next_angles.length > 0 && (
             <div className="mt-4">
@@ -341,12 +408,14 @@ export default function ReportDetailPage() {
               <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-semibold">{article.headline || '無題の記事'}</p>
+                    <Link href={articleHref(article.id)} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">
+                      {article.headline || '無題の記事'}
+                    </Link>
                     <span className="badge">{article.article_date || '日付不明'}</span>
                   </div>
                   <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-600">{article.ocr_text}</p>
                 </div>
-                <Link className="btn shrink-0" href={`/articles/${article.id}`}>記事詳細</Link>
+                <Link className="btn shrink-0" href={articleHref(article.id)}>記事詳細</Link>
               </div>
             </div>
           ))}

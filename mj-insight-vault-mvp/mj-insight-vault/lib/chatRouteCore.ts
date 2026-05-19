@@ -31,6 +31,15 @@ const SELECT = 'id, batch_id, headline, article_date, ocr_text, status, created_
 const LIGHT_WORDS = /軽く|ざっくり|簡単|概要|一覧|傾向だけ|軽量|速報|まずは|ラフ/i;
 const ALL_DATA_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 
+function articleUrl(articleId: string) {
+  return `/articles/${articleId}`;
+}
+function articleLabel(a: Article) {
+  return `${a.headline || '無題の記事'}｜${a.article_date || '日付不明'}`;
+}
+function articleLink(a: Article) {
+  return `[${articleLabel(a)}](${articleUrl(a.id)})`;
+}
 function selectableModels() {
   return Array.from(new Set([TEXT_MODEL, ...(process.env.OPENAI_CHAT_MODELS || '').split(',').map((v) => v.trim()).filter(Boolean), ...MODELS].filter(Boolean)));
 }
@@ -59,10 +68,28 @@ function turns(v: unknown): Turn[] {
   }).filter(Boolean).slice(-8) as Turn[];
 }
 function cards(items: Article[]) {
-  return items.slice(0, 18).map((a) => ({ article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', reason: '根拠候補', confidence: a.article_date ? 'medium' : 'low' }));
+  return items.slice(0, 18).map((a) => ({
+    article_id: a.id,
+    headline: a.headline,
+    article_date: a.article_date || '日付不明',
+    article_url: articleUrl(a.id),
+    article_link: articleLink(a),
+    reason: '根拠候補',
+    confidence: a.article_date ? 'medium' : 'low'
+  }));
 }
 function evidence(items: Article[]) {
-  return items.slice(0, 14).map((a) => ({ claim: '根拠として参照', article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', excerpt: excerpt(a), confidence: 'medium' }));
+  return items.slice(0, 14).map((a) => ({
+    claim: '根拠として参照',
+    article_id: a.id,
+    headline: a.headline,
+    article_date: a.article_date || '日付不明',
+    article_url: articleUrl(a.id),
+    article_link: articleLink(a),
+    evidence_excerpt_or_fact: excerpt(a),
+    excerpt: excerpt(a),
+    confidence: 'medium'
+  }));
 }
 function uniq(rows: Article[]) {
   const seen = new Set<string>();
@@ -87,8 +114,8 @@ function resolveModel(requested: string, q: string, template: Template) {
   };
 }
 function qualityGuard(mode: AnalysisMode) {
-  if (mode === 'quick_scan') return 'For quick scan, be concise but still separate facts from hypotheses and include article IDs. Do not pretend to be final high-quality analysis.';
-  return 'For serious report, do not stop at fact organization. Select useful lenses, explain why those lenses fit, build cross-article clusters, produce narrative, 3-level WHY chains, research questions, evidence strength, limits, and shallow-read warnings.';
+  if (mode === 'quick_scan') return 'For quick scan, be concise but still separate facts from hypotheses and include clickable article links. Do not pretend to be final high-quality analysis.';
+  return 'For serious report, do not stop at fact organization. Select useful lenses, explain why those lenses fit, build cross-article clusters, produce narrative, 3-level WHY chains, research questions, evidence strength, limits, shallow-read warnings, and clickable article-title evidence links.';
 }
 function scanTextLimit(count: number) {
   if (count > 120) return 550;
@@ -124,7 +151,7 @@ async function scanArticles(openai: OpenAIClient, q: string, items: Article[], m
 
   try {
     const limit = scanTextLimit(items.length);
-    const scanInput = items.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', text: (a.ocr_text || '').slice(0, limit) }));
+    const scanInput = items.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_url: articleUrl(a.id), article_link: articleLink(a), text: (a.ocr_text || '').slice(0, limit) }));
     const scanSystem = `Return JSON only. This is a low-cost screening step before final report writing. Do not write the final report. Map the diversity of MJ articles, cluster consumer signals, remove weak/noisy articles, and choose the most useful article IDs for final analysis. Select at most ${maxFinal} article IDs. Required keys: coverage_map, clusters, selected_article_ids, rejected_or_low_priority_ids, scan_notes.`;
     const completion = await openai.chat.completions.create({
       model: scanner,
@@ -194,6 +221,7 @@ function basePayload(modelInfo: ReturnType<typeof resolveModel>, scope: Scope, t
     related_article_count: allItems.length,
     source_coverage: { article_count: allItems.length, report_article_count: reportItems.length, coverage_note: retrievalMode === 'wide_all_data_scan' ? `全データ指示のため${allItems.length}件を広域スキャンし、${scan.scan_model}で${reportItems.length}件に選抜して最終分析` : allItems.length ? '対象記事から分析' : '分析対象の記事が不足しています。' },
     scan_summary: scan.scan_summary,
+    article_lookup: reportItems.map((a) => ({ article_id: a.id, headline: a.headline || '無題の記事', article_date: a.article_date || '日付不明', article_url: articleUrl(a.id), article_link: articleLink(a) })),
     cards: cards(reportItems),
     evidence: evidence(reportItems)
   };
@@ -213,8 +241,8 @@ async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof
   const reportItems = scan.final_articles;
   const base = basePayload(modelInfo, scope, template, items, reportItems, retrievalMode, scan);
   const limit = finalTextLimit(reportItems.length, retrievalMode);
-  const articles = reportItems.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', created_at: a.created_at || null, text: (a.ocr_text || '').slice(0, limit) }));
-  const system = `${MJ_REPORT_SYSTEM_PROMPT}\n\n${qualityGuard(modelInfo.analysis_mode)}\nIf scan_enabled is true, use scan_summary to preserve article diversity and do not overfit to one cluster. Return selected_lenses, analysis_process, quality_score, and shallow_summary_check in JSON.`;
+  const articles = reportItems.map((a, i) => ({ no: i + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_url: articleUrl(a.id), article_link: articleLink(a), created_at: a.created_at || null, text: (a.ocr_text || '').slice(0, limit) }));
+  const system = `${MJ_REPORT_SYSTEM_PROMPT}\n\n${qualityGuard(modelInfo.analysis_mode)}\nIf scan_enabled is true, use scan_summary to preserve article diversity and do not overfit to one cluster. Use article_link or [headline｜date](article_url) in answer_text whenever citing evidence. Return selected_lenses, analysis_process, quality_score, and shallow_summary_check in JSON.`;
   try {
     const completion = await openai.chat.completions.create({ model: modelInfo.model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, analysis_mode: modelInfo.analysis_mode, requested_model: modelInfo.requested_model, model_used: modelInfo.model, retrieval_mode: retrievalMode, scan_enabled: scan.scan_enabled, scan_model: scan.scan_model, article_count_scanned: scan.article_count_scanned, article_count_for_report: scan.article_count_for_report, scan_summary: scan.scan_summary, article_text_limit: limit, articles }, null, 2) }] });
     const raw = completion.choices[0]?.message.content || '{}';

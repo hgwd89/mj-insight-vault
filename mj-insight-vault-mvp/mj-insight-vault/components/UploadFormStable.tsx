@@ -1,8 +1,16 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
+import {
+  clearUploadDraft,
+  fileToStoredDraftFile,
+  readUploadDraft,
+  storedDraftFileToFile,
+  writeUploadDraft,
+  type UploadDraft
+} from '@/lib/uploadDraftStore';
 
 const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中', '再試行中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
@@ -35,6 +43,14 @@ function retryDelay(attempt: number) {
 
 function errMsg(error: unknown) {
   return error instanceof Error ? error.message : '失敗';
+}
+
+function formatSavedAt(value: number) {
+  if (!value) return '不明';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '不明';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, message: string) => void): Promise<T> {
@@ -82,9 +98,67 @@ export function UploadFormStable() {
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [failedFiles, setFailedFiles] = useState<FailedFile[]>([]);
+  const [batchIdState, setBatchIdState] = useState('');
+  const [recoverableDraft, setRecoverableDraft] = useState<UploadDraft | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const [draftStatus, setDraftStatus] = useState('');
 
   const sameNames = useMemo(() => sameNameIndexes(files), [files]);
   const sameNameSet = useMemo(() => new Set(sameNames.flatMap(([, indexes]) => indexes)), [sameNames]);
+  const recoverableFailedCount = recoverableDraft?.rows.filter((row) => row.status === '失敗').length || 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    readUploadDraft()
+      .then((draft) => {
+        if (cancelled || !draft) return;
+        if ((draft.files?.length || 0) > 0 || (draft.rows?.length || 0) > 0) {
+          setRecoverableDraft(draft);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDraftReady(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: BeforeUnloadEvent) => {
+      if (!busy) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [busy]);
+
+  useEffect(() => {
+    if (!draftReady) return;
+
+    const hasLocalDraft = files.length > 0 || rows.length > 0 || Boolean(memo.trim()) || Boolean(date.trim()) || Boolean(batchIdState);
+    const onlyShowingRecoverableDraft = recoverableDraft && !hasLocalDraft && autoOcr === true;
+    if (onlyShowingRecoverableDraft) return;
+
+    const timer = window.setTimeout(() => {
+      if (!hasLocalDraft && autoOcr === true) {
+        clearUploadDraft();
+        return;
+      }
+
+      writeUploadDraft({
+        version: 1,
+        memo,
+        date,
+        autoOcr,
+        batchId: batchIdState || result?.batchId || undefined,
+        rows,
+        files: files.map(fileToStoredDraftFile),
+        savedAt: Date.now()
+      });
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [files, rows, memo, date, autoOcr, batchIdState, result?.batchId, draftReady, recoverableDraft]);
 
   function patchRow(index: number, row: Partial<Row>) {
     setRows((prev) => prev.map((r, i) => i === index ? { ...r, ...row } : r));
@@ -95,8 +169,10 @@ export function UploadFormStable() {
     setRows([]);
     setResult(null);
     setFailedFiles([]);
+    setBatchIdState('');
+    setRecoverableDraft(null);
     const found = sameNameIndexes(list);
-    setMessage(found.length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '選択しました');
+    setMessage(found.length ? '同じファイル名があります。不要な方を外してからアップロードしてください。' : '選択しました。ページ更新時に復元できるよう一時保存します。');
   }
 
   function removeFile(index: number) {
@@ -104,6 +180,7 @@ export function UploadFormStable() {
     setFiles(next);
     setRows([]);
     setResult(null);
+    setFailedFiles([]);
     setMessage(sameNameIndexes(next).length ? '同じファイル名があります。不要な方を外してください。' : '選択内容を更新しました');
   }
 
@@ -112,7 +189,35 @@ export function UploadFormStable() {
     setRows([]);
     setResult(null);
     setFailedFiles([]);
+    setBatchIdState('');
+    setRecoverableDraft(null);
+    clearUploadDraft();
     setMessage('選択中の画像をクリアしました');
+  }
+
+  function discardDraft() {
+    setRecoverableDraft(null);
+    clearUploadDraft();
+    setDraftStatus('前回の未完了アップロードを破棄しました');
+  }
+
+  function restoreDraft() {
+    if (!recoverableDraft) return;
+    const restoredFiles = (recoverableDraft.files || []).map(storedDraftFileToFile);
+    const restoredRows = (recoverableDraft.rows || []).map((row) => ({ ...row }));
+    setFiles(restoredFiles);
+    setRows(restoredRows);
+    setMemo(recoverableDraft.memo || '');
+    setDate(recoverableDraft.date || '');
+    setAutoOcr(recoverableDraft.autoOcr !== false);
+    setBatchIdState(recoverableDraft.batchId || '');
+    setResult(null);
+    setFailedFiles(restoredRows
+      .map((row, index) => row.status === '失敗' && restoredFiles[index] ? { file: restoredFiles[index], row } : null)
+      .filter((item): item is FailedFile => Boolean(item)));
+    setRecoverableDraft(null);
+    setDraftStatus('');
+    setMessage('前回の未完了アップロードを復元しました。必要に応じて再度アップロードしてください。');
   }
 
   function keepFirstSameNames() {
@@ -125,6 +230,7 @@ export function UploadFormStable() {
     setFiles(next);
     setRows([]);
     setResult(null);
+    setFailedFiles([]);
     setMessage('同じファイル名の2件目以降を外しました');
   }
 
@@ -133,6 +239,7 @@ export function UploadFormStable() {
     setFiles(onlyFailed);
     setRows(failedFiles.map((x) => ({ ...x.row, status: '待機', note: '再アップロード対象' })));
     setResult(null);
+    setBatchIdState('');
     setMessage(`失敗した画像 ${onlyFailed.length}枚だけを再選択しました。再度アップロードできます。`);
   }
 
@@ -189,10 +296,12 @@ export function UploadFormStable() {
     setBusy(true);
     setResult(null);
     setFailedFiles([]);
+    setBatchIdState('');
+    setRecoverableDraft(null);
     setRows(targetFiles.map((f) => ({ name: f.name, status: '待機' })));
     setMessage('まとめて処理中です。失敗時は最大3回まで自動再試行します。OCR高画質設定で保存します。');
 
-    let batchId = '';
+    let localBatchId = '';
     let saved = 0;
     let ocr = 0;
     let failed = 0;
@@ -200,15 +309,16 @@ export function UploadFormStable() {
     const failedNext: FailedFile[] = [];
 
     try {
-      batchId = await withRetry(
+      localBatchId = await withRetry(
         () => startBatch(targetFiles.length),
         (attempt, msg) => setMessage(`開始に失敗しました。${attempt}/${MAX_ATTEMPTS}回目を再試行中：${msg}`)
       );
+      setBatchIdState(localBatchId);
 
       for (let i = 0; i < targetFiles.length; i++) {
         try {
           const imageId = await withRetry(
-            () => uploadImage(batchId, targetFiles[i], i),
+            () => uploadImage(localBatchId, targetFiles[i], i),
             (attempt, msg) => patchRow(i, { status: '再試行中', note: `保存 ${attempt}/${MAX_ATTEMPTS}回目：${msg}` })
           );
           saved += 1;
@@ -232,13 +342,15 @@ export function UploadFormStable() {
       }
 
       setFailedFiles(failedNext);
-      setResult({ batchId, selected: targetFiles.length, saved, ocr, failed, articles });
+      setResult({ batchId: localBatchId, selected: targetFiles.length, saved, ocr, failed, articles });
       if (failedNext.length) {
         setFiles(failedNext.map((x) => x.file));
         setRows(failedNext.map((x) => x.row));
         setMessage(`完了：成功 ${saved}枚 / 失敗 ${failedNext.length}枚。失敗分だけ画面に残しました。再度アップロードできます。`);
       } else {
         setFiles([]);
+        setBatchIdState('');
+        clearUploadDraft();
         setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
       }
     } catch (error) {
@@ -258,7 +370,7 @@ export function UploadFormStable() {
 
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
-    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、OCRと記事候補化まで実行します。失敗した画像は画面に残るので、その分だけ再アップロードできます。</p>
+    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、OCRと記事候補化まで実行します。失敗した画像は画面に残るので、その分だけ再アップロードできます。選択中の画像と進行状態はブラウザ内に一時保存します。</p>
     <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
       <b>使い方</b><br />
       1. 紙面の日付が分かる場合は「記事日付」に入力<br />
@@ -268,6 +380,21 @@ export function UploadFormStable() {
       5. 失敗した画像がある場合は、その画像だけが残るので再度アップロード<br />
       <span className="text-zinc-500">OCRは最大辺{OCR_MAX_IMAGE_SIDE}px・JPEG品質{OCR_JPEG_QUALITY}の高画質設定で保存します。</span>
     </div>
+
+    {recoverableDraft && <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="font-bold">前回の未完了アップロードがあります</h2>
+          <p className="mt-1">画像 {recoverableDraft.files.length}枚 / 失敗 {recoverableFailedCount}件 / 最終保存 {formatSavedAt(recoverableDraft.savedAt)}</p>
+          <p className="mt-1 text-amber-900">自動では再開しません。復元後に必要な分だけ再度アップロードしてください。</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="btn btn-primary" onClick={restoreDraft} disabled={busy}>前回の未完了アップロードを復元</button>
+          <button className="btn" onClick={discardDraft} disabled={busy}>破棄</button>
+        </div>
+      </div>
+    </div>}
+    {draftStatus && <p className="mt-3 text-sm leading-6 text-zinc-600">{draftStatus}</p>}
 
     <div className="mt-5 space-y-4">
       <textarea className="input min-h-20" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="メモ：例 2026年5月中旬 / 食品・AI関連多め" />

@@ -1,13 +1,29 @@
 'use client';
 
-import { useEffect } from 'react';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { ChatPanel } from '@/components/ChatPanel';
 
 const ALL_DATA_RE = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/;
 const DEEP_RE = /本気|しっかり|詳細|深掘|深堀|高品質|レポート|インサイト|ナラティブ|構造|横断|説明仮説|仮説|調査|リサーチ|論点|WHY|why/;
 const LIGHT_RE = /軽く|ざっくり|簡単|概要|一覧|傾向だけ|軽量|速報|まずは|ラフ/;
+const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v1';
+const CHAT_RUN_EVENT = 'mj-chat-run-state';
 
 type JsonRecord = Record<string, unknown>;
+type ChatRunState = {
+  status: 'running' | 'complete' | 'error';
+  query: string;
+  model?: string;
+  target_scope?: string;
+  output_template?: string;
+  started_at: number;
+  updated_at: number;
+  report_id?: string;
+  report_title?: string;
+  answer_preview?: string;
+  error?: string;
+};
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -75,6 +91,8 @@ function normalizeCards(value: unknown, fallback: unknown) {
       article_id,
       headline,
       article_date: text(item.article_date || item.date || '日付不明'),
+      article_url: text(item.article_url),
+      article_link: text(item.article_link),
       reason: text(item.reason || item.note || '根拠候補'),
       confidence: text(item.confidence || 'medium')
     };
@@ -89,10 +107,13 @@ function normalizeChatJson(json: unknown) {
   const baseCards = Array.isArray(answer.cards) ? answer.cards : [];
   const relatedCards = Array.isArray(json.related_articles) ? json.related_articles.map((article) => {
     if (!isRecord(article)) return null;
+    const articleId = text(article.id);
     return {
-      article_id: text(article.id),
+      article_id: articleId,
       headline: text(article.headline || '記事'),
       article_date: text(article.article_date || '日付不明'),
+      article_url: articleId ? `/articles/${articleId}` : '',
+      article_link: articleId ? `[${text(article.headline || '記事')}｜${text(article.article_date || '日付不明')}](/articles/${articleId})` : '',
       reason: '検索で取得した根拠候補',
       confidence: article.article_date ? 'medium' : 'low'
     };
@@ -118,26 +139,129 @@ function normalizeChatJson(json: unknown) {
   return { ...json, answer };
 }
 
+function safeJsonParse(value: unknown): JsonRecord {
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stripReportInstruction(query: string) {
+  return query.split('\n\n【レポート要件】')[0].trim() || query.trim();
+}
+
+function answerPreview(answer: unknown) {
+  if (!isRecord(answer)) return '';
+  const textValue = text(answer.answer_text || answer.summary || answer.report_title);
+  return textValue.length > 220 ? `${textValue.slice(0, 220)}...` : textValue;
+}
+
+function reportTitleFromAnswer(answer: unknown) {
+  return isRecord(answer) ? text(answer.report_title) : '';
+}
+
+function reportIdFromJson(json: unknown) {
+  if (!isRecord(json) || !isRecord(json.report)) return '';
+  return text(json.report.id);
+}
+
+function writeChatRunState(next: ChatRunState | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!next) window.sessionStorage.removeItem(CHAT_RUN_STORAGE_KEY);
+    else window.sessionStorage.setItem(CHAT_RUN_STORAGE_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent(CHAT_RUN_EVENT, { detail: next }));
+  } catch {
+    // State persistence must never break chat execution.
+  }
+}
+
+function readChatRunState(): ChatRunState | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const parsed = safeJsonParse(window.sessionStorage.getItem(CHAT_RUN_STORAGE_KEY));
+    if (parsed.status === 'running' || parsed.status === 'complete' || parsed.status === 'error') return parsed as ChatRunState;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function patchFetch() {
   const original = window.fetch;
   if ((original as typeof window.fetch & { __chatPatched?: boolean }).__chatPatched) return () => undefined;
 
   const patched: typeof window.fetch & { __chatPatched?: boolean } = async (...args) => {
-    const response = await original(...args);
     const target = typeof args[0] === 'string' ? args[0] : args[0] instanceof Request ? args[0].url : String(args[0]);
-    if (!target.includes('/api/chat')) return response;
+    if (!target.includes('/api/chat')) return original(...args);
+
+    const init = args[1];
+    const body = isRecord(init) ? init.body : undefined;
+    const requestBody = safeJsonParse(body);
+    const startedAt = Date.now();
+    const baseRun: ChatRunState = {
+      status: 'running',
+      query: stripReportInstruction(text(requestBody.query) || currentQuery()),
+      model: text(requestBody.model || selectedModel()),
+      target_scope: text(requestBody.target_scope || selectedScope()),
+      output_template: text(requestBody.output_template),
+      started_at: startedAt,
+      updated_at: startedAt
+    };
+
+    writeChatRunState(baseRun);
 
     try {
-      const clone = response.clone();
-      const json = await clone.json();
-      const normalized = normalizeChatJson(json);
-      return new Response(JSON.stringify(normalized), {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers
+      const response = await original(...args);
+
+      try {
+        const clone = response.clone();
+        const json = await clone.json();
+        const normalized = normalizeChatJson(json);
+        const normalizedRecord = isRecord(normalized) ? normalized : {};
+        const answer = normalizedRecord.answer;
+        const now = Date.now();
+
+        if (response.ok) {
+          writeChatRunState({
+            ...baseRun,
+            status: 'complete',
+            updated_at: now,
+            report_id: reportIdFromJson(normalizedRecord),
+            report_title: reportTitleFromAnswer(answer),
+            answer_preview: answerPreview(answer)
+          });
+        } else {
+          writeChatRunState({
+            ...baseRun,
+            status: 'error',
+            updated_at: now,
+            error: text(normalizedRecord.error) || response.statusText || '分析に失敗しました'
+          });
+        }
+
+        return new Response(JSON.stringify(normalized), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers
+        });
+      } catch {
+        if (!response.ok) {
+          writeChatRunState({ ...baseRun, status: 'error', updated_at: Date.now(), error: response.statusText || '分析に失敗しました' });
+        }
+        return response;
+      }
+    } catch (error) {
+      writeChatRunState({
+        ...baseRun,
+        status: 'error',
+        updated_at: Date.now(),
+        error: error instanceof Error ? error.message : '分析に失敗しました'
       });
-    } catch {
-      return response;
+      throw error;
     }
   };
 
@@ -216,9 +340,69 @@ function confirmHighCost(event: Event) {
   if ('stopImmediatePropagation' in event) event.stopImmediatePropagation();
 }
 
+function formatTime(value: number) {
+  if (!value) return '';
+  return new Date(value).toLocaleString('ja-JP');
+}
+
+function RunStatusCard({ run, onClear }: { run: ChatRunState; onClear: () => void }) {
+  if (run.status === 'running') {
+    return (
+      <div className="card border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="font-bold">分析中です。ページ内で移動しても、この状態は保持されます。</p>
+            <p className="mt-1">開始: {formatTime(run.started_at)} / モデル: {run.model || '不明'} / 対象: {run.target_scope || '不明'}</p>
+            {run.query && <p className="mt-1 line-clamp-2">指示: {run.query}</p>}
+            <p className="mt-1 text-xs">完了後は分析履歴にも保存されます。ブラウザの完全更新やタブ終了では通信が中断される場合があります。</p>
+          </div>
+          <Link className="btn shrink-0 bg-white" href="/reports">分析履歴</Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (run.status === 'complete') {
+    return (
+      <div className="card border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-900">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="font-bold">前回の分析が完了しました。</p>
+            <p className="mt-1">完了: {formatTime(run.updated_at)}{run.report_title ? ` / ${run.report_title}` : ''}</p>
+            {run.answer_preview && <p className="mt-1 line-clamp-2">{run.answer_preview}</p>}
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Link className="btn bg-white" href={run.report_id ? `/reports/${run.report_id}` : '/reports'}>開く</Link>
+            <button className="btn bg-white" type="button" onClick={onClear}>閉じる</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card border-red-200 bg-red-50 p-4 text-sm leading-6 text-red-800">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="font-bold">前回の分析はエラーで終了しました。</p>
+          <p className="mt-1">{run.error || '不明なエラー'}</p>
+        </div>
+        <button className="btn bg-white" type="button" onClick={onClear}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
 export function ChatPanelModelOptionsPatch() {
+  const [runState, setRunState] = useState<ChatRunState | null>(null);
+
   useEffect(() => {
+    setRunState(readChatRunState());
     const restoreFetch = patchFetch();
+    const onRunState = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail as ChatRunState | null : readChatRunState();
+      setRunState(detail || null);
+    };
     const onClick = (event: MouseEvent) => {
       if (isSendButton(event.target)) confirmHighCost(event);
     };
@@ -226,14 +410,26 @@ export function ChatPanelModelOptionsPatch() {
       if (isEnterSend(event)) confirmHighCost(event);
     };
 
+    window.addEventListener(CHAT_RUN_EVENT, onRunState);
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKeyDown, true);
     return () => {
       restoreFetch();
+      window.removeEventListener(CHAT_RUN_EVENT, onRunState);
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
   }, []);
 
-  return <ChatPanel />;
+  function clearRunState() {
+    writeChatRunState(null);
+    setRunState(null);
+  }
+
+  return (
+    <div className="space-y-4">
+      {runState && <RunStatusCard run={runState} onClear={clearRunState} />}
+      <ChatPanel />
+    </div>
+  );
 }

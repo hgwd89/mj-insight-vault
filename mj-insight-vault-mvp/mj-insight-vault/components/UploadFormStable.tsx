@@ -149,6 +149,14 @@ export function UploadFormStable() {
   useEffect(() => {
     if (!draftReady) return;
 
+    const completedWithoutFailures = result?.failed === 0 && files.length === 0 && rows.length === 0 && !batchIdState;
+    if (completedWithoutFailures) {
+      const timer = window.setTimeout(() => {
+        clearUploadDraft();
+      }, 600);
+      return () => window.clearTimeout(timer);
+    }
+
     const hasLocalDraft = files.length > 0 || rows.length > 0 || Boolean(memo.trim()) || Boolean(date.trim()) || Boolean(batchIdState);
     const onlyShowingRecoverableDraft = recoverableDraft && !hasLocalDraft && autoOcr === true;
     if (onlyShowingRecoverableDraft) return;
@@ -172,7 +180,7 @@ export function UploadFormStable() {
     }, 600);
 
     return () => window.clearTimeout(timer);
-  }, [files, rows, memo, date, autoOcr, batchIdState, result?.batchId, draftReady, recoverableDraft]);
+  }, [files, rows, memo, date, autoOcr, batchIdState, result?.batchId, result?.failed, draftReady, recoverableDraft]);
 
   function patchRow(index: number, row: Partial<Row>) {
     setRows((prev) => prev.map((r, i) => i === index ? { ...r, ...row } : r));

@@ -250,6 +250,66 @@ async function pollJobUntilDone(originalFetch: typeof window.fetch, jobId: strin
   }
 }
 
+async function runExistingJob(originalFetch: typeof window.fetch, jobId: string, headers: HeadersInit, fallback: ChatRunState) {
+  const runningState: ChatRunState = {
+    ...fallback,
+    status: 'running',
+    progress: Math.max(6, fallback.progress || 6),
+    stage: fallback.stage || '分析を再開中',
+    updated_at: Date.now()
+  };
+  writeChatRunState(runningState);
+
+  const runResponse = await originalFetch(`/api/chat/jobs/${jobId}/run`, { method: 'POST', headers });
+  let runJson: unknown = {};
+  try {
+    runJson = await runResponse.json();
+  } catch {
+    runJson = {};
+  }
+
+  if (!runResponse.ok) {
+    const errorState: ChatRunState = {
+      ...runningState,
+      status: 'error',
+      progress: 100,
+      stage: '分析に失敗しました',
+      error: isRecord(runJson) ? text(runJson.error) || runResponse.statusText : runResponse.statusText,
+      updated_at: Date.now()
+    };
+    writeChatRunState(errorState);
+    return errorState;
+  }
+
+  const result = isRecord(runJson) && isRecord(runJson.result)
+    ? normalizeChatJson(runJson.result)
+    : isRecord(runJson) && isRecord(runJson.job) && isRecord(runJson.job.result_json)
+      ? normalizeChatJson(runJson.job.result_json)
+      : runJson;
+  const resultRecord = isRecord(result) ? result : {};
+  const answer = resultRecord.answer;
+  const finalState = isRecord(runJson) && isRecord(runJson.job)
+    ? stateFromJob(runJson.job, runningState)
+    : runningState;
+
+  if (finalState.status === 'complete') {
+    const completed: ChatRunState = {
+      ...finalState,
+      progress: 100,
+      stage: 'レポート生成完了',
+      updated_at: Date.now(),
+      report_id: reportIdFromJson(resultRecord) || finalState.report_id,
+      report_title: reportTitleFromAnswer(answer) || finalState.report_title,
+      answer_preview: answerPreview(answer) || finalState.answer_preview
+    };
+    writeChatRunState(completed);
+    return completed;
+  }
+
+  writeChatRunState(finalState);
+  return finalState;
+}
+
 function patchFetch() {
   const original = window.fetch;
   if ((original as typeof window.fetch & { __chatPatched?: boolean }).__chatPatched) return () => undefined;
@@ -465,7 +525,7 @@ function RunStatusCard({ run, onClear, onRefresh }: { run: ChatRunState; onClear
             <p className="mt-1">開始: {formatTime(run.started_at)} / モデル: {run.model || '不明'} / 対象: {run.target_scope || '不明'}</p>
             {run.query && <p className="mt-1 line-clamp-2">指示: {run.query}</p>}
             <ProgressBar run={run} />
-            <p className="mt-2 text-xs">スマホ待ち受けから戻った場合も、保存されたjob_idから状態を再取得します。ただし、OSやブラウザが通信自体を強制終了した場合は再実行が必要になることがあります。</p>
+            <p className="mt-2 text-xs">スマホ待ち受けから戻った場合も、保存されたjob_idから状態を再取得し、停止していた場合は自動再開を試みます。</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <button className="btn bg-white" type="button" onClick={onRefresh}>更新</button>
@@ -512,6 +572,24 @@ function RunStatusCard({ run, onClear, onRefresh }: { run: ChatRunState; onClear
 export function ChatPanelModelOptionsPatch() {
   const [runState, setRunState] = useState<ChatRunState | null>(null);
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const resumingJobIdsRef = useRef<Set<string>>(new Set());
+
+  async function resumeQueuedJob(current: ChatRunState) {
+    if (!current.job_id || current.status !== 'queued') return;
+    if (resumingJobIdsRef.current.has(current.job_id)) return;
+
+    const fetcher = originalFetchRef.current || window.fetch;
+    resumingJobIdsRef.current.add(current.job_id);
+    try {
+      const next = await runExistingJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
+      writeChatRunState(next);
+      setRunState(next);
+    } catch {
+      // Auto-resume is best-effort. Polling/manual refresh will try again.
+    } finally {
+      resumingJobIdsRef.current.delete(current.job_id);
+    }
+  }
 
   async function refreshRunState(current = runState) {
     if (!current?.job_id) return;
@@ -520,6 +598,7 @@ export function ChatPanelModelOptionsPatch() {
       const next = await fetchJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
       writeChatRunState(next);
       setRunState(next);
+      if (next.status === 'queued') void resumeQueuedJob(next);
     } catch {
       // Manual refresh should not break the page.
     }
@@ -534,6 +613,7 @@ export function ChatPanelModelOptionsPatch() {
     const onRunState = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as ChatRunState | null : readChatRunState();
       setRunState(detail || null);
+      if (detail?.status === 'queued') void resumeQueuedJob(detail);
     };
     const onClick = (event: MouseEvent) => {
       if (isSendButton(event.target)) confirmHighCost(event);
@@ -541,13 +621,26 @@ export function ChatPanelModelOptionsPatch() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isEnterSend(event)) confirmHighCost(event);
     };
+    const onFocus = () => {
+      const current = readChatRunState();
+      if (current?.job_id && (current.status === 'queued' || current.status === 'running')) void refreshRunState(current);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      onFocus();
+    };
 
     window.addEventListener(CHAT_RUN_EVENT, onRunState);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKeyDown, true);
+    if (stored?.status === 'queued') void resumeQueuedJob(stored);
     return () => {
       restoreFetch();
       window.removeEventListener(CHAT_RUN_EVENT, onRunState);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };

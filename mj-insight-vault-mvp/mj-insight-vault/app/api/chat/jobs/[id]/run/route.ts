@@ -6,10 +6,19 @@ import { runChatAnalysis } from '@/lib/chatRouteCore';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+const STALE_RUNNING_MS = 90 * 1000;
+
 type RouteContext = { params: Promise<{ id: string }> | { id: string } };
 
 async function getParams(ctx: RouteContext) {
   return 'then' in ctx.params ? await ctx.params : ctx.params;
+}
+
+function isStaleRunning(job: Record<string, unknown>) {
+  if (job.status !== 'running') return false;
+  const heartbeat = typeof job.heartbeat_at === 'string' ? Date.parse(job.heartbeat_at) : 0;
+  if (!heartbeat || Number.isNaN(heartbeat)) return true;
+  return Date.now() - heartbeat > STALE_RUNNING_MS;
 }
 
 async function updateJob(id: string, patch: Record<string, unknown>) {
@@ -30,14 +39,15 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     if (!job) return Response.json({ error: 'job not found' }, { status: 404 });
 
     if (job.status === 'completed') return Response.json({ job });
-    if (job.status === 'running') return Response.json({ job });
+    if (job.status === 'running' && !isStaleRunning(job)) return Response.json({ job });
 
     await updateJob(id, {
       status: 'running',
-      progress: 6,
-      stage: '分析を開始しました',
+      progress: isStaleRunning(job) ? Math.max(6, Math.min(20, Number(job.progress || 6))) : 6,
+      stage: isStaleRunning(job) ? '停止した可能性がある分析を再開しました' : '分析を開始しました',
       error_message: null,
-      started_at: job.started_at || new Date().toISOString()
+      started_at: job.started_at || new Date().toISOString(),
+      finished_at: null
     });
 
     try {

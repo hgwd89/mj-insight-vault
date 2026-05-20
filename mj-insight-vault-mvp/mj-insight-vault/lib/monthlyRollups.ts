@@ -45,7 +45,19 @@ function monthRange(monthKey: string) {
 
 function monthKeyFromDate(value: unknown) {
   const date = String(value || '').trim();
-  return /^\d{4}-\d{2}/.test(date) ? date.slice(0, 7) : '';
+  const iso = date.match(/^(\d{4})-(\d{1,2})/);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}`;
+  const jp = date.match(/^(\d{4})年\s*(\d{1,2})月/);
+  if (jp) return `${jp[1]}-${jp[2].padStart(2, '0')}`;
+  return '';
+}
+
+function articleBelongsToMonth(article: RollupArticle, monthKey: string) {
+  return monthKeyFromDate(article.article_date) === monthKey;
+}
+
+function articleSortKey(article: RollupArticle) {
+  return String(article.article_date || article.created_at || '');
 }
 
 function articleLink(article: RollupArticle) {
@@ -83,15 +95,16 @@ export async function listStaleRollupMonths() {
 }
 
 export async function getArticlesForMonth(monthKey: string) {
-  const { start, end } = monthRange(monthKey);
+  monthRange(monthKey);
   const { data, error } = await supabaseAdmin
     .from('articles')
     .select(SELECT)
-    .gte('article_date', start)
-    .lt('article_date', end)
-    .order('article_date', { ascending: true });
+    .order('created_at', { ascending: true });
   if (error) throw error;
-  return ((data || []) as RollupArticle[]).filter(active);
+  return ((data || []) as RollupArticle[])
+    .filter(active)
+    .filter((article) => articleBelongsToMonth(article, monthKey))
+    .sort((a, b) => articleSortKey(a).localeCompare(articleSortKey(b)));
 }
 
 export async function listArticleMonths() {

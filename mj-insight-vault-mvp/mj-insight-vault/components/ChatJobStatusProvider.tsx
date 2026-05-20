@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v2';
@@ -121,6 +121,44 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
   const pathname = usePathname();
   const password = useAppPassword();
   const [run, setRun] = useState<ChatRunState | null>(null);
+  const resumingJobIdsRef = useRef<Set<string>>(new Set());
+
+  async function resumeQueuedJob(current: ChatRunState) {
+    if (pathname === '/chat') return;
+    if (!current.job_id || current.status !== 'queued') return;
+    if (resumingJobIdsRef.current.has(current.job_id)) return;
+
+    resumingJobIdsRef.current.add(current.job_id);
+    try {
+      const response = await fetch(`/api/chat/jobs/${current.job_id}/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-app-password': password }
+      });
+      const json = await response.json().catch(() => ({}));
+      if (isRecord(json) && isRecord(json.job)) {
+        const next = stateFromJob(json.job, current);
+        writeChatRunState(next);
+        setRun(next);
+        return;
+      }
+      if (!response.ok) {
+        const errorRun: ChatRunState = {
+          ...current,
+          status: 'error',
+          progress: 100,
+          stage: '分析に失敗しました',
+          error: isRecord(json) ? text(json.error) || response.statusText : response.statusText,
+          updated_at: Date.now()
+        };
+        writeChatRunState(errorRun);
+        setRun(errorRun);
+      }
+    } catch {
+      // best-effort
+    } finally {
+      resumingJobIdsRef.current.delete(current.job_id);
+    }
+  }
 
   async function refresh(current = run) {
     if (!current?.job_id) return;
@@ -133,6 +171,7 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
       const next = stateFromJob(json.job, current);
       writeChatRunState(next);
       setRun(next);
+      if (next.status === 'queued') void resumeQueuedJob(next);
     } catch {
       // best-effort
     }
@@ -145,6 +184,7 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
     const onRunState = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as ChatRunState | null : readChatRunState();
       setRun(detail || null);
+      if (detail?.status === 'queued') void resumeQueuedJob(detail);
     };
     const onFocus = () => {
       const current = readChatRunState();
@@ -158,12 +198,13 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
     window.addEventListener(CHAT_RUN_EVENT, onRunState);
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibility);
+    if (stored?.status === 'queued') void resumeQueuedJob(stored);
     return () => {
       window.removeEventListener(CHAT_RUN_EVENT, onRunState);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [password]);
+  }, [password, pathname]);
 
   useEffect(() => {
     if (!run?.job_id || (run.status !== 'queued' && run.status !== 'running')) return;

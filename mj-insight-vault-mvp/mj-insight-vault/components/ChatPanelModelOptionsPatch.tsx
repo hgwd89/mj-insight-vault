@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { ChatPanel } from '@/components/ChatPanel';
+import { MarkdownArticleText } from '@/components/MarkdownArticleText';
+import { useAppPassword } from '@/components/PasswordGate';
 
 const ALL_DATA_RE = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/;
 const DEEP_RE = /本気|しっかり|詳細|深掘|深堀|高品質|レポート|インサイト|ナラティブ|構造|横断|説明仮説|仮説|調査|リサーチ|論点|WHY|why/;
@@ -11,6 +13,15 @@ const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v2';
 const CHAT_RUN_EVENT = 'mj-chat-run-state';
 
 type JsonRecord = Record<string, unknown>;
+type SavedArticle = { id: string; headline?: string | null; article_date?: string | null };
+type SavedReport = {
+  id: string;
+  user_query: string;
+  answer_text: string | null;
+  answer_json: JsonRecord | null;
+  created_at: string;
+};
+type CompletedReportDetail = { report: SavedReport; related_articles: SavedArticle[] };
 type ChatRunStatus = 'queued' | 'running' | 'complete' | 'error';
 type ChatRunState = {
   status: ChatRunStatus;
@@ -177,6 +188,17 @@ function reportIdFromJson(json: unknown) {
   return text(json.report.id);
 }
 
+function savedReportTitle(report: SavedReport) {
+  const title = report.answer_json?.report_title;
+  return text(title) || report.user_query || '保存済みレポート';
+}
+
+function savedReportText(report: SavedReport) {
+  if (report.answer_text) return report.answer_text;
+  const answer = report.answer_json || {};
+  return text(answer.answer_text || answer.summary) || JSON.stringify(answer, null, 2);
+}
+
 function isDirectChatEndpoint(target: string) {
   try {
     const url = target.startsWith('http') ? new URL(target) : new URL(target, window.location.origin);
@@ -186,8 +208,15 @@ function isDirectChatEndpoint(target: string) {
   }
 }
 
-function requestHeaders(init: RequestInit | undefined) {
-  return init?.headers || { 'content-type': 'application/json' };
+function buildJobHeaders(password: string, base?: HeadersInit): HeadersInit {
+  const headers = new Headers(base);
+  if (!headers.get('content-type')) headers.set('content-type', 'application/json');
+  if (password || !headers.get('x-app-password')) headers.set('x-app-password', password);
+  return headers;
+}
+
+function requestHeaders(init: RequestInit | undefined, password: string) {
+  return buildJobHeaders(password, init?.headers);
 }
 
 function writeChatRunState(next: ChatRunState | null) {
@@ -310,7 +339,7 @@ async function runExistingJob(originalFetch: typeof window.fetch, jobId: string,
   return finalState;
 }
 
-function patchFetch() {
+function patchFetch(password: string) {
   const original = window.fetch;
   if ((original as typeof window.fetch & { __chatPatched?: boolean }).__chatPatched) return () => undefined;
 
@@ -320,7 +349,7 @@ function patchFetch() {
 
     const init = args[1] as RequestInit | undefined;
     const requestBody = safeJsonParse(init?.body);
-    const headers = requestHeaders(init);
+    const headers = requestHeaders(init, password);
     const startedAt = Date.now();
     let runState: ChatRunState = {
       status: 'queued',
@@ -489,14 +518,13 @@ function progressLabel(run: ChatRunState) {
 function estimateText(run: ChatRunState) {
   if (run.status === 'complete') return '完了';
   if (run.status === 'error') return 'エラー終了';
-  const progress = Math.max(1, Math.min(99, run.progress || 1));
-  const elapsed = Date.now() - run.started_at;
-  if (elapsed < 5000 || progress < 10) return '所要時間を推定中';
-  const total = elapsed / (progress / 100);
-  const remainMs = Math.max(0, total - elapsed);
-  const remainSec = Math.ceil(remainMs / 1000);
-  if (remainSec < 60) return `残り約${remainSec}秒`;
-  return `残り約${Math.ceil(remainSec / 60)}分`;
+  const stage = run.stage || '';
+  if (/最終レポート|最終分析|gpt-5/i.test(stage)) return '最終生成中です。数分かかることがあります';
+  if (/スキャン|全\d+件/.test(stage)) return '広域スキャン中です。30秒〜2分ほどかかることがあります';
+  if (/取得|候補/.test(stage)) return '記事を確認中です。数秒〜30秒ほどかかります';
+  if (/整形|保存/.test(stage)) return '仕上げ中です。もう少しで完了します';
+  if (run.model === 'gpt-5' && run.target_scope === 'all') return '重い分析です。ページ移動後も状態を保持します';
+  return 'ページ移動・画面復帰後も状態を保持します';
 }
 
 function ProgressBar({ run }: { run: ChatRunState }) {
@@ -569,10 +597,27 @@ function RunStatusCard({ run, onClear, onRefresh }: { run: ChatRunState; onClear
   );
 }
 
+function CompletedReportCard({ detail }: { detail: CompletedReportDetail }) {
+  return (
+    <div className="card space-y-3 p-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-xs text-zinc-500">{new Date(detail.report.created_at).toLocaleString('ja-JP')}</p>
+          <h2 className="mt-1 font-bold">{savedReportTitle(detail.report)}</h2>
+        </div>
+        <Link className="btn btn-primary" href={`/reports/${detail.report.id}`}>レポートを開く</Link>
+      </div>
+      <MarkdownArticleText text={savedReportText(detail.report)} articles={detail.related_articles} className="whitespace-pre-wrap text-sm leading-7 text-zinc-700" />
+    </div>
+  );
+}
+
 export function ChatPanelModelOptionsPatch() {
   const [runState, setRunState] = useState<ChatRunState | null>(null);
+  const [completedReport, setCompletedReport] = useState<CompletedReportDetail | null>(null);
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const resumingJobIdsRef = useRef<Set<string>>(new Set());
+  const password = useAppPassword();
 
   async function resumeQueuedJob(current: ChatRunState) {
     if (!current.job_id || current.status !== 'queued') return;
@@ -581,7 +626,7 @@ export function ChatPanelModelOptionsPatch() {
     const fetcher = originalFetchRef.current || window.fetch;
     resumingJobIdsRef.current.add(current.job_id);
     try {
-      const next = await runExistingJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
+      const next = await runExistingJob(fetcher, current.job_id, buildJobHeaders(password), current);
       writeChatRunState(next);
       setRunState(next);
     } catch {
@@ -595,7 +640,7 @@ export function ChatPanelModelOptionsPatch() {
     if (!current?.job_id) return;
     try {
       const fetcher = originalFetchRef.current || window.fetch;
-      const next = await fetchJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
+      const next = await fetchJob(fetcher, current.job_id, buildJobHeaders(password), current);
       writeChatRunState(next);
       setRunState(next);
       if (next.status === 'queued') void resumeQueuedJob(next);
@@ -609,7 +654,7 @@ export function ChatPanelModelOptionsPatch() {
     setRunState(stored);
     const original = window.fetch;
     originalFetchRef.current = original;
-    const restoreFetch = patchFetch();
+    const restoreFetch = patchFetch(password);
     const onRunState = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as ChatRunState | null : readChatRunState();
       setRunState(detail || null);
@@ -644,7 +689,7 @@ export function ChatPanelModelOptionsPatch() {
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, []);
+  }, [password]);
 
   useEffect(() => {
     if (!runState?.job_id || (runState.status !== 'queued' && runState.status !== 'running')) return;
@@ -658,7 +703,34 @@ export function ChatPanelModelOptionsPatch() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [runState?.job_id, runState?.status]);
+  }, [runState?.job_id, runState?.status, password]);
+
+  useEffect(() => {
+    if (runState?.status !== 'complete' || !runState.report_id) {
+      setCompletedReport(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`/api/reports/${runState.report_id}`, {
+      headers: buildJobHeaders(password)
+    })
+      .then((response) => response.ok ? response.json() : null)
+      .then((json) => {
+        if (cancelled || !isRecord(json) || !isRecord(json.report)) return;
+        setCompletedReport({
+          report: json.report as SavedReport,
+          related_articles: Array.isArray(json.related_articles) ? json.related_articles as SavedArticle[] : []
+        });
+      })
+      .catch(() => {
+        // The saved report link remains available even if preview fetch fails.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runState?.status, runState?.report_id, password]);
 
   function clearRunState() {
     writeChatRunState(null);
@@ -669,6 +741,7 @@ export function ChatPanelModelOptionsPatch() {
     <div className="space-y-4">
       {runState && <RunStatusCard run={runState} onClear={clearRunState} onRefresh={() => refreshRunState()} />}
       <ChatPanel />
+      {completedReport && <CompletedReportCard detail={completedReport} />}
     </div>
   );
 }

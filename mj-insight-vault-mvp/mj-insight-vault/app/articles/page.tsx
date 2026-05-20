@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
 
@@ -22,6 +22,7 @@ type FilterKind = 'all' | 'duplicate' | 'date_unknown' | 'needs_review' | 'has_t
 
 const deleteReasons = ['重複', 'OCR崩れ', '広告', '対象外', '誤抽出', 'その他'];
 const bulkTagTypes = ['industry', 'consumer_pressure', 'behavior_change', 'method_fit', 'custom_theme'];
+const ARTICLE_SCROLL_KEY = 'mj-articles-scroll-v1';
 
 function duplicateKey(article: Article) {
   const base = `${article.headline || ''} ${(article.ocr_text || '').slice(0, 500)}`
@@ -39,6 +40,7 @@ export default function ArticlesPage() {
   const password = useAppPassword();
   const [q, setQ] = useState('');
   const [filterKind, setFilterKind] = useState<FilterKind>('all');
+  const pendingScrollRef = useRef<number | null>(null);
 
   const { data, error, loading } = useApi<{ articles: Article[] }>(
     `/api/articles${q ? `?q=${encodeURIComponent(q)}` : ''}`
@@ -60,6 +62,18 @@ export default function ArticlesPage() {
       setSelectedIds(new Set());
     }
   }, [data]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(ARTICLE_SCROLL_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { y?: unknown; at?: unknown };
+      const age = Date.now() - Number(parsed.at || 0);
+      if (age < 30 * 60 * 1000) pendingScrollRef.current = Number(parsed.y || 0);
+    } catch {
+      pendingScrollRef.current = null;
+    }
+  }, []);
 
   const duplicateIds = useMemo(() => {
     const groups = new Map<string, string[]>();
@@ -90,6 +104,13 @@ export default function ArticlesPage() {
 
   const visibleIds = useMemo(() => visibleArticles.map((a) => a.id), [visibleArticles]);
   const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
+
+  useEffect(() => {
+    if (loading || pendingScrollRef.current === null) return;
+    const y = pendingScrollRef.current;
+    pendingScrollRef.current = null;
+    requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+  }, [loading, visibleArticles.length]);
 
   function toggleSelected(articleId: string) {
     setSelectedIds((prev) => {
@@ -198,6 +219,14 @@ export default function ArticlesPage() {
     }
   }
 
+  function rememberScrollPosition() {
+    try {
+      sessionStorage.setItem(ARTICLE_SCROLL_KEY, JSON.stringify({ y: window.scrollY, at: Date.now() }));
+    } catch {
+      // Scroll restoration is best-effort.
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="card p-5">
@@ -282,7 +311,7 @@ export default function ArticlesPage() {
                   onChange={() => toggleSelected(a.id)}
                   aria-label="記事を選択"
                 />
-                <Link href={`/articles/${a.id}`} className="min-w-0 flex-1 hover:opacity-80">
+                <Link href={`/articles/${a.id}`} className="min-w-0 flex-1 hover:opacity-80" onClick={rememberScrollPosition}>
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-bold">
                       {a.headline || '無題の記事候補'}

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { MarkdownArticleText } from '@/components/MarkdownArticleText';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const presets = [
@@ -98,6 +99,8 @@ type EvidenceMatrixRow = {
   article_id?: string;
   headline?: string;
   article_date?: string;
+  article_url?: string;
+  article_link?: string;
   evidence_excerpt?: string;
   excerpt?: string;
   supports?: string;
@@ -306,6 +309,13 @@ function scoreValue(value: unknown) {
   return String(value);
 }
 
+function articleHrefFromEvidence(row: EvidenceMatrixRow) {
+  const articleId = str(row.article_id);
+  if (articleId) return `/articles/${articleId}`;
+  const articleUrl = str(row.article_url);
+  return articleUrl.startsWith('/articles/') ? articleUrl : '';
+}
+
 export function ChatPanel() {
   const password = useAppPassword();
   const [query, setQuery] = useState('');
@@ -470,7 +480,7 @@ export function ChatPanel() {
               {answer.model_policy && <span className="badge">{answer.model_policy}</span>}
               {typeof answer.related_article_count === 'number' && <span className="badge">記事 {answer.related_article_count}</span>}
             </div>
-            {answerText ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{answerText}</p> : <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800">本文が空で返っています。下の構造化セクションを表示しています。再実行すると本文も生成されます。</p>}
+            {answerText ? <MarkdownArticleText text={answerText} articles={relatedArticles} className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700" /> : <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800">本文が空で返っています。下の構造化セクションを表示しています。再実行すると本文も生成されます。</p>}
           </section>
 
           {coverage && (
@@ -589,16 +599,24 @@ export function ChatPanel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {evidenceMatrix.map((row, index) => (
-                    <tr key={index}>
-                      <td className="border-b p-2 align-top">{row.claim || row.insight || '-'}</td>
-                      <td className="border-b p-2 align-top">{row.article_date || '日付不明'}<br />{row.headline || row.article_id || '-'}</td>
-                      <td className="border-b p-2 align-top">{row.evidence_excerpt || row.excerpt || row.supports || '-'}</td>
-                      <td className="border-b p-2 align-top">{row.strength || row.confidence || '-'}</td>
-                      <td className="border-b p-2 align-top">{row.limitation || '-'}</td>
-                      <td className="border-b p-2 align-top">{row.research_need || '-'}</td>
-                    </tr>
-                  ))}
+                  {evidenceMatrix.map((row, index) => {
+                    const href = articleHrefFromEvidence(row);
+                    return (
+                      <tr key={index}>
+                        <td className="border-b p-2 align-top">{row.claim || row.insight || '-'}</td>
+                        <td className="border-b p-2 align-top">
+                          {row.article_date || '日付不明'}<br />
+                          {href
+                            ? <Link href={href} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">{row.headline || row.article_id || '記事詳細'}</Link>
+                            : row.headline || row.article_id || '-'}
+                        </td>
+                        <td className="border-b p-2 align-top">{row.evidence_excerpt || row.excerpt || row.supports || '-'}</td>
+                        <td className="border-b p-2 align-top">{row.strength || row.confidence || '-'}</td>
+                        <td className="border-b p-2 align-top">{row.limitation || '-'}</td>
+                        <td className="border-b p-2 align-top">{row.research_need || '-'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </section>

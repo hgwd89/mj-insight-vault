@@ -142,7 +142,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (reportError) throw reportError;
 
-    const articleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
+    const articleIds: string[] = Array.isArray(report.related_article_ids)
+      ? report.related_article_ids.map((articleId: unknown) => String(articleId || '')).filter(Boolean)
+      : [];
     let articles: ReturnType<typeof addArticleLinks>[] = [];
 
     if (articleIds.length > 0) {
@@ -156,8 +158,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const byId = new Map(((data || []) as RelatedArticle[]).map((article) => [article.id, article]));
       articles = articleIds
         .map((articleId: string) => byId.get(articleId))
-        .filter(Boolean)
-        .map((article) => addArticleLinks(article as RelatedArticle));
+        .filter((article): article is RelatedArticle => Boolean(article))
+        .map((article) => addArticleLinks(article));
     }
 
     const openai = getOpenAI();

@@ -8,10 +8,10 @@ export const maxDuration = 300;
 
 const STALE_RUNNING_MS = 90 * 1000;
 
-type RouteContext = { params: Promise<{ id: string }> | { id: string } };
+type RouteContext = { params: Promise<{ id: string }> };
 
 async function getParams(ctx: RouteContext) {
-  return 'then' in ctx.params ? await ctx.params : ctx.params;
+  return ctx.params;
 }
 
 function isStaleRunning(job: Record<string, unknown>) {
@@ -21,11 +21,46 @@ function isStaleRunning(job: Record<string, unknown>) {
   return Date.now() - heartbeat > STALE_RUNNING_MS;
 }
 
+function clampProgress(value: unknown) {
+  const progress = Math.round(Number(value));
+  if (!Number.isFinite(progress)) return 1;
+  return Math.max(1, Math.min(99, progress));
+}
+
 async function updateJob(id: string, patch: Record<string, unknown>) {
-  await supabaseAdmin.from('chat_jobs').update({
+  const { error } = await supabaseAdmin.from('chat_jobs').update({
     ...patch,
     heartbeat_at: new Date().toISOString()
   }).eq('id', id);
+  if (error) throw error;
+}
+
+async function claimJob(id: string, job: Record<string, unknown>) {
+  const startedPatch = {
+    status: 'running',
+    progress: isStaleRunning(job) ? Math.max(6, Math.min(20, Number(job.progress || 6))) : 6,
+    stage: isStaleRunning(job) ? '停止した可能性がある分析を再開しました' : '分析を開始しました',
+    error_message: null,
+    started_at: job.started_at || new Date().toISOString(),
+    finished_at: null,
+    heartbeat_at: new Date().toISOString()
+  };
+
+  let query = supabaseAdmin
+    .from('chat_jobs')
+    .update(startedPatch)
+    .eq('id', id)
+    .eq('status', String(job.status || ''));
+
+  if (typeof job.heartbeat_at === 'string') query = query.eq('heartbeat_at', job.heartbeat_at);
+
+  const { data, error } = await query.select('*').maybeSingle();
+  if (error) throw error;
+  if (data) return { job: data as Record<string, unknown>, claimed: true };
+
+  const { data: latest, error: latestError } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();
+  if (latestError) throw latestError;
+  return { job: latest as Record<string, unknown>, claimed: false };
 }
 
 export async function POST(req: NextRequest, ctx: RouteContext) {
@@ -39,22 +74,19 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     if (!job) return Response.json({ error: 'job not found' }, { status: 404 });
 
     if (job.status === 'completed') return Response.json({ job });
+    if (job.status === 'failed') return Response.json({ job });
     if (job.status === 'running' && !isStaleRunning(job)) return Response.json({ job });
 
-    await updateJob(id, {
-      status: 'running',
-      progress: isStaleRunning(job) ? Math.max(6, Math.min(20, Number(job.progress || 6))) : 6,
-      stage: isStaleRunning(job) ? '停止した可能性がある分析を再開しました' : '分析を開始しました',
-      error_message: null,
-      started_at: job.started_at || new Date().toISOString(),
-      finished_at: null
-    });
+    const claimed = await claimJob(id, job);
+    if (!claimed.claimed || claimed.job.status !== 'running') return Response.json({ job: claimed.job });
+    let lastProgress = clampProgress(claimed.job.progress || job.progress || 1);
 
     try {
       const result = await runChatAnalysis(job.request_json || {}, async ({ progress, stage }) => {
+        lastProgress = Math.max(lastProgress, clampProgress(progress));
         await updateJob(id, {
           status: 'running',
-          progress: Math.max(1, Math.min(99, Math.round(progress))),
+          progress: lastProgress,
           stage
         });
       });

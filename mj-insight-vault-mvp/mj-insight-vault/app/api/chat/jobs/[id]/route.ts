@@ -7,12 +7,6 @@ export const maxDuration = 60;
 
 const STALE_RUNNING_MS = 90 * 1000;
 
-type RouteContext = { params: Promise<{ id: string }> };
-
-async function getParams(ctx: RouteContext) {
-  return ctx.params;
-}
-
 function isStaleRunning(job: Record<string, unknown>) {
   if (job.status !== 'running') return false;
   const heartbeat = typeof job.heartbeat_at === 'string' ? Date.parse(job.heartbeat_at) : 0;
@@ -20,13 +14,13 @@ function isStaleRunning(job: Record<string, unknown>) {
   return Date.now() - heartbeat > STALE_RUNNING_MS;
 }
 
-export async function GET(req: NextRequest, ctx: RouteContext) {
+export async function GET(req: NextRequest, { params }: { params: Promise<any> }) {
   try {
     requireAppPassword(req);
-    const { id } = await getParams(ctx);
+    const { id } = await params;
     if (!id) return Response.json({ error: 'job id is required' }, { status: 400 });
 
-    const { data, error } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();
+    const { data, error } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', String(id)).single();
     if (error) throw error;
 
     if (data && isStaleRunning(data)) {
@@ -35,7 +29,7 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
         stage: '通信が中断された可能性があります。再開待ちです',
         progress: Math.max(5, Math.min(25, Number(data.progress || 5))),
         heartbeat_at: new Date().toISOString()
-      }).eq('id', id).select('*').single();
+      }).eq('id', String(id)).select('*').single();
       if (updateError) throw updateError;
       return Response.json({ job: queued, stale_recovered: true });
     }

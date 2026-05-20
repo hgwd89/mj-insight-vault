@@ -3,9 +3,39 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 const HIDDEN_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
+const PAGE_SIZE = 1000;
+const SELECT = '*, article_tags(tag_type, tag_name), source_images(id, file_name, storage_path, mime_type)';
 
-function isVisibleArticle(article: { status?: string | null }) {
+type ArticleRow = { status?: string | null; article_tags?: { tag_name: string }[] };
+
+function isVisibleArticle(article: ArticleRow) {
   return !article.status || !HIDDEN_STATUSES.has(article.status);
+}
+
+async function fetchAllArticles(q: string) {
+  const rows: ArticleRow[] = [];
+  let from = 0;
+
+  for (;;) {
+    let query = supabaseAdmin
+      .from('articles')
+      .select(SELECT)
+      .order('created_at', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (q) {
+      query = query.or(`headline.ilike.%${q}%,ocr_text.ilike.%${q}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    rows.push(...((data || []) as ArticleRow[]));
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return rows;
 }
 
 export async function GET(req: NextRequest) {
@@ -17,23 +47,11 @@ export async function GET(req: NextRequest) {
     const tag = url.searchParams.get('tag') || '';
     const status = url.searchParams.get('status') || 'active';
 
-    let query = supabaseAdmin
-      .from('articles')
-      .select('*, article_tags(tag_type, tag_name), source_images(id, file_name, storage_path, mime_type)')
-      .order('created_at', { ascending: false })
-      .limit(300);
-
-    if (q) {
-      query = query.or(`headline.ilike.%${q}%,ocr_text.ilike.%${q}%`);
-    }
-
-    const { data, error } = await query;
-
-    if (error) throw error;
+    const data = await fetchAllArticles(q);
 
     let filtered = status === 'deleted'
-      ? (data || []).filter((article) => article.status === 'deleted')
-      : (data || []).filter(isVisibleArticle);
+      ? data.filter((article) => article.status === 'deleted')
+      : data.filter(isVisibleArticle);
 
     if (tag) {
       filtered = filtered.filter((article) =>
@@ -41,7 +59,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    return Response.json({ articles: filtered });
+    return Response.json({
+      articles: filtered,
+      total_fetched: data.length,
+      total_visible: filtered.length,
+      page_size: PAGE_SIZE,
+      limit_removed: true
+    });
   } catch (error) {
     return jsonError(error);
   }

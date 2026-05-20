@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { BarChart3, ClipboardList, MessageSquare, Newspaper, Settings, Tags, Upload } from 'lucide-react';
+import { BarChart3, CalendarDays, ClipboardList, MessageSquare, Newspaper, Settings, Tags, Upload } from 'lucide-react';
 import { useClearAppPassword } from '@/components/PasswordGate';
 
 const nav = [
@@ -12,6 +12,7 @@ const nav = [
   { href: '/articles', label: 'Articles', icon: Newspaper },
   { href: '/chat', label: 'Chat', icon: MessageSquare },
   { href: '/reports', label: 'Reports', icon: ClipboardList },
+  { href: '/rollups', label: 'Rollups', icon: CalendarDays },
   { href: '/tags', label: 'Tags', icon: Tags },
   { href: '/settings', label: 'Settings', icon: Settings }
 ];
@@ -52,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
       <nav className="fixed bottom-0 left-0 right-0 z-20 border-t border-zinc-200 bg-white md:hidden">
         <div className="grid grid-cols-5">
-          {nav.slice(1, 6).map((item) => {
+          {[nav[1], nav[2], nav[3], nav[4], nav[5]].map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href || pathname.startsWith(item.href);
             return (

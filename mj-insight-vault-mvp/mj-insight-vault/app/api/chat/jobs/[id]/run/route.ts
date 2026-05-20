@@ -15,6 +15,10 @@ function isStaleRunning(job: Record<string, unknown>) {
   return Date.now() - heartbeat > STALE_RUNNING_MS;
 }
 
+function clampProgress(value: unknown) {
+  return Math.max(1, Math.min(99, Math.round(Number(value) || 1)));
+}
+
 async function updateJob(id: string, patch: Record<string, unknown>) {
   await supabaseAdmin.from('chat_jobs').update({
     ...patch,
@@ -36,9 +40,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<any> 
     if (job.status === 'completed') return Response.json({ job });
     if (job.status === 'running' && !isStaleRunning(job)) return Response.json({ job });
 
+    const initialProgress = isStaleRunning(job)
+      ? Math.max(6, Math.min(20, Number(job.progress || 6)))
+      : 6;
+    let lastProgress = initialProgress;
+
     await updateJob(jobId, {
       status: 'running',
-      progress: isStaleRunning(job) ? Math.max(6, Math.min(20, Number(job.progress || 6))) : 6,
+      progress: initialProgress,
       stage: isStaleRunning(job) ? '停止した可能性がある分析を再開しました' : '分析を開始しました',
       error_message: null,
       started_at: job.started_at || new Date().toISOString(),
@@ -47,9 +56,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<any> 
 
     try {
       const result = await runChatAnalysis(job.request_json || {}, async ({ progress, stage }) => {
+        const nextProgress = Math.max(lastProgress, clampProgress(progress));
+        lastProgress = nextProgress;
         await updateJob(jobId, {
           status: 'running',
-          progress: Math.max(1, Math.min(99, Math.round(progress))),
+          progress: nextProgress,
           stage
         });
       });

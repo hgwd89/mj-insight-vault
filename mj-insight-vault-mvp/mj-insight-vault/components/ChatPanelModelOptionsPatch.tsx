@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatPanel } from '@/components/ChatPanel';
+import { useAppPassword } from '@/components/PasswordGate';
 
 const ALL_DATA_RE = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/;
 const DEEP_RE = /本気|しっかり|詳細|深掘|深堀|高品質|レポート|インサイト|ナラティブ|構造|横断|説明仮説|仮説|調査|リサーチ|論点|WHY|why/;
@@ -186,8 +187,15 @@ function isDirectChatEndpoint(target: string) {
   }
 }
 
-function requestHeaders(init: RequestInit | undefined) {
-  return init?.headers || { 'content-type': 'application/json' };
+function buildJobHeaders(password: string, base?: HeadersInit): Headers {
+  const headers = new Headers(base || {});
+  if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+  headers.set('x-app-password', password);
+  return headers;
+}
+
+function requestHeaders(init: RequestInit | undefined, password: string) {
+  return buildJobHeaders(password, init?.headers);
 }
 
 function writeChatRunState(next: ChatRunState | null) {
@@ -310,7 +318,7 @@ async function runExistingJob(originalFetch: typeof window.fetch, jobId: string,
   return finalState;
 }
 
-function patchFetch() {
+function patchFetch(password: string) {
   const original = window.fetch;
   if ((original as typeof window.fetch & { __chatPatched?: boolean }).__chatPatched) return () => undefined;
 
@@ -320,7 +328,7 @@ function patchFetch() {
 
     const init = args[1] as RequestInit | undefined;
     const requestBody = safeJsonParse(init?.body);
-    const headers = requestHeaders(init);
+    const headers = requestHeaders(init, password);
     const startedAt = Date.now();
     let runState: ChatRunState = {
       status: 'queued',
@@ -570,18 +578,20 @@ function RunStatusCard({ run, onClear, onRefresh }: { run: ChatRunState; onClear
 }
 
 export function ChatPanelModelOptionsPatch() {
+  const password = useAppPassword();
+  const jobHeaders = useMemo(() => buildJobHeaders(password), [password]);
   const [runState, setRunState] = useState<ChatRunState | null>(null);
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const resumingJobIdsRef = useRef<Set<string>>(new Set());
 
-  async function resumeQueuedJob(current: ChatRunState) {
+  const resumeQueuedJob = useCallback(async (current: ChatRunState) => {
     if (!current.job_id || current.status !== 'queued') return;
     if (resumingJobIdsRef.current.has(current.job_id)) return;
 
     const fetcher = originalFetchRef.current || window.fetch;
     resumingJobIdsRef.current.add(current.job_id);
     try {
-      const next = await runExistingJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
+      const next = await runExistingJob(fetcher, current.job_id, jobHeaders, current);
       writeChatRunState(next);
       setRunState(next);
     } catch {
@@ -589,27 +599,27 @@ export function ChatPanelModelOptionsPatch() {
     } finally {
       resumingJobIdsRef.current.delete(current.job_id);
     }
-  }
+  }, [jobHeaders]);
 
-  async function refreshRunState(current = runState) {
+  const refreshRunState = useCallback(async (current = runState) => {
     if (!current?.job_id) return;
     try {
       const fetcher = originalFetchRef.current || window.fetch;
-      const next = await fetchJob(fetcher, current.job_id, { 'content-type': 'application/json' }, current);
+      const next = await fetchJob(fetcher, current.job_id, jobHeaders, current);
       writeChatRunState(next);
       setRunState(next);
       if (next.status === 'queued') void resumeQueuedJob(next);
     } catch {
       // Manual refresh should not break the page.
     }
-  }
+  }, [jobHeaders, resumeQueuedJob, runState]);
 
   useEffect(() => {
     const stored = readChatRunState();
     setRunState(stored);
     const original = window.fetch;
     originalFetchRef.current = original;
-    const restoreFetch = patchFetch();
+    const restoreFetch = patchFetch(password);
     const onRunState = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as ChatRunState | null : readChatRunState();
       setRunState(detail || null);
@@ -644,7 +654,7 @@ export function ChatPanelModelOptionsPatch() {
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, []);
+  }, [password, refreshRunState, resumeQueuedJob]);
 
   useEffect(() => {
     if (!runState?.job_id || (runState.status !== 'queued' && runState.status !== 'running')) return;
@@ -658,7 +668,7 @@ export function ChatPanelModelOptionsPatch() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [runState?.job_id, runState?.status]);
+  }, [refreshRunState, runState?.job_id, runState?.status]);
 
   function clearRunState() {
     writeChatRunState(null);

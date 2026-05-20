@@ -7,10 +7,10 @@ export const maxDuration = 60;
 
 const STALE_RUNNING_MS = 90 * 1000;
 
-type RouteContext = { params: Promise<{ id: string }> | { id: string } };
+type RouteContext = { params: Promise<{ id: string }> };
 
 async function getParams(ctx: RouteContext) {
-  return 'then' in ctx.params ? await ctx.params : ctx.params;
+  return await ctx.params;
 }
 
 function isStaleRunning(job: Record<string, unknown>) {

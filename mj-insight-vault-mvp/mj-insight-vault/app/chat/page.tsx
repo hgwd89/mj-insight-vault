@@ -1,5 +1,10 @@
+import { ChatJobAuthFetchProvider } from '@/components/ChatJobAuthFetchProvider';
 import { ChatPanelModelOptionsPatch } from '@/components/ChatPanelModelOptionsPatch';
 
 export default function ChatPage() {
-  return <ChatPanelModelOptionsPatch />;
+  return (
+    <ChatJobAuthFetchProvider>
+      <ChatPanelModelOptionsPatch />
+    </ChatJobAuthFetchProvider>
+  );
 }

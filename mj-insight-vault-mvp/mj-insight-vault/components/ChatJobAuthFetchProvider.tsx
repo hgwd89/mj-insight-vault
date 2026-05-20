@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 function needsChatJobPassword(url: string) {
@@ -22,7 +22,7 @@ function withPasswordHeader(init: RequestInit | undefined, password: string): Re
 export function ChatJobAuthFetchProvider({ children }: { children: React.ReactNode }) {
   const password = useAppPassword();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!password) return;
     const originalFetch = window.fetch;
 

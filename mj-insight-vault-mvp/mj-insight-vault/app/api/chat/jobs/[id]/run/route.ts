@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { runChatAnalysis } from '@/lib/chatRouteCore';
+import { runChatAnalysis } from '@/lib/chatRouteNo160';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 import { buildMonthlyRollupContext } from '@/lib/monthlyRollupContext';
 

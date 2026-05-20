@@ -5,6 +5,7 @@ import { runDocumentOcr } from '@/lib/vision';
 import { segmentArticlesFromImage } from '@/lib/articleSegmentation';
 import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
 import { embedText } from '@/lib/openai';
+import { markMonthlyRollupsStaleForArticleDates } from '@/lib/monthlyRollups';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
@@ -17,6 +18,16 @@ function getErrorMessage(error: unknown) {
   } catch {
     return String(error);
   }
+}
+
+function isQuotaErrorMessage(message: string) {
+  const lower = message.toLowerCase();
+  return lower.includes('429')
+    || lower.includes('insufficient_quota')
+    || lower.includes('exceeded your current quota')
+    || lower.includes('billing details')
+    || lower.includes('rate limit')
+    || lower.includes('quota');
 }
 
 function normalizeKey(value: unknown) {
@@ -136,7 +147,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         if (key) existingKeys.set(key, article);
       }
 
-      const createdArticles: unknown[] = [];
+      const createdArticles: { id?: string; headline?: string | null; article_date?: string | null }[] = [];
       const duplicateArticles: unknown[] = [];
       const seenInThisImage = new Set<string>();
 
@@ -198,6 +209,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         }
       }
 
+      const stale = await markMonthlyRollupsStaleForArticleDates(createdArticles.map((article) => article.article_date));
       await maybeCompleteBatch(image.batch_id);
 
       return Response.json({
@@ -205,14 +217,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         articles: createdArticles,
         article_count: createdArticles.length,
         duplicates: duplicateArticles,
-        duplicate_count: duplicateArticles.length
+        duplicate_count: duplicateArticles.length,
+        stale_rollup_months: stale.months,
+        stale_rollup_updated: stale.updated
       });
     } catch (error) {
       const errorMessage = getErrorMessage(error);
+      const isQuota = isQuotaErrorMessage(errorMessage);
       console.error('Source image process failed:', errorMessage, error);
       await updateImage(id, { ocr_status: 'failed', error_message: errorMessage || 'Process failed with empty error message' });
       await maybeCompleteBatch(image.batch_id);
-      return Response.json({ error: errorMessage, image: { ...image, ocr_status: 'failed' }, articles: [], article_count: 0, duplicates: [], duplicate_count: 0 }, { status: 500 });
+      return Response.json(
+        {
+          error: isQuota
+            ? `OpenAI API quota exceeded. OCRを停止しました。OpenAIのBilling/Usage/Rate limitを確認してください。元エラー: ${errorMessage}`
+            : errorMessage,
+          error_type: isQuota ? 'openai_quota' : 'process_failed',
+          retryable: !isQuota,
+          image: { ...image, ocr_status: 'failed' },
+          articles: [],
+          article_count: 0,
+          duplicates: [],
+          duplicate_count: 0
+        },
+        { status: isQuota ? 429 : 500 }
+      );
     }
   } catch (error) {
     return jsonError(error);

@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
 
 export type RollupArticle = {
   id: string;
@@ -8,6 +8,24 @@ export type RollupArticle = {
   ocr_text: string | null;
   status?: string | null;
   created_at?: string | null;
+};
+
+export type MonthlyRollupRow = {
+  id: string;
+  month_key: string;
+  article_count: number;
+  article_ids: string[];
+  source_latest_article_at: string | null;
+  rollup_model: string;
+  status: 'ready' | 'stale' | 'running' | 'failed' | string;
+  summary_text: string;
+  summary_json: Record<string, unknown> | null;
+  representative_article_ids: string[] | null;
+  evidence_article_ids: string[] | null;
+  error_message: string | null;
+  generated_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
@@ -23,6 +41,11 @@ function monthRange(monthKey: string) {
   const start = `${monthKey}-01`;
   const nextMonth = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;
   return { start, end: nextMonth };
+}
+
+function monthKeyFromDate(value: unknown) {
+  const date = String(value || '').trim();
+  return /^\d{4}-\d{2}/.test(date) ? date.slice(0, 7) : '';
 }
 
 function articleLink(article: RollupArticle) {
@@ -46,7 +69,17 @@ export async function listMonthlyRollups() {
     .select('*')
     .order('month_key', { ascending: false });
   if (error) throw error;
-  return data || [];
+  return (data || []) as MonthlyRollupRow[];
+}
+
+export async function listStaleRollupMonths() {
+  const { data, error } = await supabaseAdmin
+    .from('monthly_rollups')
+    .select('month_key,status')
+    .eq('status', 'stale')
+    .order('month_key', { ascending: false });
+  if (error) throw error;
+  return (data || []).map((row) => String(row.month_key)).filter(Boolean);
 }
 
 export async function getArticlesForMonth(monthKey: string) {
@@ -71,10 +104,38 @@ export async function listArticleMonths() {
   const months = new Set<string>();
   for (const row of data || []) {
     if (row.status && HIDDEN.has(row.status)) continue;
-    const date = String(row.article_date || '');
-    if (/^\d{4}-\d{2}/.test(date)) months.add(date.slice(0, 7));
+    const monthKey = monthKeyFromDate(row.article_date);
+    if (monthKey) months.add(monthKey);
   }
   return Array.from(months).sort().reverse();
+}
+
+export async function markMonthlyRollupsStaleForArticleDates(articleDates: unknown[]) {
+  const months = Array.from(new Set(articleDates.map(monthKeyFromDate).filter(Boolean)));
+  if (!months.length) return { months: [], updated: 0 };
+
+  const { data, error } = await supabaseAdmin
+    .from('monthly_rollups')
+    .update({
+      status: 'stale',
+      error_message: null,
+      updated_at: new Date().toISOString()
+    })
+    .in('month_key', months)
+    .neq('status', 'running')
+    .select('month_key');
+
+  if (error) throw error;
+  return { months, updated: data?.length || 0 };
+}
+
+export async function generateStaleMonthlyRollups() {
+  const months = await listStaleRollupMonths();
+  const results = [];
+  for (const month of months) {
+    results.push(await generateMonthlyRollup(month));
+  }
+  return results;
 }
 
 export async function generateMonthlyRollup(monthKey: string) {
@@ -167,5 +228,5 @@ async function upsertMonthlyRollup(
     .select('*')
     .single();
   if (error) throw error;
-  return data;
+  return data as MonthlyRollupRow;
 }

@@ -7,12 +7,6 @@ export const maxDuration = 60;
 
 const STALE_RUNNING_MS = 90 * 1000;
 
-type RouteContext = { params: Promise<{ id: string }> };
-
-async function getParams(ctx: RouteContext) {
-  return await ctx.params;
-}
-
 function isStaleRunning(job: Record<string, unknown>) {
   if (job.status !== 'running') return false;
   const heartbeat = typeof job.heartbeat_at === 'string' ? Date.parse(job.heartbeat_at) : 0;
@@ -20,10 +14,10 @@ function isStaleRunning(job: Record<string, unknown>) {
   return Date.now() - heartbeat > STALE_RUNNING_MS;
 }
 
-export async function GET(req: NextRequest, ctx: RouteContext) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
-    const { id } = await getParams(ctx);
+    const { id } = await params;
     if (!id) return Response.json({ error: 'job id is required' }, { status: 400 });
 
     const { data, error } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();

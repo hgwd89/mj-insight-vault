@@ -21,7 +21,6 @@ const CLEAR_AFTER_SUCCESS_KEY = 'mj-upload-draft-clear-after-success';
 
 type Row = { name: string; status: string; note?: string };
 type Result = { batchId: string; selected: number; saved: number; ocr: number; failed: number; articles: number };
-
 type FailedFile = { file: File; row: Row };
 
 function isBadFormat(file: File) {
@@ -46,6 +45,19 @@ function errMsg(error: unknown) {
   return error instanceof Error ? error.message : '失敗';
 }
 
+function isQuotaError(error: unknown) {
+  const message = errMsg(error).toLowerCase();
+  return message.includes('429')
+    || message.includes('quota')
+    || message.includes('insufficient_quota')
+    || message.includes('exceeded your current quota')
+    || message.includes('rate limit');
+}
+
+function quotaStopMessage() {
+  return 'OpenAI APIの利用枠またはレート制限に到達したため、OCRを停止しました。時間を置くかOpenAI側の利用上限を確認してください。失敗・未処理分だけ画面に残します。';
+}
+
 function formatSavedAt(value: number) {
   if (!value) return '不明';
   const date = new Date(value);
@@ -68,29 +80,17 @@ function toRestoredRow(file: File, row?: Row): Row {
 }
 
 function markUploadDraftClearedAfterSuccess() {
-  try {
-    localStorage.setItem(CLEAR_AFTER_SUCCESS_KEY, '1');
-  } catch {
-    // Best-effort only.
-  }
+  try { localStorage.setItem(CLEAR_AFTER_SUCCESS_KEY, '1'); } catch {}
 }
-
 function forgetUploadDraftClearedAfterSuccess() {
-  try {
-    localStorage.removeItem(CLEAR_AFTER_SUCCESS_KEY);
-  } catch {
-    // Best-effort only.
-  }
+  try { localStorage.removeItem(CLEAR_AFTER_SUCCESS_KEY); } catch {}
 }
-
 function consumeUploadDraftClearedAfterSuccess() {
   try {
     const shouldClear = localStorage.getItem(CLEAR_AFTER_SUCCESS_KEY) === '1';
     if (shouldClear) localStorage.removeItem(CLEAR_AFTER_SUCCESS_KEY);
     return shouldClear;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, message: string) => void): Promise<T> {
@@ -100,6 +100,7 @@ async function withRetry<T>(task: () => Promise<T>, onRetry: (attempt: number, m
       return await task();
     } catch (error) {
       lastError = error;
+      if (isQuotaError(error)) break;
       if (attempt >= MAX_ATTEMPTS) break;
       onRetry(attempt + 1, errMsg(error));
       await sleep(retryDelay(attempt));
@@ -151,23 +152,13 @@ export function UploadFormStable() {
   useEffect(() => {
     let cancelled = false;
     if (consumeUploadDraftClearedAfterSuccess()) {
-      clearUploadDraft()
-        .finally(() => {
-          if (!cancelled) setDraftReady(true);
-        });
+      clearUploadDraft().finally(() => { if (!cancelled) setDraftReady(true); });
       return () => { cancelled = true; };
     }
-
-    readUploadDraft()
-      .then((draft) => {
-        if (cancelled || !draft) return;
-        if ((draft.files?.length || 0) > 0 || (draft.rows?.length || 0) > 0) {
-          setRecoverableDraft(draft);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDraftReady(true);
-      });
+    readUploadDraft().then((draft) => {
+      if (cancelled || !draft) return;
+      if ((draft.files?.length || 0) > 0 || (draft.rows?.length || 0) > 0) setRecoverableDraft(draft);
+    }).finally(() => { if (!cancelled) setDraftReady(true); });
     return () => { cancelled = true; };
   }, []);
 
@@ -183,28 +174,22 @@ export function UploadFormStable() {
 
   useEffect(() => {
     if (!draftReady) return;
-
     const completedWithoutFailures = result?.failed === 0 && files.length === 0 && rows.length === 0 && !batchIdState;
     const completedRowsWithoutFailures = files.length > 0 && rows.length === files.length && rows.every((row) => row.status === '完了' || row.status === 'OCR待ち');
     if (completedWithoutFailures || completedRowsWithoutFailures) {
       markUploadDraftClearedAfterSuccess();
-      const timer = window.setTimeout(() => {
-        clearUploadDraft();
-      }, 600);
+      const timer = window.setTimeout(() => { clearUploadDraft(); }, 600);
       return () => window.clearTimeout(timer);
     }
-
     const hasLocalDraft = files.length > 0 || rows.length > 0 || Boolean(memo.trim()) || Boolean(date.trim()) || Boolean(batchIdState);
     const onlyShowingRecoverableDraft = recoverableDraft && !hasLocalDraft && autoOcr === true;
     if (onlyShowingRecoverableDraft) return;
-
     const timer = window.setTimeout(() => {
       if (!hasLocalDraft && autoOcr === true) {
         forgetUploadDraftClearedAfterSuccess();
         clearUploadDraft();
         return;
       }
-
       forgetUploadDraftClearedAfterSuccess();
       writeUploadDraft({
         version: 1,
@@ -217,12 +202,14 @@ export function UploadFormStable() {
         savedAt: Date.now()
       });
     }, 600);
-
     return () => window.clearTimeout(timer);
   }, [files, rows, memo, date, autoOcr, batchIdState, result?.batchId, result?.failed, draftReady, recoverableDraft]);
 
   function patchRow(index: number, row: Partial<Row>) {
     setRows((prev) => prev.map((r, i) => i === index ? { ...r, ...row } : r));
+  }
+  function patchRowsFrom(index: number, rowFactory: (row: Row, i: number) => Partial<Row>) {
+    setRows((prev) => prev.map((row, i) => i >= index ? { ...row, ...rowFactory(row, i) } : row));
   }
 
   function choose(list: File[]) {
@@ -266,10 +253,7 @@ export function UploadFormStable() {
     if (!recoverableDraft) return;
     const allFiles = (recoverableDraft.files || []).map(storedDraftFileToFile);
     const allRows = recoverableDraft.rows || [];
-    const pairs = allFiles
-      .map((file, index) => ({ file, row: allRows[index] }))
-      .filter(({ row }) => isRestorableRow(row));
-
+    const pairs = allFiles.map((file, index) => ({ file, row: allRows[index] })).filter(({ row }) => isRestorableRow(row));
     if (!pairs.length) {
       setFiles([]);
       setRows([]);
@@ -281,7 +265,6 @@ export function UploadFormStable() {
       setMessage('前回のアップロードはすべて処理済みだったため、復元対象はありません。');
       return;
     }
-
     const restoredFiles = pairs.map(({ file }) => file);
     const restoredRows = pairs.map(({ file, row }) => toRestoredRow(file, row));
     setFiles(restoredFiles);
@@ -291,9 +274,7 @@ export function UploadFormStable() {
     setAutoOcr(recoverableDraft.autoOcr !== false);
     setBatchIdState('');
     setResult(null);
-    setFailedFiles(restoredRows
-      .map((row, index) => row.status === '失敗' && restoredFiles[index] ? { file: restoredFiles[index], row } : null)
-      .filter((item): item is FailedFile => Boolean(item)));
+    setFailedFiles(restoredRows.map((row, index) => row.status === '失敗' && restoredFiles[index] ? { file: restoredFiles[index], row } : null).filter((item): item is FailedFile => Boolean(item)));
     setRecoverableDraft(null);
     setDraftStatus('');
     setMessage(`前回の未完了・失敗アップロード ${restoredFiles.length}枚を復元しました。必要に応じて再度アップロードしてください。`);
@@ -378,7 +359,7 @@ export function UploadFormStable() {
     setBatchIdState('');
     setRecoverableDraft(null);
     setRows(targetFiles.map((f) => ({ name: f.name, status: '待機' })));
-    setMessage('まとめて処理中です。失敗時は最大3回まで自動再試行します。OCR高画質設定で保存します。');
+    setMessage('まとめて処理中です。通常エラーは最大3回まで自動再試行します。API利用枠エラーは再試行せず停止します。');
 
     let localBatchId = '';
     let saved = 0;
@@ -386,6 +367,7 @@ export function UploadFormStable() {
     let failed = 0;
     let articles = 0;
     const failedNext: FailedFile[] = [];
+    let quotaStopped = false;
 
     try {
       localBatchId = await withRetry(
@@ -395,6 +377,7 @@ export function UploadFormStable() {
       setBatchIdState(localBatchId);
 
       for (let i = 0; i < targetFiles.length; i++) {
+        if (quotaStopped) break;
         try {
           const imageId = await withRetry(
             () => uploadImage(localBatchId, targetFiles[i], i),
@@ -413,6 +396,20 @@ export function UploadFormStable() {
             patchRow(i, { status: 'OCR待ち' });
           }
         } catch (error) {
+          if (isQuotaError(error)) {
+            quotaStopped = true;
+            const currentRow = { name: targetFiles[i].name, status: '失敗', note: `API利用枠エラーのため停止：${errMsg(error)}` };
+            failedNext.push({ file: targetFiles[i], row: currentRow });
+            for (let j = i + 1; j < targetFiles.length; j++) {
+              const pendingRow = { name: targetFiles[j].name, status: '待機', note: 'API利用枠回復後に再アップロード対象' };
+              failedNext.push({ file: targetFiles[j], row: pendingRow });
+            }
+            failed += targetFiles.length - i;
+            patchRow(i, currentRow);
+            patchRowsFrom(i + 1, () => ({ status: '待機', note: 'API利用枠回復後に再アップロード対象' }));
+            setMessage(quotaStopMessage());
+            break;
+          }
           failed += 1;
           const row = { name: targetFiles[i].name, status: '失敗', note: `${MAX_ATTEMPTS}回試行後に失敗：${errMsg(error)}` };
           failedNext.push({ file: targetFiles[i], row });
@@ -425,7 +422,7 @@ export function UploadFormStable() {
       if (failedNext.length) {
         setFiles(failedNext.map((x) => x.file));
         setRows(failedNext.map((x) => x.row));
-        setMessage(`完了：成功 ${saved}枚 / 失敗 ${failedNext.length}枚。失敗分だけ画面に残しました。再度アップロードできます。`);
+        setMessage(quotaStopped ? quotaStopMessage() : `完了：成功 ${saved}枚 / 失敗 ${failedNext.length}枚。失敗分だけ画面に残しました。再度アップロードできます。`);
       } else {
         setFiles([]);
         setRows([]);
@@ -436,7 +433,7 @@ export function UploadFormStable() {
         setMessage(autoOcr ? `完了：記事候補 ${articles}件` : '保存完了：詳細画面でOCRできます');
       }
     } catch (error) {
-      setMessage(`${MAX_ATTEMPTS}回試行後に失敗しました：${errMsg(error)}`);
+      setMessage(isQuotaError(error) ? quotaStopMessage() : `${MAX_ATTEMPTS}回試行後に失敗しました：${errMsg(error)}`);
     } finally {
       setBusy(false);
     }

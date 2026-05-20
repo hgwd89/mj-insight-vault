@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { runChatAnalysis } from '@/lib/chatRouteCore';
+import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<any> 
     });
 
     try {
-      const result = await runChatAnalysis(job.request_json || {}, async ({ progress, stage }) => {
+      const result = enhanceChatAnalysisResult(await runChatAnalysis(job.request_json || {}, async ({ progress, stage }) => {
         const nextProgress = Math.max(lastProgress, clampProgress(progress));
         lastProgress = nextProgress;
         await updateJob(jobId, {
@@ -63,7 +64,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<any> 
           progress: nextProgress,
           stage
         });
-      });
+      }));
 
       await updateJob(jobId, {
         status: 'completed',

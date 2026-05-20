@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/components/DataHooks';
 import { useAppPassword } from '@/components/PasswordGate';
+import { RollupsOperationGuide } from '@/components/RollupsOperationGuide';
 
 type MonthlyRollup = {
   id: string;
@@ -67,6 +68,8 @@ export default function MonthlyRollupsPage() {
   const rollupByMonth = useMemo(() => new Map(rollups.map((rollup) => [rollup.month_key, rollup])), [rollups]);
   const staleCount = rollups.filter((rollup) => rollup.status === 'stale').length;
   const readyCount = rollups.filter((rollup) => rollup.status === 'ready').length;
+  const failedCount = rollups.filter((rollup) => rollup.status === 'failed').length;
+  const missingCount = months.filter((month) => !rollupByMonth.has(month)).length;
   const totalArticles = rollups.reduce((sum, rollup) => sum + Number(rollup.article_count || 0), 0);
 
   async function refresh() {
@@ -103,17 +106,28 @@ export default function MonthlyRollupsPage() {
 
   return (
     <div className="space-y-4">
+      <RollupsOperationGuide
+        monthCount={months.length}
+        readyCount={readyCount}
+        staleCount={staleCount}
+        failedCount={failedCount}
+        missingCount={missingCount}
+        totalArticles={totalArticles}
+      />
+
       <div className="card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <h1 className="text-xl font-black">月別まとめ</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              記事ストックは削らず、月ごとの要約・弱い兆し・反証・調査論点を保存します。全体分析ではこの月別まとめを優先して読みます。
+              月別まとめを生成・更新します。新しい記事が追加された月は要再生成になります。
             </p>
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
               <span className="badge">記事あり月 {months.length}</span>
               <span className="badge">生成済み {readyCount}</span>
+              <span className="badge">未作成 {missingCount}</span>
               <span className="badge">要再生成 {staleCount}</span>
+              <span className="badge">失敗 {failedCount}</span>
               <span className="badge">rollup対象記事 {totalArticles}</span>
             </div>
           </div>

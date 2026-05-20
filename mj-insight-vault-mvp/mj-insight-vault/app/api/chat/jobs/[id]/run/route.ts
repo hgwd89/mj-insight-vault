@@ -22,20 +22,21 @@ async function updateJob(id: string, patch: Record<string, unknown>) {
   }).eq('id', id);
 }
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<any> }) {
   try {
     requireAppPassword(req);
     const { id } = await params;
     if (!id) return Response.json({ error: 'job id is required' }, { status: 400 });
+    const jobId = String(id);
 
-    const { data: job, error: loadError } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();
+    const { data: job, error: loadError } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
     if (loadError) throw loadError;
     if (!job) return Response.json({ error: 'job not found' }, { status: 404 });
 
     if (job.status === 'completed') return Response.json({ job });
     if (job.status === 'running' && !isStaleRunning(job)) return Response.json({ job });
 
-    await updateJob(id, {
+    await updateJob(jobId, {
       status: 'running',
       progress: isStaleRunning(job) ? Math.max(6, Math.min(20, Number(job.progress || 6))) : 6,
       stage: isStaleRunning(job) ? '停止した可能性がある分析を再開しました' : '分析を開始しました',
@@ -46,14 +47,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     try {
       const result = await runChatAnalysis(job.request_json || {}, async ({ progress, stage }) => {
-        await updateJob(id, {
+        await updateJob(jobId, {
           status: 'running',
           progress: Math.max(1, Math.min(99, Math.round(progress))),
           stage
         });
       });
 
-      await updateJob(id, {
+      await updateJob(jobId, {
         status: 'completed',
         progress: 100,
         stage: 'レポート生成完了',
@@ -63,11 +64,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         finished_at: new Date().toISOString()
       });
 
-      const { data: completed } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();
+      const { data: completed } = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
       return Response.json({ job: completed, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'chat job failed';
-      await updateJob(id, {
+      await updateJob(jobId, {
         status: 'failed',
         progress: 100,
         stage: '分析に失敗しました',

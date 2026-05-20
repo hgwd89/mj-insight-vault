@@ -21,6 +21,8 @@ type RelatedArticle = {
   article_tags?: { tag_type: string; tag_name: string }[];
 };
 
+type LinkedArticle = ReturnType<typeof addArticleLinks>;
+
 const DEFAULT_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 
 function articleUrl(articleId: string) {
@@ -41,6 +43,10 @@ function addArticleLinks(article: RelatedArticle) {
     article_url: articleUrl(article.id),
     article_link: articleLink(article)
   };
+}
+
+function isRelatedArticle(article: RelatedArticle | undefined): article is RelatedArticle {
+  return Boolean(article);
 }
 
 function getSelectableModels() {
@@ -143,7 +149,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (reportError) throw reportError;
 
     const articleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
-    let articles: ReturnType<typeof addArticleLinks>[] = [];
+    let articles: LinkedArticle[] = [];
 
     if (articleIds.length > 0) {
       const { data, error } = await supabaseAdmin
@@ -156,8 +162,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const byId = new Map(((data || []) as RelatedArticle[]).map((article) => [article.id, article]));
       articles = articleIds
         .map((articleId: string) => byId.get(articleId))
-        .filter(Boolean)
-        .map((article) => addArticleLinks(article as RelatedArticle));
+        .filter(isRelatedArticle)
+        .map((article: RelatedArticle) => addArticleLinks(article));
     }
 
     const openai = getOpenAI();
@@ -173,67 +179,62 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const system = [
-      'あなたはMJ記事エージェントです。',
-      '既存の分析レポートと根拠記事を踏まえ、ユーザーの追加質問に対話的に答えます。',
-      '役割は、分析観点の追加、WHYの深掘り、仮説の再整理、根拠記事への立ち戻り、リサーチ課題化、提案書化です。',
-      '回答は必ずJSONで返し、answer_text, suggested_next_angles, referenced_articles を含めてください。',
-      '記事にない内容は断定せず、仮説と明記してください。',
-      '根拠を示す場合、UUIDだけでなく article_link を使い、answer_text では [記事タイトル｜日付](/articles/id) 形式で書いてください。',
-      'referenced_articles には article_id, headline, article_date, article_url, article_link, reason を入れてください。',
-      '日付が不明な記事は日付不明と明記してください。',
-      '日本語で、実務で使える粒度にしてください。'
+      'Return JSON only.',
+      'You are a senior marketing research consultant continuing analysis of a saved MJ report.',
+      'Use the original report and related articles as evidence. Do not invent article facts.',
+      'Cite evidence using clickable article links when possible, e.g. [headline｜date](/articles/id).',
+      'If evidence is weak, state that clearly and turn it into a research question.',
+      'Required keys: answer_text, suggested_next_angles, referenced_articles, model_used.'
     ].join('\n');
+
+    const articlePayload = articles.map((article, index) => ({
+      no: index + 1,
+      article_id: article.id,
+      headline: article.headline,
+      article_date: article.article_date || '日付不明',
+      article_url: article.article_url,
+      article_link: article.article_link,
+      tags: article.article_tags || [],
+      text: (article.ocr_text || '').slice(0, 2600)
+    }));
+
+    const messages = [
+      { role: 'system' as const, content: system },
+      ...conversation,
+      {
+        role: 'user' as const,
+        content: JSON.stringify({
+          saved_report: {
+            report_id: report.id,
+            original_user_query: report.user_query,
+            answer_text: getReportAnswerText(report as Record<string, unknown>),
+            answer_json: report.answer_json || null
+          },
+          followup_query: query,
+          related_articles: articlePayload
+        }, null, 2)
+      }
+    ];
 
     const completion = await openai.chat.completions.create({
       model,
-      temperature: 0.2,
       response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            instruction: '以下は既存レポートと根拠記事です。この内容を会話の前提にしてください。根拠提示では article_link を優先してください。',
-            report: {
-              id: report.id,
-              original_query: report.user_query,
-              answer_text: getReportAnswerText(report),
-              answer_json: report.answer_json,
-              created_at: report.created_at
-            },
-            related_articles: articles
-          }, null, 2)
-        },
-        ...conversation,
-        { role: 'user', content: query }
-      ]
+      messages
     });
 
     const raw = completion.choices[0]?.message.content || '{}';
-
-    let answer: Record<string, unknown>;
-    try {
-      answer = JSON.parse(raw);
-    } catch {
-      answer = { answer_text: raw, suggested_next_angles: [], referenced_articles: [] };
-    }
-
-    if (typeof answer.answer_text !== 'string') {
-      answer.answer_text = raw;
-    }
-
+    const answer = JSON.parse(raw) as Record<string, unknown>;
     answer.model_used = model;
-    answer.parent_report_id = id;
 
-    const followupReport = await saveFollowupReport({
-      parentReportId: id,
+    const followup = await saveFollowupReport({
+      parentReportId: report.id,
       originalQuery: report.user_query,
       followupQuery: query,
       answer,
-      articleIds
+      articleIds: articles.map((article) => article.id)
     });
 
-    return Response.json({ answer, related_articles: articles, followup_report: followupReport });
+    return Response.json({ answer, followup_report: followup });
   } catch (error) {
     return jsonError(error);
   }

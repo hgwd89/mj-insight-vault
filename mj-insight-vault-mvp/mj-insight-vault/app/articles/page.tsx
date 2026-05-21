@@ -23,6 +23,7 @@ type FilterKind = 'all' | 'duplicate' | 'date_unknown' | 'needs_review' | 'has_t
 const deleteReasons = ['重複', 'OCR崩れ', '広告', '対象外', '誤抽出', 'その他'];
 const bulkTagTypes = ['industry', 'consumer_pressure', 'behavior_change', 'method_fit', 'custom_theme'];
 const ARTICLE_SCROLL_KEY = 'mj-articles-scroll-v1';
+const ARTICLE_SCROLL_MAX_AGE_MS = 30 * 60 * 1000;
 
 function duplicateKey(article: Article) {
   const base = `${article.headline || ''} ${(article.ocr_text || '').slice(0, 500)}`
@@ -69,10 +70,26 @@ export default function ArticlesPage() {
       if (!raw) return;
       const parsed = JSON.parse(raw) as { y?: unknown; at?: unknown };
       const age = Date.now() - Number(parsed.at || 0);
-      if (age < 30 * 60 * 1000) pendingScrollRef.current = Number(parsed.y || 0);
+      if (age < ARTICLE_SCROLL_MAX_AGE_MS) pendingScrollRef.current = Number(parsed.y || 0);
     } catch {
       pendingScrollRef.current = null;
     }
+  }, []);
+
+  useEffect(() => {
+    const previous = window.history.scrollRestoration;
+    window.history.scrollRestoration = 'manual';
+    const save = () => rememberScrollPosition();
+    const saveWhenHidden = () => {
+      if (document.visibilityState === 'hidden') rememberScrollPosition();
+    };
+    window.addEventListener('pagehide', save);
+    document.addEventListener('visibilitychange', saveWhenHidden);
+    return () => {
+      window.history.scrollRestoration = previous;
+      window.removeEventListener('pagehide', save);
+      document.removeEventListener('visibilitychange', saveWhenHidden);
+    };
   }, []);
 
   const duplicateIds = useMemo(() => {
@@ -109,7 +126,10 @@ export default function ArticlesPage() {
     if (loading || pendingScrollRef.current === null) return;
     const y = pendingScrollRef.current;
     pendingScrollRef.current = null;
-    requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: y, behavior: 'auto' });
+      requestAnimationFrame(() => window.scrollTo({ top: y, behavior: 'auto' }));
+    });
   }, [loading, visibleArticles.length]);
 
   function toggleSelected(articleId: string) {

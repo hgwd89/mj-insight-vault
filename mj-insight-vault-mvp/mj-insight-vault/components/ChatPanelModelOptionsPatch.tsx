@@ -497,14 +497,11 @@ function progressLabel(run: ChatRunState) {
 function estimateText(run: ChatRunState) {
   if (run.status === 'complete') return '完了';
   if (run.status === 'error') return 'エラー終了';
-  const progress = Math.max(1, Math.min(99, run.progress || 1));
-  const elapsed = Date.now() - run.started_at;
-  if (elapsed < 5000 || progress < 10) return '所要時間を推定中';
-  const total = elapsed / (progress / 100);
-  const remainMs = Math.max(0, total - elapsed);
-  const remainSec = Math.ceil(remainMs / 1000);
-  if (remainSec < 60) return `残り約${remainSec}秒`;
-  return `残り約${Math.ceil(remainSec / 60)}分`;
+  const stage = run.stage || '';
+  if (/最終|OpenAI|レポート|分析/.test(stage)) return '最終生成中です。数分かかることがあります';
+  if (/スキャン|選抜|検索|取得/.test(stage)) return '記事を読み込み・選抜中です';
+  if (/保存|完了/.test(stage)) return '保存処理中です';
+  return '工程ベースで進捗を更新しています';
 }
 
 function ProgressBar({ run }: { run: ChatRunState }) {

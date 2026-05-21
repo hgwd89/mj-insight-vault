@@ -182,6 +182,11 @@ type ConversationTurn = {
   content: string;
 };
 
+type SavedReportLink = {
+  id: string;
+  title?: string;
+};
+
 function str(value: unknown) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
@@ -327,6 +332,7 @@ export function ChatPanel() {
   const [raw, setRaw] = useState('');
   const [conversation, setConversation] = useState<ConversationTurn[]>([]);
   const [relatedArticles, setRelatedArticles] = useState<RelatedArticle[]>([]);
+  const [savedReport, setSavedReport] = useState<SavedReportLink | null>(null);
   const [showPresets, setShowPresets] = useState(false);
 
   const selectedScope = targetScopes.find((scope) => scope.value === targetScope) || targetScopes[0];
@@ -361,8 +367,15 @@ export function ChatPanel() {
       const nextAnswer = json.answer as ChatAnswer;
       const answerText = getAnswerText(nextAnswer);
       const assistantTurn: ConversationTurn = { role: 'assistant', content: answerText || JSON.stringify(nextAnswer) };
+      const reportId = typeof json.report?.id === 'string' ? json.report.id : '';
+      const reportTitle = typeof json.report?.answer_json?.report_title === 'string'
+        ? json.report.answer_json.report_title
+        : typeof nextAnswer.report_title === 'string'
+          ? nextAnswer.report_title
+          : '';
 
       setAnswer(nextAnswer);
+      setSavedReport(reportId ? { id: reportId, title: reportTitle } : null);
       setRelatedArticles(Array.isArray(json.related_articles) ? json.related_articles : []);
       setRaw(JSON.stringify(json, null, 2));
       setConversation([...nextConversation, assistantTurn].slice(-10));
@@ -378,6 +391,7 @@ export function ChatPanel() {
   function resetConversation() {
     setConversation([]);
     setAnswer(null);
+    setSavedReport(null);
     setRaw('');
     setQuery('');
     setRelatedArticles([]);
@@ -481,6 +495,12 @@ export function ChatPanel() {
               {typeof answer.related_article_count === 'number' && <span className="badge">記事 {answer.related_article_count}</span>}
             </div>
             {answerText ? <MarkdownArticleText text={answerText} articles={relatedArticles} className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700" /> : <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800">本文が空で返っています。下の構造化セクションを表示しています。再実行すると本文も生成されます。</p>}
+            {savedReport && (
+              <div className="mt-4 flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900 md:flex-row md:items-center md:justify-between">
+                <span className="font-bold">保存済みレポート{savedReport.title ? `: ${savedReport.title}` : ''}</span>
+                <Link className="btn bg-white" href={`/reports/${savedReport.id}`}>レポートを開く</Link>
+              </div>
+            )}
           </section>
 
           {coverage && (

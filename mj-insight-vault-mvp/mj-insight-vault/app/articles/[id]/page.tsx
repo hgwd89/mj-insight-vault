@@ -188,7 +188,10 @@ export default function ArticleDetailPage() {
   return (
     <div className="space-y-5">
       <div className="card p-5">
-        <p className="text-sm text-zinc-500">記事ID：{article.id}</p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <p className="text-sm text-zinc-500">記事ID：{article.id}</p>
+          <button className="btn" type="button" onClick={() => router.back()}>記事一覧の位置へ戻る</button>
+        </div>
 
         <input className="input mt-3 text-lg font-bold" value={headline} onChange={(e) => setHeadline(e.target.value)} />
 

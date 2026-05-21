@@ -3,6 +3,7 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
+import { fetchAllWideArticles } from '@/lib/wideArticleRetrieval';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -195,9 +196,8 @@ async function retrieve(q: string, scope: Scope) {
   let rows: Article[] = [];
 
   if (wide) {
-    const { data, error } = await supabaseAdmin.from('articles').select(SELECT).order('created_at', { ascending: false }).limit(160);
-    if (error) throw error;
-    return { articles: uniq((data || []) as Article[]).slice(0, 160), retrieval_mode: 'wide_all_data_scan' as RetrievalMode };
+    const data = await fetchAllWideArticles();
+    return { articles: uniq(data as Article[]), retrieval_mode: 'wide_all_data_scan' as RetrievalMode };
   }
 
   const kw = words(q);

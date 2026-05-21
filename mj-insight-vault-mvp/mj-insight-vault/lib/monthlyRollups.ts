@@ -30,6 +30,7 @@ export type MonthlyRollupRow = {
 
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
+const PAGE_SIZE = 1000;
 
 function active(article: RollupArticle) {
   return !article.status || !HIDDEN.has(article.status);
@@ -75,6 +76,25 @@ function rollupModel() {
   return (process.env.OPENAI_ROLLUP_MODEL || 'gpt-5-nano').trim();
 }
 
+async function fetchAllRollupArticles(select = SELECT) {
+  const rows: RollupArticle[] = [];
+  let from = 0;
+
+  for (;;) {
+    const { data, error } = await supabaseAdmin
+      .from('articles')
+      .select(select)
+      .order('created_at', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows.push(...((data || []) as unknown as RollupArticle[]));
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return rows;
+}
+
 export async function listMonthlyRollups() {
   const { data, error } = await supabaseAdmin
     .from('monthly_rollups')
@@ -96,26 +116,17 @@ export async function listStaleRollupMonths() {
 
 export async function getArticlesForMonth(monthKey: string) {
   monthRange(monthKey);
-  const { data, error } = await supabaseAdmin
-    .from('articles')
-    .select(SELECT)
-    .order('created_at', { ascending: true });
-  if (error) throw error;
-  return ((data || []) as RollupArticle[])
+  const data = await fetchAllRollupArticles();
+  return data
     .filter(active)
     .filter((article) => articleBelongsToMonth(article, monthKey))
     .sort((a, b) => articleSortKey(a).localeCompare(articleSortKey(b)));
 }
 
 export async function listArticleMonths() {
-  const { data, error } = await supabaseAdmin
-    .from('articles')
-    .select('article_date,status')
-    .not('article_date', 'is', null)
-    .order('article_date', { ascending: false });
-  if (error) throw error;
+  const data = await fetchAllRollupArticles('id, article_date, status, created_at');
   const months = new Set<string>();
-  for (const row of data || []) {
+  for (const row of data) {
     if (row.status && HIDDEN.has(row.status)) continue;
     const monthKey = monthKeyFromDate(row.article_date);
     if (monthKey) months.add(monthKey);
@@ -124,15 +135,10 @@ export async function listArticleMonths() {
 }
 
 export async function listArticleMonthCounts() {
-  const { data, error } = await supabaseAdmin
-    .from('articles')
-    .select('article_date,status')
-    .not('article_date', 'is', null)
-    .order('article_date', { ascending: false });
-  if (error) throw error;
+  const data = await fetchAllRollupArticles('id, article_date, status, created_at');
 
   const counts: Record<string, number> = {};
-  for (const row of data || []) {
+  for (const row of data) {
     if (row.status && HIDDEN.has(row.status)) continue;
     const monthKey = monthKeyFromDate(row.article_date);
     if (!monthKey) continue;

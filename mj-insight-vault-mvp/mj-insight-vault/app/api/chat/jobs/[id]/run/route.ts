@@ -116,7 +116,7 @@ async function persistEnhancedReport(result: unknown) {
   }).eq('id', reportId);
 }
 
-export async function POST(req: NextRequest, { params }: { params: Promise<any> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id?: string }> }) {
   try {
     requireAppPassword(req);
     const { id } = await params;

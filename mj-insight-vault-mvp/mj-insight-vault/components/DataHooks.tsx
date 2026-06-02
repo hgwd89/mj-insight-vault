@@ -3,6 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useAppPassword, useClearAppPassword } from '@/components/PasswordGate';
 
+type ApiErrorBody = {
+  error?: unknown;
+};
+
 export function useApi<T>(url: string) {
   const password = useAppPassword();
   const clearPassword = useClearAppPassword();
@@ -18,7 +22,7 @@ export function useApi<T>(url: string) {
 
     fetch(url, { headers: { 'x-app-password': password } })
       .then(async (r) => {
-        let json: any = null;
+        let json: unknown = null;
 
         try {
           json = await r.json();
@@ -32,10 +36,11 @@ export function useApi<T>(url: string) {
         }
 
         if (!r.ok) {
-          throw new Error(json?.error || 'API error');
+          const body = json && typeof json === 'object' ? json as ApiErrorBody : {};
+          throw new Error(typeof body.error === 'string' ? body.error : 'API error');
         }
 
-        if (!ignore) setData(json);
+        if (!ignore) setData(json as T);
       })
       .catch((e) => {
         if (!ignore) setError(e instanceof Error ? e.message : 'API error');

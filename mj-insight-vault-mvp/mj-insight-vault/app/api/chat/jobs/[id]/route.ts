@@ -14,7 +14,7 @@ function isStaleRunning(job: Record<string, unknown>) {
   return Date.now() - heartbeat > STALE_RUNNING_MS;
 }
 
-export async function GET(req: NextRequest, { params }: { params: Promise<any> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id?: string }> }) {
   try {
     requireAppPassword(req);
     const { id } = await params;

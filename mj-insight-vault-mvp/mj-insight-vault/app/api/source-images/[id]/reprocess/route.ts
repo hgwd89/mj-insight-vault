@@ -5,6 +5,7 @@ import { runDocumentOcr } from '@/lib/vision';
 import { segmentArticlesFromImage } from '@/lib/articleSegmentation';
 import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
 import { embedText } from '@/lib/openai';
+import { markMonthlyRollupsStaleForArticleDates } from '@/lib/monthlyRollups';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -109,7 +110,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       await softDeleteOldArticles(id);
 
       const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
-      const createdArticles: unknown[] = [];
+      const createdArticles: { article_date?: string | null }[] = [];
 
       for (let idx = 0; idx < candidates.length; idx++) {
         const candidate = candidates[idx];
@@ -151,7 +152,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         }
       }
 
-      return Response.json({ image: { ...image, ocr_status: 'done' }, articles: createdArticles, article_count: createdArticles.length });
+      const stale = await markMonthlyRollupsStaleForArticleDates([
+        fallbackArticleDate,
+        ...createdArticles.map((article) => article.article_date)
+      ]);
+
+      return Response.json({
+        image: { ...image, ocr_status: 'done' },
+        articles: createdArticles,
+        article_count: createdArticles.length,
+        stale_rollup_months: stale.months,
+        stale_rollup_updated: stale.updated
+      });
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       await updateImage(id, { ocr_status: 'failed', error_message: errorMessage || 'Reprocess failed with empty error message' });

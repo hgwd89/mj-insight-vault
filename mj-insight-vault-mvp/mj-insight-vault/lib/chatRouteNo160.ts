@@ -5,14 +5,17 @@ import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
 import { fetchAllWideArticles, type WideArticle } from '@/lib/wideArticleRetrieval';
 import { runChatAnalysis as legacyRunChatAnalysis } from '@/lib/chatRouteCore';
+import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 
 const ALL_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type Turn = { role: 'user' | 'assistant'; content: string };
+type ChatResult = { report: unknown; report_error: string; related_articles: WideArticle[]; selectable_models: string[]; answer: Record<string, unknown> };
 
 function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
+function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 function wantsWide(body: Record<string, unknown>) { return text(body.target_scope || 'all') === 'all' || ALL_WORDS.test(text(body.query)); }
 function models() { return Array.from(new Set([TEXT_MODEL, ...(process.env.OPENAI_CHAT_MODELS || '').split(',').map((v) => v.trim()).filter(Boolean), ...MODELS].filter(Boolean))); }
 function model(value: unknown) { const m = text(value); return models().includes(m) ? m : TEXT_MODEL; }
@@ -25,12 +28,46 @@ function scanTextLimit(count: number) { if (count > 700) return 180; if (count >
 function finalTextLimit(count: number) { if (count > 40) return 1800; if (count > 30) return 2200; return 2600; }
 function selectedCount(selectedModel: string) { return selectedModel === 'gpt-5' ? 48 : 32; }
 function uniqueIds(value: unknown) { return Array.isArray(value) ? Array.from(new Set(value.map((x) => text(x)).filter(Boolean))) : []; }
-function selectByIds(articles: WideArticle[], ids: string[], max: number) { const map = new Map(articles.map((a) => [a.id, a])); const picked = ids.map((id) => map.get(id)).filter(Boolean) as WideArticle[]; const used = new Set(picked.map((a) => a.id)); return [...picked, ...articles.filter((a) => !used.has(a.id))].slice(0, max); }
+function queryTerms(query: string) {
+  return Array.from(new Set(query
+    .replace(ALL_WORDS, ' ')
+    .replace(/[^\p{Letter}\p{Number}ぁ-んァ-ヶ一-龠々ー]+/gu, ' ')
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2)
+    .slice(0, 24)));
+}
+function fallbackSelectArticles(query: string, articles: WideArticle[], max: number) {
+  const terms = queryTerms(query);
+  if (!terms.length) return articles.slice(0, max);
+  return articles
+    .map((article, index) => {
+      const headline = `${article.headline || ''} ${article.article_date || ''}`.toLowerCase();
+      const body = (article.ocr_text || '').slice(0, 5000).toLowerCase();
+      const score = terms.reduce((total, term) => {
+        const t = term.toLowerCase();
+        return total + (headline.includes(t) ? 8 : 0) + (body.includes(t) ? 3 : 0);
+      }, 0) + Math.max(0, 1 - index / Math.max(articles.length, 1));
+      return { article, score, index };
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.article)
+    .slice(0, max);
+}
+function selectByIds(query: string, articles: WideArticle[], ids: string[], max: number) {
+  const map = new Map(articles.map((a) => [a.id, a]));
+  const picked = ids.map((id) => map.get(id)).filter(Boolean) as WideArticle[];
+  if (!picked.length) return fallbackSelectArticles(query, articles, max);
+  const used = new Set(picked.map((a) => a.id));
+  const fallback = fallbackSelectArticles(query, articles.filter((a) => !used.has(a.id)), max - picked.length);
+  return [...picked, ...fallback].slice(0, max);
+}
 
 async function selectArticles(query: string, articles: WideArticle[], selectedModel: string, onProgress?: ProgressReporter) {
   const openai = getOpenAI();
   const max = selectedCount(selectedModel);
-  if (!openai || articles.length <= max) return { finalArticles: articles.slice(0, max), scanSummary: null, scanError: '', scanModelUsed: 'none' };
+  if (articles.length <= max) return { finalArticles: articles, scanSummary: null, scanError: '', scanModelUsed: 'none' };
+  if (!openai) return { finalArticles: fallbackSelectArticles(query, articles, max), scanSummary: null, scanError: 'OPENAI_API_KEY missing; lexical fallback selection used', scanModelUsed: 'none' };
   await progress(onProgress, 38, `全${articles.length}件を低コストスキャン中`);
   const limit = scanTextLimit(articles.length);
   const input = articles.map((a, index) => ({ no: index + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_link: articleLink(a), text: excerpt(a, limit) }));
@@ -44,9 +81,9 @@ async function selectArticles(query: string, articles: WideArticle[], selectedMo
       ]
     });
     const parsed = JSON.parse(res.choices[0]?.message.content || '{}') as Record<string, unknown>;
-    return { finalArticles: selectByIds(articles, uniqueIds(parsed.selected_article_ids), max), scanSummary: parsed, scanError: '', scanModelUsed: scanModel() };
+    return { finalArticles: selectByIds(query, articles, uniqueIds(parsed.selected_article_ids), max), scanSummary: parsed, scanError: '', scanModelUsed: scanModel() };
   } catch (error) {
-    return { finalArticles: articles.slice(0, max), scanSummary: null, scanError: error instanceof Error ? error.message : 'scan failed', scanModelUsed: scanModel() };
+    return { finalArticles: fallbackSelectArticles(query, articles, max), scanSummary: null, scanError: error instanceof Error ? error.message : 'scan failed', scanModelUsed: scanModel() };
   }
 }
 
@@ -68,7 +105,15 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     source_coverage: { article_count: allArticles.length, scanned_article_count: allArticles.length, final_article_count: finalArticles.length, coverage_note: `全記事${allArticles.length}件をページング取得し、最終分析には${finalArticles.length}件を選抜投入。160件制限は使用していません。` },
     article_lookup: finalArticles.map((a) => ({ article_id: a.id, headline: a.headline || '無題の記事', article_date: a.article_date || '日付不明', article_link: articleLink(a), article_url: `/articles/${a.id}` }))
   };
-  if (!openai) return { report: null, report_error: 'OPENAI_API_KEY missing', related_articles: allArticles, selectable_models: models(), answer: { ...base, report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、全記事${allArticles.length}件の取得情報のみ返します。` } };
+  if (!openai) {
+    return enhanceChatAnalysisResult({
+      report: null,
+      report_error: 'OPENAI_API_KEY missing',
+      related_articles: allArticles,
+      selectable_models: models(),
+      answer: { ...base, report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、全記事${allArticles.length}件の取得情報のみ返します。` }
+    }) as ChatResult;
+  }
   await progress(onProgress, 68, `${selectedModel}で最終レポートを生成中`);
   const n = finalTextLimit(finalArticles.length);
   const finalInput = finalArticles.map((a, index) => ({ no: index + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_link: articleLink(a), text: (a.ocr_text || '').slice(0, n) }));
@@ -76,28 +121,49 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     model: selectedModel,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs.` },
+      { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs.\nBefore returning JSON, run a final AAA audit: remove unsupported claims, downgrade weak claims, ensure article-title links are present, and make research needs more useful than product suggestions.` },
       ...turns(body.conversation),
       { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, scan_summary: picked.scanSummary, articles: finalInput }) }
     ]
   });
   const raw = res.choices[0]?.message.content || '{}';
-  const parsed = JSON.parse(raw);
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
   const answer = { ...base, ...parsed, answer_text: typeof parsed.answer_text === 'string' ? parsed.answer_text : raw };
+  const enhanced = enhanceChatAnalysisResult({
+    report: null,
+    report_error: '',
+    related_articles: allArticles,
+    selectable_models: models(),
+    answer
+  }) as ChatResult;
+  const enhancedAnswer = isRecord(enhanced.answer) ? enhanced.answer : answer;
   let report = null;
   let report_error = '';
   await progress(onProgress, 94, '分析履歴を保存中');
   try {
-    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: answer.answer_text, answer_json: answer, related_article_ids: allArticles.map((a) => a.id) }).select('*').single();
+    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: text(enhancedAnswer.answer_text), answer_json: enhancedAnswer, related_article_ids: allArticles.map((a) => a.id) }).select('*').single();
     if (saved.error) throw saved.error;
     report = saved.data;
   } catch (error) { report_error = error instanceof Error ? error.message : 'chat_reports insert failed'; }
   await progress(onProgress, 100, report_error ? 'レポート生成完了。履歴保存に警告あり' : 'レポート生成完了');
-  return { report, report_error, related_articles: allArticles, selectable_models: models(), answer };
+  return { ...enhanced, report, report_error, answer: enhancedAnswer };
+}
+
+async function persistEnhancedResult(result: unknown) {
+  if (!isRecord(result) || !isRecord(result.answer) || !isRecord(result.report)) return;
+  const reportId = text(result.report.id);
+  if (!reportId) return;
+  await supabaseAdmin.from('chat_reports').update({
+    answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
+    answer_json: result.answer
+  }).eq('id', reportId);
 }
 
 export async function runChatAnalysis(body: Record<string, unknown>, onProgress?: ProgressReporter) {
-  return wantsWide(body) ? runWide(body, onProgress) : legacyRunChatAnalysis(body, onProgress);
+  const raw = wantsWide(body) ? await runWide(body, onProgress) : await legacyRunChatAnalysis(body, onProgress);
+  const enhanced = enhanceChatAnalysisResult(raw);
+  await persistEnhancedResult(enhanced);
+  return enhanced;
 }
 
 export async function POST(req: NextRequest) {

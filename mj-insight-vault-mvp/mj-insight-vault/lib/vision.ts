@@ -14,6 +14,24 @@ let cachedToken: {
   expiresAt: number;
 } | null = null;
 
+const VISION_TIMEOUT_MS = 90_000;
+const ERROR_BODY_LIMIT = 2000;
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function compactBody(value: string) {
+  return value.length > ERROR_BODY_LIMIT ? `${value.slice(0, ERROR_BODY_LIMIT)}...` : value;
+}
+
 function base64Url(input: string | Buffer) {
   return Buffer.from(input)
     .toString('base64')
@@ -128,7 +146,7 @@ async function getAccessToken() {
 export async function runDocumentOcr(buffer: Buffer) {
   const accessToken = await getAccessToken();
 
-  const visionRes = await fetch('https://vision.googleapis.com/v1/images:annotate', {
+  const visionRes = await fetchWithTimeout('https://vision.googleapis.com/v1/images:annotate', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${accessToken}`,
@@ -146,17 +164,17 @@ export async function runDocumentOcr(buffer: Buffer) {
             }
           ],
           imageContext: {
-            languageHints: ['ja']
+            languageHints: ['ja', 'en']
           }
         }
       ]
     })
-  });
+  }, VISION_TIMEOUT_MS);
 
   const visionText = await visionRes.text();
 
   if (!visionRes.ok) {
-    throw new Error(`Google Vision API request failed: ${visionRes.status} ${visionRes.statusText} ${visionText}`);
+    throw new Error(`Google Vision API request failed: ${visionRes.status} ${visionRes.statusText} ${compactBody(visionText)}`);
   }
 
   let visionJson: {
@@ -180,13 +198,13 @@ export async function runDocumentOcr(buffer: Buffer) {
   try {
     visionJson = JSON.parse(visionText);
   } catch {
-    throw new Error(`Google Vision API response is not JSON: ${visionText}`);
+    throw new Error(`Google Vision API response is not JSON: ${compactBody(visionText)}`);
   }
 
   const response = visionJson.responses?.[0];
 
   if (!response) {
-    throw new Error(`Google Vision API response has no response object: ${visionText}`);
+    throw new Error(`Google Vision API response has no response object: ${compactBody(visionText)}`);
   }
 
   if (response.error) {

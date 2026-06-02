@@ -200,6 +200,16 @@ function getErrorMessage(error: unknown) {
   }
 }
 
+function isOpenAIQuotaError(message: string) {
+  const lower = message.toLowerCase();
+  return lower.includes('429')
+    || lower.includes('insufficient_quota')
+    || lower.includes('exceeded your current quota')
+    || lower.includes('billing details')
+    || lower.includes('rate limit')
+    || lower.includes('quota');
+}
+
 function extractResponseText(responseJson: unknown) {
   const json = responseJson as {
     output_text?: string;
@@ -240,6 +250,7 @@ function formatArticleText(input: {
   quotes_or_claims: Array<{ text: string; speaker: string; confidence: string }>;
   noise: string[];
   confidence: string;
+  source_ocr_excerpt?: string;
 }) {
   const lines: string[] = [];
 
@@ -302,6 +313,13 @@ function formatArticleText(input: {
 
   lines.push(`【全体信頼度】${input.confidence}`);
 
+  if (input.source_ocr_excerpt?.trim()) {
+    lines.push('');
+    lines.push('【OCR照合メモ】');
+    lines.push('以下は本文再構成の照合に使ったGoogle Vision OCR抜粋。分析時は本文再構成を主に使い、必要時だけ読み取り限界として参照する。');
+    lines.push(input.source_ocr_excerpt.trim());
+  }
+
   return normalizeOcrText(lines.join('\n'));
 }
 
@@ -323,7 +341,9 @@ async function structureArticlesWithResponsesAPI(input: SegmentFromImageInput) {
     '- 画像を主情報として読む。',
     '- Google Vision OCRテキストは補助情報として使う。ただしOCRテキストをそのまま貼り付けてはいけない。',
     '- OCRテキストは段組み崩れ・誤字・広告混入がある前提で扱う。',
+    '- 視覚的に別見出し・別記事枠がある場合だけ複数記事に分ける。同じ記事を細切れにしない。',
     '- 見出し、サブ見出し、日付、媒体名、企業名、サービス名、人物名、数字、図表、利用者の声、関係者発言を優先して拾う。',
+    '- article_date は可能な限り YYYY-MM-DD に正規化する。年が読めない場合は紙面・OCR・入力文脈から補える時だけ補う。補えない場合は原文または空文字にする。',
     '- 記事本文は、紙面の読み順を推定して自然な順序に再構成する。',
     '- body_reconstructed は短すぎてはいけない。主記事なら最低600字、可能なら1000〜1800字程度で、記事内容を厚めに再構成する。',
     '- 記事にない解釈、マーケティング示唆、生活者インサイト、提案ネタは入れない。',
@@ -384,7 +404,7 @@ async function structureArticlesWithResponsesAPI(input: SegmentFromImageInput) {
   const responseText = await res.text();
 
   if (!res.ok) {
-    throw new Error(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${responseText}`);
+    throw new Error(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${responseText.slice(0, 2500)}`);
   }
 
   let responseJson: unknown;
@@ -440,7 +460,8 @@ export async function segmentArticlesFromImage(input: SegmentFromImageInput): Pr
           figures: article.figures,
           quotes_or_claims: article.quotes_or_claims,
           noise: article.noise,
-          confidence: article.confidence
+          confidence: article.confidence,
+          source_ocr_excerpt: normalizedOcr.slice(0, 1600)
         });
 
         return {
@@ -458,18 +479,12 @@ export async function segmentArticlesFromImage(input: SegmentFromImageInput): Pr
     const errorMessage = getErrorMessage(error);
     console.error('GPT image article structuring failed:', errorMessage, error);
 
-    return [
-      fallbackArticle(
-        normalizeOcrText(
-          [
-            `【GPT画像構造化失敗】${errorMessage}`,
-            '',
-            '【Google Vision OCR raw text】',
-            normalizedOcr
-          ].join('\n')
-        )
-      )
-    ];
+    if (isOpenAIQuotaError(errorMessage)) throw error;
+
+    const textCandidates = await segmentArticles(normalizedOcr);
+    if (textCandidates.length) return textCandidates;
+
+    return [fallbackArticle(normalizedOcr)];
   }
 }
 

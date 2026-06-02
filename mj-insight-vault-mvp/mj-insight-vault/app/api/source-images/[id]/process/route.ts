@@ -8,7 +8,7 @@ import { embedText } from '@/lib/openai';
 import { markMonthlyRollupsStaleForArticleDates } from '@/lib/monthlyRollups';
 
 export const runtime = 'nodejs';
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;

@@ -17,6 +17,28 @@ const processRoute = read('app/api/source-images/[id]/process/route.ts');
 const reprocessRoute = read('app/api/source-images/[id]/reprocess/route.ts');
 const articlesApi = read('app/api/articles/route.ts');
 const articleDetailApi = read('app/api/articles/[id]/route.ts');
+const fixtures = JSON.parse(read('scripts/fixtures/article-structure-cases.json'));
+
+const allowedTypes = new Set(['article', 'table', 'chart', 'caption', 'unknown']);
+
+function isValidDate(value) {
+  return value === null || value === undefined || value === '' || /^\d{4}-\d{1,2}(-\d{1,2})?$/.test(value) || /^\d{4}年\s*\d{1,2}月/.test(value);
+}
+
+function validateCandidate(candidate) {
+  return Boolean(
+    candidate
+    && typeof candidate.headline === 'string'
+    && candidate.headline.trim()
+    && typeof candidate.ocr_text === 'string'
+    && candidate.ocr_text.trim()
+    && isValidDate(candidate.article_date)
+    && allowedTypes.has(candidate.article_type)
+    && typeof candidate.has_table === 'boolean'
+    && typeof candidate.has_chart === 'boolean'
+    && typeof candidate.has_image === 'boolean'
+  );
+}
 
 for (const field of ['headline', 'article_date', 'ocr_text', 'article_type', 'has_table', 'has_chart', 'has_image']) {
   assert(segmentation.includes(field), `Article structuring must keep ${field}.`);
@@ -37,5 +59,13 @@ assert(/ocr_text_raw/.test(reprocessRoute) && /ocr_json/.test(reprocessRoute), '
 assert(/source_image_id/.test(processRoute) && /batch_id/.test(processRoute), 'Created articles must retain source image and batch linkage.');
 assert(/source_images\(id, file_name, storage_path, mime_type\)/.test(articlesApi), 'Articles API should expose source image metadata.');
 assert(/article_tags/.test(articleDetailApi), 'Article detail API should preserve article tags.');
+
+for (const candidate of fixtures.valid || []) {
+  assert(validateCandidate(candidate), `Expected valid article fixture to pass: ${JSON.stringify(candidate)}`);
+}
+
+for (const candidate of fixtures.invalid || []) {
+  assert(!validateCandidate(candidate), `Expected invalid article fixture to fail: ${JSON.stringify(candidate)}`);
+}
 
 console.log('verify-article-structure: ok');

@@ -1,0 +1,26 @@
+{
+  "valid": [
+    {
+      "headline": "若者向け冷感商品の需要が拡大",
+      "article_date": "2026-05-12",
+      "ocr_text": "【本文再構成】冷感商品を購入する若年層が増えている。記事内の数字は原文に基づく。",
+      "article_type": "article",
+      "has_table": false,
+      "has_chart": false,
+      "has_image": true,
+      "source_image_id": "source-image-1",
+      "batch_id": "batch-1"
+    }
+  ],
+  "invalid": [
+    {
+      "headline": "",
+      "article_date": "not-a-date",
+      "ocr_text": "",
+      "article_type": "made_up",
+      "has_table": "false",
+      "has_chart": false,
+      "has_image": false
+    }
+  ]
+}

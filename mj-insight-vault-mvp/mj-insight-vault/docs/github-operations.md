@@ -27,11 +27,18 @@ Recommended settings:
 
 Recommended required checks:
 
-- `build`
 - `lint`
+- `build`
 - `test-local`
 
-These checks should run without Google Vision, OpenAI, or Supabase production access.
+These checks are emitted by the root workflow `.github/workflows/mj-local-ci.yml` (`MJ Local CI`). The workflow runs from `mj-insight-vault-mvp/mj-insight-vault` and uses:
+
+- `npm ci`
+- `npm run lint`
+- `npm run build`
+- `npm run test:local`
+
+These checks run without Google Vision, OpenAI, or Supabase production access. Keep those required check names aligned with the workflow job names.
 
 ## Required Check Policy
 
@@ -103,4 +110,3 @@ After `build`, `lint`, and `test-local` pass, manual checks may cover:
 - report evidence links
 
 Mark any unverified external API behavior explicitly in PR notes.
-

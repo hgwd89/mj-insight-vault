@@ -44,10 +44,12 @@ function monthRange(monthKey: string) {
   return { start, end: nextMonth };
 }
 
-function monthKeyFromDate(value: unknown) {
+export function monthKeyFromDate(value: unknown) {
   const date = String(value || '').trim();
   const iso = date.match(/^(\d{4})-(\d{1,2})/);
   if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}`;
+  const slash = date.match(/^(\d{4})\/(\d{1,2})/);
+  if (slash) return `${slash[1]}-${slash[2].padStart(2, '0')}`;
   const jp = date.match(/^(\d{4})年\s*(\d{1,2})月/);
   if (jp) return `${jp[1]}-${jp[2].padStart(2, '0')}`;
   return '';

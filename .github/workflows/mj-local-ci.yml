@@ -1,0 +1,79 @@
+name: MJ Local CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'mj-insight-vault-mvp/mj-insight-vault/**'
+      - '.github/workflows/mj-local-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: mj-insight-vault-mvp/mj-insight-vault
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  test-local:
+    name: test-local
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run local tests
+        run: npm run test:local
+

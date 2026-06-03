@@ -31,6 +31,26 @@ npm run test:local
 
 `npm run test:local` runs all added local guard scripts.
 
+## Pull Request CI
+
+The repository root workflow `.github/workflows/mj-local-ci.yml` is named `MJ Local CI`.
+
+It runs on pull requests that touch the MJ app or the workflow file, and on manual `workflow_dispatch`. The workflow fixes the working directory to:
+
+```text
+mj-insight-vault-mvp/mj-insight-vault
+```
+
+It emits these required checks:
+
+```text
+lint
+build
+test-local
+```
+
+The workflow uses `npm ci`, so `package-lock.json` must stay committed and consistent with `package.json`.
+
 ## Role of npm run build
 
 `npm run build` verifies that the Next.js app compiles, route files are valid, TypeScript checks pass, and static pages can be generated.
@@ -154,9 +174,8 @@ Then verify:
 
 ## Future Test Candidates
 
-- Local fixture tests for `monthKeyFromDate()` through exported pure helpers.
+- More fixture cases for `monthKeyFromDate()` and article structuring edge cases.
 - Local fixture tests for report quality gate using synthetic report JSON.
 - Local fixture tests for article structuring fallback using saved OCR text.
 - Playwright smoke tests for upload draft recovery and `/rollups` UI.
-- CI workflow for `npm run build`, `npm run lint`, and `npm run test:local`.
-
+- Playwright smoke tests for `/rollups` UI and report evidence links.

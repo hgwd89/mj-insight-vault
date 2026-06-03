@@ -1,0 +1,23 @@
+name: MJ test hardening
+description: Add or strengthen external-API-free MJ checks.
+title: "[MJ Test]: "
+labels: ["testing"]
+body:
+  - type: textarea
+    id: target
+    attributes:
+      label: Target behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: Must not call Google Vision.
+          required: true
+        - label: Must not call OpenAI.
+          required: true
+        - label: Must not call Supabase production APIs.
+          required: true
+

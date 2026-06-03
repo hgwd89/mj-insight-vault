@@ -1,0 +1,13 @@
+# Repository-level CODEOWNERS used by GitHub.
+* @hgwd89
+
+mj-insight-vault-mvp/mj-insight-vault/package.json @hgwd89
+.github/workflows/* @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/AGENTS.md @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/CLAUDE.md @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/docs/testing.md @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/lib/** @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/app/** @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/components/** @hgwd89
+mj-insight-vault-mvp/mj-insight-vault/scripts/** @hgwd89
+

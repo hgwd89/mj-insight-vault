@@ -1,0 +1,32 @@
+name: MJ bug fix
+description: Track a concrete MJ Insight Vault bug.
+title: "[MJ Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Upload / draft recovery
+        - OCR
+        - Article structuring
+        - Monthly rollup
+        - Report generation
+        - GitHub operations
+        - Other
+    validations:
+      required: true
+

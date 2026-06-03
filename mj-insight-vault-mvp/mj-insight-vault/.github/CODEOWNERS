@@ -1,0 +1,13 @@
+# Review high-risk app changes.
+* @hgwd89
+
+package.json @hgwd89
+.github/workflows/* @hgwd89
+AGENTS.md @hgwd89
+CLAUDE.md @hgwd89
+docs/testing.md @hgwd89
+lib/** @hgwd89
+app/** @hgwd89
+components/** @hgwd89
+scripts/** @hgwd89
+

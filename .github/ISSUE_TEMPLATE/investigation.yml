@@ -1,0 +1,21 @@
+name: MJ investigation
+description: Investigate MJ behavior before changing code.
+title: "[MJ Investigation]: "
+labels: ["investigation"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: Do not mutate production data.
+          required: true
+        - label: Do not expose secrets or environment variable values.
+          required: true
+

@@ -1,0 +1,56 @@
+name: Bug fix
+description: Track a concrete MJ Insight Vault bug fix.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for defects in upload, OCR, article structuring, rollups, reports, or app operation.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Upload / draft recovery
+        - OCR
+        - Article structuring
+        - Article storage
+        - Monthly rollup
+        - Chat job
+        - Report generation
+        - GitHub operations
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Required verification
+      description: Include local commands and any manual external API check needed.
+      value: |
+        - npm run lint
+        - npm run build
+        - npm run test:local
+    validations:
+      required: true
+

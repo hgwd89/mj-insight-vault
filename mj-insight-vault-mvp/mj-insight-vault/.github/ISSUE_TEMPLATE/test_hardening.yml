@@ -1,0 +1,40 @@
+name: Test hardening
+description: Add or strengthen external-API-free regression checks.
+title: "[Test]: "
+labels: ["testing"]
+body:
+  - type: textarea
+    id: target
+    attributes:
+      label: Target behavior
+      description: What behavior should be protected from regression?
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Regression risk
+      description: What could break if this is not tested?
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: Test must not call Google Vision.
+          required: true
+        - label: Test must not call OpenAI.
+          required: true
+        - label: Test must not call Supabase production APIs.
+          required: true
+        - label: Test must not mutate production data.
+          required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed local check
+      description: Describe the static or fixture-based check.
+    validations:
+      required: true
+

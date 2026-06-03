@@ -1,0 +1,42 @@
+name: Investigation
+description: Investigate behavior before implementing changes.
+title: "[Investigation]: "
+labels: ["investigation"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What needs to be understood?
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files or flows to inspect
+      description: List likely files, routes, or user flows.
+    validations:
+      required: false
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety requirements
+      options:
+        - label: Do not mutate production data.
+          required: true
+        - label: Do not expose secrets or environment variable values.
+          required: true
+        - label: Distinguish code-confirmed facts from external behavior that remains unverified.
+          required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Expected output
+      value: |
+        - Findings
+        - Evidence from files or commands
+        - Remaining unknowns
+        - Recommended next step
+    validations:
+      required: true
+

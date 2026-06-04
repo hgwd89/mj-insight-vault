@@ -23,6 +23,7 @@ type MonthlyRollup = {
 type ApiData = {
   months: string[];
   month_counts?: Record<string, number>;
+  needed_months?: string[];
   rollups: MonthlyRollup[];
   stale_months: string[];
 };
@@ -38,6 +39,14 @@ function statusClass(status: string) {
   if (status === 'running') return 'border-blue-200 bg-blue-50 text-blue-700';
   if (status === 'failed') return 'border-red-200 bg-red-50 text-red-700';
   return 'border-zinc-200 bg-zinc-50 text-zinc-600';
+}
+
+function statusLabel(status: string) {
+  if (status === 'ready') return '使用可';
+  if (status === 'stale') return '要更新';
+  if (status === 'running') return '生成中';
+  if (status === 'failed') return '失敗';
+  return '未作成';
 }
 
 function extractList(json: Record<string, unknown> | null, key: string, max = 5) {
@@ -58,6 +67,7 @@ export default function MonthlyRollupsPage() {
   const { data, error, loading } = useApi<ApiData>('/api/rollups/monthly');
   const [months, setMonths] = useState<string[]>([]);
   const [monthCounts, setMonthCounts] = useState<Record<string, number>>({});
+  const [neededMonths, setNeededMonths] = useState<string[]>([]);
   const [rollups, setRollups] = useState<MonthlyRollup[]>([]);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
@@ -65,6 +75,7 @@ export default function MonthlyRollupsPage() {
   useEffect(() => {
     setMonths(data?.months || []);
     setMonthCounts(data?.month_counts || {});
+    setNeededMonths(data?.needed_months || []);
     setRollups(data?.rollups || []);
   }, [data]);
 
@@ -72,17 +83,17 @@ export default function MonthlyRollupsPage() {
   const staleCount = rollups.filter((rollup) => rollup.status === 'stale').length;
   const readyCount = rollups.filter((rollup) => rollup.status === 'ready').length;
   const failedCount = rollups.filter((rollup) => rollup.status === 'failed').length;
+  const runningCount = rollups.filter((rollup) => rollup.status === 'running').length;
   const missingCount = months.filter((month) => !rollupByMonth.has(month)).length;
   const totalArticles = Object.values(monthCounts).reduce((sum, count) => sum + Number(count || 0), 0);
-  const nextAction = missingCount > 0
-    ? `未作成の月が${missingCount}件あります。まず「全月まとめ生成」を押してください。`
-    : staleCount > 0
-      ? `記事追加後に要更新になった月が${staleCount}件あります。「stale月だけ再生成」を押してください。`
-      : failedCount > 0
-        ? `失敗した月が${failedCount}件あります。該当カードの「再生成」を押してください。`
-        : months.length > 0
-          ? '全月が使用可能です。Chatで全体分析に進めます。'
-          : '記事日付が入った記事がまだありません。先に記事をアップロードしてください。';
+  const neededCount = neededMonths.length || missingCount + staleCount + failedCount;
+  const nextAction = neededCount > 0
+    ? `生成・更新が必要な月が${neededCount}件あります。「必要な月だけ生成」を押してください。`
+    : runningCount > 0
+      ? `生成中の月が${runningCount}件あります。少し待ってから再取得してください。`
+      : months.length > 0
+        ? '全月が使用可能です。Chatで全体分析に進めます。'
+        : '記事日付が入った記事がまだありません。先に記事をアップロードしてください。';
 
   async function refresh() {
     const res = await fetch('/api/rollups/monthly', { headers: { 'x-app-password': password } });
@@ -90,6 +101,7 @@ export default function MonthlyRollupsPage() {
     if (!res.ok) throw new Error(json.error || '月別まとめの再取得に失敗しました');
     setMonths(json.months || []);
     setMonthCounts(json.month_counts || {});
+    setNeededMonths(json.needed_months || []);
     setRollups(json.rollups || []);
   }
 
@@ -134,12 +146,13 @@ export default function MonthlyRollupsPage() {
             <p className="text-xs font-bold text-zinc-500">次にやること</p>
             <h1 className="mt-1 text-xl font-black">{nextAction}</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              作成済みの月別まとめはChatの全体分析で優先参照されます。未作成・要更新の月が残っている場合は、先にここで生成してください。
+              通常は「必要な月だけ生成」を使ってください。全月まとめ生成は、月別まとめの設計を変えた時など、全月を作り直したい場合だけ使います。
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
+            <button className="btn btn-primary" type="button" disabled={Boolean(busy) || neededCount === 0} onClick={() => generate({ needs_only: true }, '必要な月だけ生成')}>必要な月だけ生成</button>
             <button className="btn" type="button" disabled={Boolean(busy) || staleCount === 0} onClick={() => generate({ stale_only: true }, 'stale月だけ再生成')}>stale月だけ再生成</button>
-            <button className="btn btn-primary" type="button" disabled={Boolean(busy) || months.length === 0} onClick={() => generate({ all: true }, '全月まとめ生成')}>全月まとめ生成</button>
+            <button className="btn" type="button" disabled={Boolean(busy) || months.length === 0} onClick={() => generate({ all: true }, '全月まとめ生成')}>全月まとめ生成</button>
           </div>
         </div>
       </section>
@@ -149,21 +162,21 @@ export default function MonthlyRollupsPage() {
           <div>
             <h1 className="text-xl font-black">月別まとめ</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              月別まとめを生成・更新します。新しい記事が追加された月は要再生成になります。
+              月別まとめを生成・更新します。新しい記事が追加された月は要更新になります。
             </p>
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
               <span className="badge">記事あり月 {months.length}</span>
-              <span className="badge">生成済み {readyCount}</span>
+              <span className="badge">使用可 {readyCount}</span>
               <span className="badge">未作成 {missingCount}</span>
-              <span className="badge">要再生成 {staleCount}</span>
+              <span className="badge">要更新 {staleCount}</span>
               <span className="badge">失敗 {failedCount}</span>
+              <span className="badge">必要 {neededCount}</span>
               <span className="badge">rollup対象記事 {totalArticles}</span>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => refresh().catch((e) => setMessage(e instanceof Error ? e.message : '再取得に失敗しました'))}>再取得</button>
-            <button className="btn" type="button" disabled={Boolean(busy) || staleCount === 0} onClick={() => generate({ stale_only: true }, 'stale月だけ再生成')}>stale月だけ再生成</button>
-            <button className="btn btn-primary" type="button" disabled={Boolean(busy) || months.length === 0} onClick={() => generate({ all: true }, '全月まとめ生成')}>全月まとめ生成</button>
+            <button className="btn btn-primary" type="button" disabled={Boolean(busy) || neededCount === 0} onClick={() => generate({ needs_only: true }, '必要な月だけ生成')}>必要な月だけ生成</button>
           </div>
         </div>
         {message && <p className="mt-4 rounded-xl bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">{message}</p>}
@@ -184,7 +197,7 @@ export default function MonthlyRollupsPage() {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-lg font-black">{month}</h2>
-                  <span className={`rounded-full border px-2 py-1 text-xs font-bold ${statusClass(status)}`}>{status}</span>
+                  <span className={`rounded-full border px-2 py-1 text-xs font-bold ${statusClass(status)}`}>{statusLabel(status)}</span>
                   <span className="badge">この記事数から作成 {articleCount}</span>
                   {rollup?.rollup_model && <span className="badge">model: {rollup.rollup_model}</span>}
                   {rollup?.generated_at && <span className="badge">生成: {new Date(rollup.generated_at).toLocaleString('ja-JP')}</span>}
@@ -200,7 +213,7 @@ export default function MonthlyRollupsPage() {
                 )}
               </div>
               <button className="btn shrink-0" type="button" disabled={Boolean(busy)} onClick={() => generate({ month_key: month }, `${month}を生成`)}>
-                {rollup ? '再生成' : '生成'}
+                {rollup ? 'この月を再生成' : 'この月を生成'}
               </button>
             </div>
           </section>

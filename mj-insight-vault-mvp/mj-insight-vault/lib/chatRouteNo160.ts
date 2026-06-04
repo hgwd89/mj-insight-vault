@@ -6,6 +6,7 @@ import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
 import { fetchAllWideArticles, type WideArticle } from '@/lib/wideArticleRetrieval';
 import { runChatAnalysis as legacyRunChatAnalysis } from '@/lib/chatRouteCore';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
+import { buildMonthlyRollupContext } from '@/lib/monthlyRollupContext';
 
 const ALL_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
@@ -14,6 +15,7 @@ const FALLBACK_TIMEOUT_MS = 65000;
 
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type Turn = { role: 'user' | 'assistant'; content: string };
+type MonthlyContext = Awaited<ReturnType<typeof buildMonthlyRollupContext>>;
 
 type ChatResult = {
   report: unknown;
@@ -103,6 +105,26 @@ function lexicalSelect(query: string, articles: WideArticle[], max: number) {
     .slice(0, max);
 }
 
+function selectRollupEvidenceArticles(query: string, articles: WideArticle[], context: MonthlyContext | null, max: number) {
+  if (!context?.has_rollups) return lexicalSelect(query, articles, max);
+  const preferredIds = [
+    ...context.evidence_article_ids,
+    ...context.representative_article_ids
+  ];
+  const byId = new Map(articles.map((article) => [article.id, article]));
+  const selected: WideArticle[] = [];
+  const used = new Set<string>();
+  for (const id of preferredIds) {
+    const article = byId.get(id);
+    if (!article || used.has(article.id)) continue;
+    selected.push(article);
+    used.add(article.id);
+    if (selected.length >= max) return selected;
+  }
+  const backfill = lexicalSelect(query, articles.filter((article) => !used.has(article.id)), max - selected.length);
+  return [...selected, ...backfill].slice(0, max);
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
@@ -121,31 +143,55 @@ function buildArticleInput(articles: WideArticle[], textLimit: number) {
   }));
 }
 
+function monthlyPromptMessage(context: MonthlyContext | null): Turn[] {
+  if (!context?.has_rollups || !context.context_text) return [];
+  return [{
+    role: 'user',
+    content: [
+      '【MONTHLY_ROLLUP_CONTEXT_PRIMARY】',
+      '以下は全記事を月別に集約した中間レイヤーです。全体分析では、ここを一次情報として必ず横断してください。',
+      '最終投入する個別記事は根拠確認・具体例用であり、分析母集団を個別記事数に限定してはいけません。',
+      `rollup_count: ${context.rollup_count}`,
+      `rollup_source_article_count: ${context.article_count}`,
+      context.context_text
+    ].join('\n')
+  }];
+}
+
 function buildEmergencyAnswer(query: string, base: Record<string, unknown>, finalArticles: WideArticle[], error: string) {
-  const sourceCoverage = isRecord(base.source_coverage) ? base.source_coverage : {};
+  const sourceCoverage = isRecord(base.source_coverage) ? base.sourceCoverage : {};
   const articleLines = finalArticles.slice(0, 16).map((article, index) => `${index + 1}. ${articleLink(article)}\n   ${excerpt(article, 180)}`).join('\n');
   return {
     ...base,
     report_title: '暫定レポート：最終生成がタイムアウトしました',
     answer_text: [
       '## 結論',
-      '最終レポート生成がタイムアウトしたため、選抜記事に基づく暫定出力です。全記事取得と記事選抜は完了していますが、深い統合分析は未完了です。',
+      '最終レポート生成がタイムアウトしたため、暫定出力です。全記事取得と月別rollup参照は完了していますが、深い統合分析は未完了です。',
       '',
       '## 状態',
       `- ユーザー指示: ${query}`,
       `- エラー: ${error}`,
-      `- 取得記事数: ${text(sourceCoverage.article_count)}`,
-      `- 最終投入候補: ${finalArticles.length}件`,
+      `- 取得記事数: ${text((sourceCoverage as Record<string, unknown>).article_count)}`,
+      `- 根拠確認用記事: ${finalArticles.length}件`,
       '',
       '## 代表記事候補',
       articleLines || '代表記事候補なし',
       '',
       '## 根拠と限界',
-      'この出力はタイムアウト時の安全フォールバックです。通常レポートより浅いため、月別rollup生成後の再分析を推奨します。'
+      'この出力はタイムアウト時の安全フォールバックです。通常レポートより浅いため、月別rollup生成状態を確認したうえで再分析してください。'
     ].join('\n'),
     generation_warning: 'emergency_timeout_fallback',
     generation_error: error
   };
+}
+
+async function getMonthlyContext() {
+  try {
+    const context = await buildMonthlyRollupContext();
+    return context.has_rollups ? context : null;
+  } catch {
+    return null;
+  }
 }
 
 async function runWide(body: Record<string, unknown>, onProgress?: ProgressReporter) {
@@ -159,25 +205,38 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   const allArticles = await fetchAllWideArticles();
   await progress(onProgress, 30, `${allArticles.length}件の記事を取得`);
 
-  const finalLimit = selectedModel === 'gpt-5' ? 32 : 24;
-  const finalArticles = lexicalSelect(query, allArticles, finalLimit);
+  await progress(onProgress, 42, '月別まとめレイヤーを確認中');
+  const monthlyContext = await getMonthlyContext();
+  const monthlyUsed = Boolean(monthlyContext?.has_rollups && monthlyContext.context_text);
+  const finalLimit = monthlyUsed ? 40 : selectedModel === 'gpt-5' ? 32 : 24;
+  const finalArticles = selectRollupEvidenceArticles(query, allArticles, monthlyContext, finalLimit);
+  const rollupArticleCount = monthlyContext?.article_count || 0;
+
   const base = {
     target_scope: 'all',
-    retrieval_mode: 'wide_all_data_scan',
+    retrieval_mode: monthlyUsed ? 'monthly_rollup_plus_evidence' : 'wide_all_data_scan',
     model_used: selectedModel,
     requested_model: selectedModel,
     scan_enabled: true,
-    scan_model: 'lexical_fallback',
-    scan_error: '',
+    scan_model: monthlyUsed ? 'monthly_rollups' : 'lexical_fallback',
+    scan_error: monthlyUsed ? '' : 'monthly_rollups_missing_or_not_ready; lexical article selection used',
     article_count_scanned: allArticles.length,
     article_count_for_report: finalArticles.length,
     related_article_count: allArticles.length,
     selected_article_ids: finalArticles.map((article) => article.id),
+    monthly_rollup_used: monthlyUsed,
+    monthly_rollup_count: monthlyContext?.rollup_count || 0,
+    monthly_rollup_source_article_count: rollupArticleCount,
     source_coverage: {
       article_count: allArticles.length,
       scanned_article_count: allArticles.length,
       final_article_count: finalArticles.length,
-      coverage_note: `全記事${allArticles.length}件をページング取得し、最終分析には${finalArticles.length}件を選抜投入。160件制限は使用していません。`
+      monthly_rollup_used: monthlyUsed,
+      monthly_rollup_count: monthlyContext?.rollup_count || 0,
+      monthly_rollup_source_article_count: rollupArticleCount,
+      coverage_note: monthlyUsed
+        ? `全記事${allArticles.length}件をページング取得し、月別rollup ${monthlyContext?.rollup_count}ヶ月・${rollupArticleCount}記事分を一次入力として横断。個別記事${finalArticles.length}件は根拠確認用。160件制限は使用していません。`
+        : `全記事${allArticles.length}件をページング取得。ただし使用可能な月別rollupがないため、個別記事${finalArticles.length}件の暫定分析。160件制限は使用していません。`
     },
     article_lookup: finalArticles.map((article) => ({
       article_id: article.id,
@@ -198,21 +257,25 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     }) as ChatResult;
   }
 
-  await progress(onProgress, 62, `最終レポート入力を${finalArticles.length}件に圧縮中`);
-  const compactInput = buildArticleInput(finalArticles, 900);
-  const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs. Keep output useful but compact.`;
+  await progress(onProgress, 62, monthlyUsed ? '月別まとめと根拠記事を最終入力に準備中' : `根拠候補${finalArticles.length}件を最終入力に準備中`);
+  const compactInput = buildArticleInput(finalArticles, monthlyUsed ? 700 : 900);
+  const conversation = [
+    ...turns(body.conversation),
+    ...monthlyPromptMessage(monthlyContext)
+  ];
+  const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and treat individual articles as evidence examples, not as the whole universe.`;
   let parsed: Record<string, unknown> = {};
   let generationWarning = '';
 
   try {
-    await progress(onProgress, 68, `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
+    await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
     const completion = await withTimeout(openai.chat.completions.create({
       model: selectedModel,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
-        ...turns(body.conversation),
-        { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, articles: compactInput }) }
+        ...conversation,
+        { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, monthly_rollup_context_used: monthlyUsed, articles_for_evidence: compactInput }) }
       ]
     } as any), FINAL_TIMEOUT_MS, 'final report generation');
     parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
@@ -221,15 +284,15 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     const fbModel = fallbackModel(selectedModel);
     generationWarning = `primary_failed: ${primaryMessage}`;
     try {
-      await progress(onProgress, 78, `${fbModel}で軽量レポートを生成中`);
-      const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 650);
+      await progress(onProgress, 78, `${fbModel}で軽量統合レポートを生成中`);
+      const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 600);
       const completion = await withTimeout(openai.chat.completions.create({
         model: fbModel,
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use article_link for evidence. State that fallback generation was used.` },
-          ...turns(body.conversation),
-          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, primary_error: primaryMessage, articles: fallbackInput }) }
+          { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence.` },
+          ...conversation,
+          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, articles_for_evidence: fallbackInput }) }
         ]
       } as any), FALLBACK_TIMEOUT_MS, 'fallback report generation');
       parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;

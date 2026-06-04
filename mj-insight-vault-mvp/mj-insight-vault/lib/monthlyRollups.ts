@@ -149,6 +149,15 @@ export async function listArticleMonthCounts() {
   return counts;
 }
 
+export async function listNeededRollupMonths() {
+  const [months, rollups] = await Promise.all([listArticleMonths(), listMonthlyRollups()]);
+  const byMonth = new Map(rollups.map((rollup) => [rollup.month_key, rollup]));
+  return months.filter((month) => {
+    const rollup = byMonth.get(month);
+    return !rollup || rollup.status === 'stale' || rollup.status === 'failed';
+  });
+}
+
 export async function markMonthlyRollupsStaleForArticleDates(articleDates: unknown[]) {
   const months = Array.from(new Set(articleDates.map(monthKeyFromDate).filter(Boolean)));
   if (!months.length) return { months: [], updated: 0 };
@@ -170,6 +179,15 @@ export async function markMonthlyRollupsStaleForArticleDates(articleDates: unkno
 
 export async function generateStaleMonthlyRollups() {
   const months = await listStaleRollupMonths();
+  const results = [];
+  for (const month of months) {
+    results.push(await generateMonthlyRollup(month));
+  }
+  return results;
+}
+
+export async function generateNeededMonthlyRollups() {
+  const months = await listNeededRollupMonths();
   const results = [];
   for (const month of months) {
     results.push(await generateMonthlyRollup(month));

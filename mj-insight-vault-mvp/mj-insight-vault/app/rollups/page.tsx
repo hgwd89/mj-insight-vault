@@ -146,13 +146,13 @@ export default function MonthlyRollupsPage() {
             <p className="text-xs font-bold text-zinc-500">次にやること</p>
             <h1 className="mt-1 text-xl font-black">{nextAction}</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              通常は「必要な月だけ生成」を使ってください。全月まとめ生成は、月別まとめの設計を変えた時など、全月を作り直したい場合だけ使います。
+              通常は「必要な月だけ生成」を使ってください。「全月を強制再生成」は時間とAPIコストがかかるため、月別まとめの設計を変えた時だけ使います。
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <button className="btn btn-primary" type="button" disabled={Boolean(busy) || neededCount === 0} onClick={() => generate({ needs_only: true }, '必要な月だけ生成')}>必要な月だけ生成</button>
             <button className="btn" type="button" disabled={Boolean(busy) || staleCount === 0} onClick={() => generate({ stale_only: true }, 'stale月だけ再生成')}>stale月だけ再生成</button>
-            <button className="btn" type="button" disabled={Boolean(busy) || months.length === 0} onClick={() => generate({ all: true }, '全月まとめ生成')}>全月まとめ生成</button>
+            <button className="btn" type="button" disabled={Boolean(busy) || months.length === 0} onClick={() => generate({ all: true }, '全月を強制再生成')}>全月を強制再生成</button>
           </div>
         </div>
       </section>
@@ -191,6 +191,7 @@ export default function MonthlyRollupsPage() {
         const researchNeeds = extractList(rollup?.summary_json || null, 'research_needs');
         const status = rollup?.status || '未作成';
         const articleCount = monthCounts[month] ?? rollup?.article_count ?? 0;
+        const usedInChat = rollup?.status === 'ready';
         return (
           <section key={month} className="card p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -199,6 +200,7 @@ export default function MonthlyRollupsPage() {
                   <h2 className="text-lg font-black">{month}</h2>
                   <span className={`rounded-full border px-2 py-1 text-xs font-bold ${statusClass(status)}`}>{statusLabel(status)}</span>
                   <span className="badge">この記事数から作成 {articleCount}</span>
+                  <span className="badge">{usedInChat ? 'Chat全体分析に使われます' : 'Chat全体分析では未使用'}</span>
                   {rollup?.rollup_model && <span className="badge">model: {rollup.rollup_model}</span>}
                   {rollup?.generated_at && <span className="badge">生成: {new Date(rollup.generated_at).toLocaleString('ja-JP')}</span>}
                 </div>

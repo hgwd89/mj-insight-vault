@@ -19,8 +19,8 @@ export function RollupsOperationGuide({
   const judgment = complete
     ? '全月の月別まとめが使用可能です。Chatで全体分析できます。'
     : readyCount > 0
-      ? '使用可能な月別まとめはありますが、未作成・要更新・失敗の月が残っています。'
-      : 'まだ使用可能な月別まとめがありません。まず全月まとめ生成を実行してください。';
+      ? '使用可能な月別まとめはありますが、未作成・要更新・失敗の月が残っています。全体分析は暫定になります。'
+      : 'まだ使用可能な月別まとめがありません。まず必要な月だけ生成してください。';
 
   return (
     <div className="space-y-4">
@@ -32,8 +32,8 @@ export function RollupsOperationGuide({
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
             <p className="text-xs font-bold text-zinc-500">初回</p>
-            <h3 className="mt-1 font-black">全月まとめ生成</h3>
-            <p className="mt-2 text-sm leading-6 text-zinc-600">最初は全月を作成します。月が多い場合は時間がかかります。</p>
+            <h3 className="mt-1 font-black">必要な月だけ生成</h3>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">未作成・要更新・失敗の月だけ作成します。通常はこの操作を使います。</p>
           </div>
           <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
             <p className="text-xs font-bold text-zinc-500">記事追加後</p>

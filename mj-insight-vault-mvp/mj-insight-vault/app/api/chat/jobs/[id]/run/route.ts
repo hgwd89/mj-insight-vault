@@ -3,7 +3,6 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { runChatAnalysis } from '@/lib/chatRouteNo160';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
-import { buildMonthlyRollupContext } from '@/lib/monthlyRollupContext';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -31,74 +30,11 @@ function clampProgress(value: unknown) {
   return Math.max(1, Math.min(99, Math.round(Number(value) || 1)));
 }
 
-function wantsAllScope(request: JsonRecord) {
-  return text(request.target_scope || 'all') === 'all';
-}
-
 async function updateJob(id: string, patch: Record<string, unknown>) {
   await supabaseAdmin.from('chat_jobs').update({
     ...patch,
     heartbeat_at: new Date().toISOString()
   }).eq('id', id);
-}
-
-async function prepareRequestWithMonthlyRollups(rawRequest: unknown) {
-  const request = isRecord(rawRequest) ? { ...rawRequest } : {};
-  if (!wantsAllScope(request)) return { request, monthlyContext: null as JsonRecord | null };
-
-  const context = await buildMonthlyRollupContext();
-  if (!context.has_rollups || !context.context_text) return { request, monthlyContext: null as JsonRecord | null };
-
-  const previousConversation = Array.isArray(request.conversation) ? request.conversation : [];
-  const rollupMessage = [
-    '【MONTHLY_ROLLUP_CONTEXT】',
-    '全体分析では、まず以下の月別まとめを一次入力として横断してください。',
-    '生記事はストックとして残しつつ、長期傾向は月別rollupを優先して読んでください。',
-    'ただし、月別まとめで落ちた小さな兆しがある可能性は限界として明記してください。',
-    `rollup_count: ${context.rollup_count}`,
-    `rollup_source_article_count: ${context.article_count}`,
-    context.context_text
-  ].join('\n');
-
-  request.conversation = [
-    ...previousConversation,
-    { role: 'user', content: rollupMessage }
-  ];
-  request.monthly_rollup_context = {
-    has_rollups: true,
-    rollup_count: context.rollup_count,
-    rollup_source_article_count: context.article_count,
-    representative_article_ids: context.representative_article_ids,
-    evidence_article_ids: context.evidence_article_ids
-  };
-
-  return { request, monthlyContext: request.monthly_rollup_context as JsonRecord };
-}
-
-function attachMonthlyMetadata(result: unknown, monthlyContext: JsonRecord | null) {
-  if (!monthlyContext || !isRecord(result)) return result;
-  const answer = isRecord(result.answer) ? { ...result.answer } : {};
-  const sourceCoverage = isRecord(answer.source_coverage) ? { ...answer.source_coverage } : {};
-  const coverageDiagnosis = isRecord(answer.coverage_diagnosis) ? { ...answer.coverage_diagnosis } : {};
-
-  const monthlyCoverage = {
-    monthly_rollup_used: true,
-    monthly_rollup_count: monthlyContext.rollup_count,
-    monthly_rollup_source_article_count: monthlyContext.rollup_source_article_count,
-    representative_article_ids_from_rollups: monthlyContext.representative_article_ids,
-    evidence_article_ids_from_rollups: monthlyContext.evidence_article_ids,
-    monthly_rollup_note: '全体分析では月別rollupを一次入力として使用し、生記事は代表記事・補助根拠として扱います。記事ストック自体は削除・制限していません。'
-  };
-
-  return {
-    ...result,
-    answer: {
-      ...answer,
-      monthly_rollup_context: monthlyCoverage,
-      source_coverage: { ...sourceCoverage, ...monthlyCoverage },
-      coverage_diagnosis: { ...coverageDiagnosis, ...monthlyCoverage }
-    }
-  };
 }
 
 function reportIdFromResult(result: unknown) {
@@ -146,7 +82,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id?
 
     try {
       await updateJob(jobId, { progress: Math.max(lastProgress, 12), stage: '月別まとめを確認中' });
-      const { request, monthlyContext } = await prepareRequestWithMonthlyRollups(job.request_json || {});
+      const request = isRecord(job.request_json) ? { ...job.request_json } : {};
 
       const rawResult = await runChatAnalysis(request, async ({ progress, stage }) => {
         const nextProgress = Math.max(lastProgress, clampProgress(progress));
@@ -157,7 +93,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id?
           stage
         });
       });
-      const result = enhanceChatAnalysisResult(attachMonthlyMetadata(rawResult, monthlyContext));
+      const result = enhanceChatAnalysisResult(rawResult);
       await persistEnhancedReport(result);
 
       await updateJob(jobId, {

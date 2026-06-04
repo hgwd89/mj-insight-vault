@@ -31,6 +31,7 @@ export type MonthlyRollupRow = {
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
 const PAGE_SIZE = 1000;
+const RUNNING_LOCK_MS = 10 * 60 * 1000;
 
 function active(article: RollupArticle) {
   return !article.status || !HIDDEN.has(article.status);
@@ -76,6 +77,13 @@ function textLimit(count: number) {
 
 function rollupModel() {
   return (process.env.OPENAI_ROLLUP_MODEL || 'gpt-5-nano').trim();
+}
+
+function isFreshRunningRollup(rollup: MonthlyRollupRow | null) {
+  if (!rollup || rollup.status !== 'running') return false;
+  const updatedAt = Date.parse(String(rollup.updated_at || ''));
+  if (!updatedAt || Number.isNaN(updatedAt)) return false;
+  return Date.now() - updatedAt < RUNNING_LOCK_MS;
 }
 
 async function fetchAllRollupArticles(select = SELECT) {
@@ -196,6 +204,15 @@ export async function generateNeededMonthlyRollups() {
 }
 
 export async function generateMonthlyRollup(monthKey: string) {
+  monthRange(monthKey);
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from('monthly_rollups')
+    .select('*')
+    .eq('month_key', monthKey)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (isFreshRunningRollup(existing as MonthlyRollupRow | null)) return existing as MonthlyRollupRow;
+
   const articles = await getArticlesForMonth(monthKey);
   const model = rollupModel();
   const openai = getOpenAI();

@@ -159,7 +159,7 @@ function monthlyPromptMessage(context: MonthlyContext | null): Turn[] {
 }
 
 function buildEmergencyAnswer(query: string, base: Record<string, unknown>, finalArticles: WideArticle[], error: string) {
-  const sourceCoverage = isRecord(base.source_coverage) ? base.sourceCoverage : {};
+  const sourceCoverage = isRecord(base.source_coverage) ? base.source_coverage : {};
   const articleLines = finalArticles.slice(0, 16).map((article, index) => `${index + 1}. ${articleLink(article)}\n   ${excerpt(article, 180)}`).join('\n');
   return {
     ...base,
@@ -188,7 +188,7 @@ function buildEmergencyAnswer(query: string, base: Record<string, unknown>, fina
 async function getMonthlyContext() {
   try {
     const context = await buildMonthlyRollupContext();
-    return context.has_rollups ? context : null;
+    return context;
   } catch {
     return null;
   }
@@ -208,9 +208,16 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   await progress(onProgress, 42, '月別まとめレイヤーを確認中');
   const monthlyContext = await getMonthlyContext();
   const monthlyUsed = Boolean(monthlyContext?.has_rollups && monthlyContext.context_text);
+  const coverageComplete = Boolean(monthlyContext?.coverage_complete);
   const finalLimit = monthlyUsed ? 40 : selectedModel === 'gpt-5' ? 32 : 24;
   const finalArticles = selectRollupEvidenceArticles(query, allArticles, monthlyContext, finalLimit);
   const rollupArticleCount = monthlyContext?.article_count || 0;
+  const activeArticleCount = monthlyContext?.total_article_count || allArticles.length;
+  const missingMonths = monthlyContext?.missing_months || [];
+  const staleMonths = monthlyContext?.stale_months || [];
+  const failedMonths = monthlyContext?.failed_months || [];
+  const runningMonths = monthlyContext?.running_months || [];
+  const provisional = !monthlyUsed || !coverageComplete;
 
   const base = {
     target_scope: 'all',
@@ -227,16 +234,48 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     monthly_rollup_used: monthlyUsed,
     monthly_rollup_count: monthlyContext?.rollup_count || 0,
     monthly_rollup_source_article_count: rollupArticleCount,
+    monthly_rollup_coverage_complete: coverageComplete,
+    monthly_rollup_ready_months: monthlyContext?.ready_months || [],
+    monthly_rollup_missing_months: missingMonths,
+    monthly_rollup_stale_months: staleMonths,
+    monthly_rollup_failed_months: failedMonths,
+    monthly_rollup_running_months: runningMonths,
+    analysis_is_provisional: provisional,
     source_coverage: {
       article_count: allArticles.length,
+      active_article_count: activeArticleCount,
       scanned_article_count: allArticles.length,
       final_article_count: finalArticles.length,
       monthly_rollup_used: monthlyUsed,
       monthly_rollup_count: monthlyContext?.rollup_count || 0,
       monthly_rollup_source_article_count: rollupArticleCount,
+      monthly_rollup_total_article_count: activeArticleCount,
+      monthly_rollup_article_month_count: monthlyContext?.article_month_count || 0,
+      monthly_rollup_coverage_complete: coverageComplete,
+      monthly_rollup_status_counts: monthlyContext?.status_counts || {},
+      monthly_rollup_ready_months: monthlyContext?.ready_months || [],
+      monthly_rollup_missing_months: missingMonths,
+      monthly_rollup_stale_months: staleMonths,
+      monthly_rollup_failed_months: failedMonths,
+      monthly_rollup_running_months: runningMonths,
+      analysis_is_provisional: provisional,
       coverage_note: monthlyUsed
-        ? `全記事${allArticles.length}件をページング取得し、月別rollup ${monthlyContext?.rollup_count}ヶ月・${rollupArticleCount}記事分を一次入力として横断。個別記事${finalArticles.length}件は根拠確認用。160件制限は使用していません。`
+        ? `全記事${allArticles.length}件をページング取得し、ready月別rollup ${monthlyContext?.rollup_count}ヶ月・${rollupArticleCount}記事分を一次入力として横断。個別記事${finalArticles.length}件は根拠確認用。160件制限は使用していません。${coverageComplete ? '月別rollupは全記事あり月をカバーしています。' : `未作成${missingMonths.length}ヶ月、要更新${staleMonths.length}ヶ月、失敗${failedMonths.length}ヶ月、生成中${runningMonths.length}ヶ月があるため暫定分析です。`}`
         : `全記事${allArticles.length}件をページング取得。ただし使用可能な月別rollupがないため、個別記事${finalArticles.length}件の暫定分析。160件制限は使用していません。`
+    },
+    coverage_diagnosis: {
+      monthly_rollup_used: monthlyUsed,
+      monthly_rollup_coverage_complete: coverageComplete,
+      analysis_is_provisional: provisional,
+      ready_month_count: monthlyContext?.ready_months.length || 0,
+      article_month_count: monthlyContext?.article_month_count || 0,
+      missing_month_count: missingMonths.length,
+      stale_month_count: staleMonths.length,
+      failed_month_count: failedMonths.length,
+      running_month_count: runningMonths.length,
+      guidance: provisional
+        ? '月別rollupが未作成・要更新・失敗・生成中の月を含むため、全体分析は暫定です。/rollupsで必要な月だけ生成してください。'
+        : '月別rollupが全記事あり月をカバーしているため、全体分析の一次入力として使用できます。'
     },
     article_lookup: finalArticles.map((article) => ({
       article_id: article.id,
@@ -264,6 +303,9 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     ...monthlyPromptMessage(monthlyContext)
   ];
   const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and treat individual articles as evidence examples, not as the whole universe.`;
+  const provisionalInstruction = provisional
+    ? '月別rollupに未作成・要更新・失敗・生成中の月がある場合、このレポートは「暫定分析」と明示し、coverage_diagnosisに不足月の状態を残してください。'
+    : '月別rollupは全記事あり月をカバーしています。個別記事数ではなく月別rollupを全体分析の一次入力として扱ってください。';
   let parsed: Record<string, unknown> = {};
   let generationWarning = '';
 
@@ -275,9 +317,9 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       messages: [
         { role: 'system', content: system },
         ...conversation,
-        { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, monthly_rollup_context_used: monthlyUsed, articles_for_evidence: compactInput }) }
+        { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, articles_for_evidence: compactInput }) }
       ]
-    } as any), FINAL_TIMEOUT_MS, 'final report generation');
+    }), FINAL_TIMEOUT_MS, 'final report generation');
     parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
   } catch (primaryError) {
     const primaryMessage = primaryError instanceof Error ? primaryError.message : 'final report generation failed';
@@ -292,9 +334,9 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
         messages: [
           { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence.` },
           ...conversation,
-          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, articles_for_evidence: fallbackInput }) }
+          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, articles_for_evidence: fallbackInput }) }
         ]
-      } as any), FALLBACK_TIMEOUT_MS, 'fallback report generation');
+      }), FALLBACK_TIMEOUT_MS, 'fallback report generation');
       parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
       generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
     } catch (fallbackError) {

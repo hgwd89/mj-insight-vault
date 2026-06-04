@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { listArticleMonthCounts, listArticleMonths } from '@/lib/monthlyRollups';
 
 type MonthlyRollup = {
   month_key: string;
@@ -34,28 +35,64 @@ function extractBullets(json: Record<string, unknown> | null, key: string, max =
 }
 
 export async function buildMonthlyRollupContext() {
-  const { data, error } = await supabaseAdmin
-    .from('monthly_rollups')
-    .select('month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, generated_at')
-    .eq('status', 'ready')
-    .order('month_key', { ascending: true });
+  const [{ data, error }, articleMonths, articleMonthCounts] = await Promise.all([
+    supabaseAdmin
+      .from('monthly_rollups')
+      .select('month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, generated_at')
+      .order('month_key', { ascending: true }),
+    listArticleMonths(),
+    listArticleMonthCounts()
+  ]);
 
   if (error) throw error;
   const rows = (data || []) as MonthlyRollup[];
-  if (!rows.length) {
+  const readyRows = rows.filter((row) => row.status === 'ready');
+  const byMonth = new Map(rows.map((row) => [row.month_key, row]));
+  const readyMonths = readyRows.map((row) => row.month_key);
+  const staleMonths = rows.filter((row) => row.status === 'stale').map((row) => row.month_key);
+  const failedMonths = rows.filter((row) => row.status === 'failed').map((row) => row.month_key);
+  const runningMonths = rows.filter((row) => row.status === 'running').map((row) => row.month_key);
+  const missingMonths = articleMonths.filter((month) => !byMonth.has(month));
+  const statusCounts = rows.reduce<Record<string, number>>((counts, row) => {
+    counts[row.status || 'unknown'] = (counts[row.status || 'unknown'] || 0) + 1;
+    return counts;
+  }, {});
+  const totalArticleCount = Object.values(articleMonthCounts).reduce((sum, count) => sum + Number(count || 0), 0);
+  const coverageComplete = articleMonths.length > 0
+    && readyMonths.length === articleMonths.length
+    && staleMonths.length === 0
+    && failedMonths.length === 0
+    && runningMonths.length === 0
+    && missingMonths.length === 0;
+
+  const base = {
+    status_counts: statusCounts,
+    ready_months: readyMonths,
+    stale_months: staleMonths,
+    failed_months: failedMonths,
+    running_months: runningMonths,
+    missing_months: missingMonths,
+    article_months: articleMonths,
+    article_month_count: articleMonths.length,
+    total_article_count: totalArticleCount,
+    coverage_complete: coverageComplete
+  };
+
+  if (!readyRows.length) {
     return {
       has_rollups: false,
       rollup_count: 0,
       article_count: 0,
       context_text: '',
       representative_article_ids: [] as string[],
-      evidence_article_ids: [] as string[]
+      evidence_article_ids: [] as string[],
+      ...base
     };
   }
 
   const representative = new Set<string>();
   const evidence = new Set<string>();
-  const sections = rows.map((row) => {
+  const sections = readyRows.map((row) => {
     for (const id of arrayText(row.representative_article_ids)) representative.add(id);
     for (const id of arrayText(row.evidence_article_ids)) evidence.add(id);
     const json = row.summary_json || {};
@@ -73,10 +110,11 @@ export async function buildMonthlyRollupContext() {
 
   return {
     has_rollups: true,
-    rollup_count: rows.length,
-    article_count: rows.reduce((sum, row) => sum + Number(row.article_count || 0), 0),
+    rollup_count: readyRows.length,
+    article_count: readyRows.reduce((sum, row) => sum + Number(row.article_count || 0), 0),
     context_text: sections.join('\n\n').slice(0, 30000),
     representative_article_ids: Array.from(representative).slice(0, 80),
-    evidence_article_ids: Array.from(evidence).slice(0, 120)
+    evidence_article_ids: Array.from(evidence).slice(0, 120),
+    ...base
   };
 }

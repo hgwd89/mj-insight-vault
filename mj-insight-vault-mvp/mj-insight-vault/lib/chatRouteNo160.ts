@@ -9,10 +9,16 @@ import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 
 const ALL_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+const FINAL_REPORT_TIMEOUT_MS = Number(process.env.OPENAI_FINAL_REPORT_TIMEOUT_MS || 110000);
+const FALLBACK_REPORT_TIMEOUT_MS = Number(process.env.OPENAI_FALLBACK_REPORT_TIMEOUT_MS || 70000);
 
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type Turn = { role: 'user' | 'assistant'; content: string };
 type ChatResult = { report: unknown; report_error: string; related_articles: WideArticle[]; selectable_models: string[]; answer: Record<string, unknown> };
+
+type OpenAIClient = NonNullable<ReturnType<typeof getOpenAI>>;
+
+type CompletionPayload = Parameters<OpenAIClient['chat']['completions']['create']>[0];
 
 function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
@@ -20,13 +26,21 @@ function wantsWide(body: Record<string, unknown>) { return text(body.target_scop
 function models() { return Array.from(new Set([TEXT_MODEL, ...(process.env.OPENAI_CHAT_MODELS || '').split(',').map((v) => v.trim()).filter(Boolean), ...MODELS].filter(Boolean))); }
 function model(value: unknown) { const m = text(value); return models().includes(m) ? m : TEXT_MODEL; }
 function scanModel() { const m = text(process.env.OPENAI_SCAN_MODEL || 'gpt-5-nano'); return models().includes(m) ? m : 'gpt-5-nano'; }
+function fallbackModel(selectedModel: string) {
+  const configured = text(process.env.OPENAI_FINAL_FALLBACK_MODEL || 'gpt-5-mini');
+  if (configured && configured !== selectedModel && models().includes(configured)) return configured;
+  if (selectedModel !== 'gpt-5-mini' && models().includes('gpt-5-mini')) return 'gpt-5-mini';
+  if (selectedModel !== 'gpt-4.1-mini' && models().includes('gpt-4.1-mini')) return 'gpt-4.1-mini';
+  return selectedModel;
+}
 function articleLink(article: WideArticle) { return `[${article.headline || '無題の記事'}｜${article.article_date || '日付不明'}](/articles/${article.id})`; }
 function excerpt(article: WideArticle, n: number) { return (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, n); }
 function turns(value: unknown): Turn[] { return Array.isArray(value) ? value.map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : {}).map((item) => ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: text(item.content).slice(0, 6000) })).filter((item) => item.content).slice(-8) as Turn[] : []; }
 async function progress(onProgress: ProgressReporter | undefined, p: number, stage: string) { try { await onProgress?.({ progress: p, stage }); } catch {} }
 function scanTextLimit(count: number) { if (count > 700) return 180; if (count > 500) return 240; if (count > 300) return 320; if (count > 180) return 420; return 550; }
-function finalTextLimit(count: number) { if (count > 40) return 1800; if (count > 30) return 2200; return 2600; }
-function selectedCount(selectedModel: string) { return selectedModel === 'gpt-5' ? 48 : 32; }
+function finalTextLimit(count: number) { if (count > 32) return 900; if (count > 24) return 1100; return 1400; }
+function fallbackTextLimit(count: number) { if (count > 24) return 650; return 850; }
+function selectedCount(selectedModel: string) { return selectedModel === 'gpt-5' ? 36 : 28; }
 function uniqueIds(value: unknown) { return Array.isArray(value) ? Array.from(new Set(value.map((x) => text(x)).filter(Boolean))) : []; }
 function queryTerms(query: string) {
   return Array.from(new Set(query
@@ -62,6 +76,37 @@ function selectByIds(query: string, articles: WideArticle[], ids: string[], max:
   const fallback = fallbackSelectArticles(query, articles.filter((a) => !used.has(a.id)), max - picked.length);
   return [...picked, ...fallback].slice(0, max);
 }
+async function createCompletionWithTimeout(openai: OpenAIClient, payload: CompletionPayload, timeoutMs: number) {
+  return (openai.chat.completions.create as unknown as (body: CompletionPayload, options: { timeout: number }) => ReturnType<OpenAIClient['chat']['completions']['create']>)(payload, { timeout: timeoutMs });
+}
+function buildArticleInput(articles: WideArticle[], limit: number) {
+  return articles.map((a, index) => ({ no: index + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_link: articleLink(a), text: (a.ocr_text || '').slice(0, limit) }));
+}
+function buildEmergencyAnswer(query: string, base: Record<string, unknown>, finalArticles: WideArticle[], error: string) {
+  const articleLines = finalArticles.slice(0, 16).map((article, index) => `${index + 1}. ${articleLink(article)}\n   ${excerpt(article, 180)}`).join('\n');
+  return {
+    ...base,
+    report_title: '暫定レポート：最終生成がタイムアウトしました',
+    answer_text: [
+      '## 結論',
+      '最終レポート生成がタイムアウトしたため、選抜記事に基づく暫定出力です。全記事取得と記事選抜は完了していますが、深い統合分析は未完了です。',
+      '',
+      '## 状態',
+      `- ユーザー指示: ${query}`,
+      `- エラー: ${error}`,
+      `- 取得記事数: ${text((base.source_coverage as Record<string, unknown>)?.article_count)}`,
+      `- 最終投入候補: ${finalArticles.length}件`,
+      '',
+      '## 代表記事候補',
+      articleLines || '代表記事候補なし',
+      '',
+      '## 根拠と限界',
+      'この出力はタイムアウト時の安全フォールバックです。調査論点やWHY分析の確度は通常レポートより低いため、再実行または月別rollup生成後の再分析が必要です。'
+    ].join('\n'),
+    generation_warning: 'final_report_timeout_fallback',
+    generation_error: error
+  };
+}
 
 async function selectArticles(query: string, articles: WideArticle[], selectedModel: string, onProgress?: ProgressReporter) {
   const openai = getOpenAI();
@@ -72,14 +117,14 @@ async function selectArticles(query: string, articles: WideArticle[], selectedMo
   const limit = scanTextLimit(articles.length);
   const input = articles.map((a, index) => ({ no: index + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_link: articleLink(a), text: excerpt(a, limit) }));
   try {
-    const res = await openai.chat.completions.create({
+    const res = await createCompletionWithTimeout(openai, {
       model: scanModel(),
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: `Return JSON only. Screen all articles and select at most ${max} article_id values for final consumer trend analysis. Required keys: selected_article_ids, clusters, scan_notes.` },
         { role: 'user', content: JSON.stringify({ query, article_count: articles.length, max_final_articles: max, articles: input }) }
       ]
-    });
+    }, 65000);
     const parsed = JSON.parse(res.choices[0]?.message.content || '{}') as Record<string, unknown>;
     return { finalArticles: selectByIds(query, articles, uniqueIds(parsed.selected_article_ids), max), scanSummary: parsed, scanError: '', scanModelUsed: scanModel() };
   } catch (error) {
@@ -114,21 +159,52 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       answer: { ...base, report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、全記事${allArticles.length}件の取得情報のみ返します。` }
     }) as ChatResult;
   }
-  await progress(onProgress, 68, `${selectedModel}で最終レポートを生成中`);
+  await progress(onProgress, 62, `最終レポート入力を${finalArticles.length}件に圧縮中`);
   const n = finalTextLimit(finalArticles.length);
-  const finalInput = finalArticles.map((a, index) => ({ no: index + 1, article_id: a.id, headline: a.headline, article_date: a.article_date || '日付不明', article_link: articleLink(a), text: (a.ocr_text || '').slice(0, n) }));
-  const res = await openai.chat.completions.create({
-    model: selectedModel,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs.\nBefore returning JSON, run a final AAA audit: remove unsupported claims, downgrade weak claims, ensure article-title links are present, and make research needs more useful than product suggestions.` },
-      ...turns(body.conversation),
-      { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, scan_summary: picked.scanSummary, articles: finalInput }) }
-    ]
-  });
-  const raw = res.choices[0]?.message.content || '{}';
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  const answer = { ...base, ...parsed, answer_text: typeof parsed.answer_text === 'string' ? parsed.answer_text : raw };
+  const finalInput = buildArticleInput(finalArticles, n);
+  const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit and research_needs.\nBefore returning JSON, run a final AAA audit: remove unsupported claims, downgrade weak claims, ensure article-title links are present, and make research needs more useful than product suggestions.`;
+  let parsed: Record<string, unknown> | null = null;
+  let generationWarning = '';
+
+  try {
+    await progress(onProgress, 68, `${selectedModel}で最終レポートを生成中。長い場合は自動で軽量生成に切り替えます`);
+    const res = await createCompletionWithTimeout(openai, {
+      model: selectedModel,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        ...turns(body.conversation),
+        { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, scan_summary: picked.scanSummary, articles: finalInput }) }
+      ]
+    }, FINAL_REPORT_TIMEOUT_MS);
+    parsed = JSON.parse(res.choices[0]?.message.content || '{}') as Record<string, unknown>;
+  } catch (primaryError) {
+    const primaryMessage = primaryError instanceof Error ? primaryError.message : 'final report generation failed';
+    const fbModel = fallbackModel(selectedModel);
+    generationWarning = `primary_failed: ${primaryMessage}`;
+    try {
+      await progress(onProgress, 78, `${selectedModel}が遅いため${fbModel}で軽量レポートを生成中`);
+      const compactArticles = buildArticleInput(finalArticles.slice(0, Math.min(24, finalArticles.length)), fallbackTextLimit(finalArticles.length));
+      const res = await createCompletionWithTimeout(openai, {
+        model: fbModel,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn a compact but useful JSON report. Use article_link for evidence. State clearly that this is fallback generation if applicable.` },
+          ...turns(body.conversation),
+          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, scan_summary: picked.scanSummary, primary_error: primaryMessage, articles: compactArticles }) }
+        ]
+      }, FALLBACK_REPORT_TIMEOUT_MS);
+      parsed = JSON.parse(res.choices[0]?.message.content || '{}') as Record<string, unknown>;
+      generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
+    } catch (fallbackError) {
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'fallback report generation failed';
+      parsed = buildEmergencyAnswer(query, base, finalArticles, `${generationWarning}; fallback_failed: ${fallbackMessage}`);
+      generationWarning = `emergency_fallback_used: ${generationWarning}; fallback_failed: ${fallbackMessage}`;
+    }
+  }
+
+  const rawAnswerText = typeof parsed.answer_text === 'string' ? parsed.answer_text : JSON.stringify(parsed);
+  const answer = { ...base, ...parsed, answer_text: rawAnswerText, generation_warning: generationWarning };
   const enhanced = enhanceChatAnalysisResult({
     report: null,
     report_error: '',

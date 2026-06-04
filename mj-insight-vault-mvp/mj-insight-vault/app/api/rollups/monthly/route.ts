@@ -2,10 +2,12 @@ import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import {
   generateMonthlyRollup,
+  generateNeededMonthlyRollups,
   generateStaleMonthlyRollups,
   listArticleMonthCounts,
   listArticleMonths,
   listMonthlyRollups,
+  listNeededRollupMonths,
   listStaleRollupMonths
 } from '@/lib/monthlyRollups';
 
@@ -19,13 +21,14 @@ function text(value: unknown) {
 export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
-    const [months, month_counts, rollups, stale_months] = await Promise.all([
+    const [months, month_counts, rollups, stale_months, needed_months] = await Promise.all([
       listArticleMonths(),
       listArticleMonthCounts(),
       listMonthlyRollups(),
-      listStaleRollupMonths()
+      listStaleRollupMonths(),
+      listNeededRollupMonths()
     ]);
-    return Response.json({ months, month_counts, rollups, stale_months });
+    return Response.json({ months, month_counts, rollups, stale_months, needed_months });
   } catch (error) {
     return jsonError(error);
   }
@@ -38,6 +41,12 @@ export async function POST(req: NextRequest) {
     const monthKey = text(body.month_key);
     const all = Boolean(body.all);
     const staleOnly = Boolean(body.stale_only);
+    const needsOnly = Boolean(body.needs_only);
+
+    if (needsOnly) {
+      const rollups = await generateNeededMonthlyRollups();
+      return Response.json({ rollups, mode: 'needs_only' });
+    }
 
     if (staleOnly) {
       const rollups = await generateStaleMonthlyRollups();

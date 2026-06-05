@@ -117,8 +117,17 @@ export default function MonthlyRollupsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `${label}に失敗しました`);
       await refresh();
-      const count = Array.isArray(json.rollups) ? json.rollups.length : json.rollup ? 1 : 0;
-      setMessage(`${label}が完了しました。更新: ${count}件`);
+      const generatedRollups = Array.isArray(json.rollups) ? json.rollups : json.rollup ? [json.rollup] : [];
+      const failed = generatedRollups.filter((rollup: unknown) => rollup && typeof rollup === 'object' && (rollup as { status?: unknown }).status === 'failed');
+      const count = generatedRollups.length;
+      if (failed.length) {
+        const firstError = failed
+          .map((rollup: unknown) => rollup && typeof rollup === 'object' ? String((rollup as { error_message?: unknown }).error_message || '') : '')
+          .filter(Boolean)[0];
+        setMessage(`${label}は終了しましたが、${failed.length}/${count}件が失敗しました。${firstError || 'OpenAI APIキー、quota、モデル設定を確認してください。'}`);
+      } else {
+        setMessage(`${label}が完了しました。更新: ${count}件`);
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : `${label}に失敗しました`);
     } finally {

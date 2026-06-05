@@ -95,14 +95,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id?
       });
       const result = enhanceChatAnalysisResult(rawResult);
       await persistEnhancedReport(result);
+      const reportId = reportIdFromResult(result);
+      const reportError = isRecord(result) ? text(result.report_error) : '';
+
+      if (!reportId) {
+        throw new Error(reportError ? `レポート保存に失敗しました: ${reportError}` : 'レポート保存に失敗しました。chat_reportsに保存されたreport_idがありません。');
+      }
 
       await updateJob(jobId, {
         status: 'completed',
         progress: 100,
         stage: 'レポート生成完了',
         result_json: result,
-        report_id: reportIdFromResult(result) || null,
-        error_message: isRecord(result) ? text(result.report_error) || null : null,
+        report_id: reportId,
+        error_message: reportError || null,
         finished_at: new Date().toISOString()
       });
 

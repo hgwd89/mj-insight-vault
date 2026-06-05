@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { getOpenAI } from '@/lib/openai';
+import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 
 export type RollupArticle = {
   id: string;
@@ -32,6 +32,7 @@ const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
 const PAGE_SIZE = 1000;
 const RUNNING_LOCK_MS = 10 * 60 * 1000;
+const ROLLUP_TIMEOUT_MS = 90000;
 
 function active(article: RollupArticle) {
   return !article.status || !HIDDEN.has(article.status);
@@ -76,7 +77,17 @@ function textLimit(count: number) {
 }
 
 function rollupModel() {
-  return (process.env.OPENAI_ROLLUP_MODEL || 'gpt-5-nano').trim();
+  return (process.env.OPENAI_ROLLUP_MODEL || TEXT_MODEL || 'gpt-4o-mini').trim();
+}
+
+function rollupModelCandidates(primary: string) {
+  return Array.from(new Set([
+    primary,
+    process.env.OPENAI_FINAL_FALLBACK_MODEL?.trim(),
+    TEXT_MODEL,
+    'gpt-4o-mini',
+    'gpt-4.1-mini'
+  ].filter(Boolean) as string[]));
 }
 
 function isFreshRunningRollup(rollup: MonthlyRollupRow | null) {
@@ -84,6 +95,13 @@ function isFreshRunningRollup(rollup: MonthlyRollupRow | null) {
   const updatedAt = Date.parse(String(rollup.updated_at || ''));
   if (!updatedAt || Number.isNaN(updatedAt)) return false;
   return Date.now() - updatedAt < RUNNING_LOCK_MS;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then((value) => { clearTimeout(timer); resolve(value); }).catch((error) => { clearTimeout(timer); reject(error); });
+  });
 }
 
 async function fetchAllRollupArticles(select = SELECT) {
@@ -248,25 +266,31 @@ export async function generateMonthlyRollup(monthKey: string) {
     'Use article_link when citing evidence. Mark weak interpretations as hypotheses.'
   ].join('\n');
 
-  try {
-    const completion = await openai.chat.completions.create({
-      model,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: JSON.stringify({ month_key: monthKey, article_count: articles.length, articles: articlePayload }, null, 2) }
-      ]
-    });
-    const raw = completion.choices[0]?.message.content || '{}';
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const summary = typeof parsed.summary_text === 'string' ? parsed.summary_text : raw;
-    const representative = Array.isArray(parsed.representative_article_ids) ? parsed.representative_article_ids.map(String).filter(Boolean) : [];
-    const evidence = Array.isArray(parsed.evidence_article_ids) ? parsed.evidence_article_ids.map(String).filter(Boolean) : representative;
-    return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, model, summary, parsed, representative, evidence, 'ready', null);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'monthly rollup failed';
-    return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, model, `月別まとめ生成に失敗しました: ${message}`, { error: message }, [], [], 'failed', message);
+  const errors: string[] = [];
+  for (const candidateModel of rollupModelCandidates(model)) {
+    try {
+      const completion = await withTimeout(openai.chat.completions.create({
+        model: candidateModel,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: JSON.stringify({ month_key: monthKey, article_count: articles.length, articles: articlePayload }, null, 2) }
+        ]
+      }), ROLLUP_TIMEOUT_MS, `monthly rollup generation (${candidateModel})`);
+      const raw = completion.choices[0]?.message.content || '{}';
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const summary = typeof parsed.summary_text === 'string' ? parsed.summary_text : raw;
+      const representative = Array.isArray(parsed.representative_article_ids) ? parsed.representative_article_ids.map(String).filter(Boolean) : [];
+      const evidence = Array.isArray(parsed.evidence_article_ids) ? parsed.evidence_article_ids.map(String).filter(Boolean) : representative;
+      return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, candidateModel, summary, parsed, representative, evidence, 'ready', null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'monthly rollup failed';
+      errors.push(`${candidateModel}: ${message}`);
+    }
   }
+
+  const message = errors.join(' / ') || 'monthly rollup failed';
+  return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, model, `月別まとめ生成に失敗しました: ${message}`, { error: message, attempted_models: rollupModelCandidates(model) }, [], [], 'failed', message);
 }
 
 async function upsertMonthlyRollup(

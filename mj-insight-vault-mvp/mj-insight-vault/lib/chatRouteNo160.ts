@@ -312,17 +312,6 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     }))
   };
 
-  if (!openai) {
-    return enhanceChatAnalysisResult({
-      report: null,
-      report_error: 'OPENAI_API_KEY missing',
-      related_articles: allArticles,
-      selectable_models: models(),
-      answer: { ...base, report_title: '該当記事一覧', answer_text: `OPENAI_API_KEYが未設定のため、全記事${allArticles.length}件の取得情報のみ返します。` }
-    }) as ChatResult;
-  }
-
-  await progress(onProgress, 62, monthlyUsed ? '月別まとめと根拠記事を最終入力に準備中' : `根拠候補${finalArticles.length}件を最終入力に準備中`);
   const compactInput = buildArticleInput(finalArticles, monthlyUsed ? 700 : 900);
   const conversation = [
     ...turns(body.conversation),
@@ -335,50 +324,71 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   let parsed: Record<string, unknown> = {};
   let generationWarning = '';
 
-  try {
-    await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
-    const completion = await withProgressHeartbeat(withTimeout(openai.chat.completions.create({
-      model: selectedModel,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        ...conversation,
-        { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, articles_for_evidence: compactInput }) }
-      ]
-    }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, {
-      from: 68,
-      to: 86,
-      intervalMs: 10000,
-      stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中`
-    });
-    parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
-  } catch (primaryError) {
-    const primaryMessage = primaryError instanceof Error ? primaryError.message : 'final report generation failed';
-    const fbModel = fallbackModel(selectedModel);
-    generationWarning = `primary_failed: ${primaryMessage}`;
+  if (!openai) {
+    await progress(onProgress, 88, 'OPENAI_API_KEY未設定の診断レポートを作成中');
+    generationWarning = 'OPENAI_API_KEY missing';
+    parsed = {
+      report_title: '診断レポート：OpenAI APIキー未設定',
+      answer_text: [
+        '## 結論',
+        'OPENAI_API_KEY が未設定のため、AIによる本文生成は実行できませんでした。ただし、全記事取得・月別rollup状態確認・根拠候補抽出までは完了しています。',
+        '',
+        '## 状態',
+        `- 取得記事数: ${allArticles.length}`,
+        `- 月別rollup使用: ${monthlyUsed ? 'あり' : 'なし'}`,
+        `- 根拠確認用記事: ${finalArticles.length}件`,
+        '',
+        '## 次に必要な対応',
+        'Vercelまたは実行環境に OPENAI_API_KEY を設定してください。設定後、同じ指示で再実行してください。'
+      ].join('\n')
+    };
+  } else {
+    await progress(onProgress, 62, monthlyUsed ? '月別まとめと根拠記事を最終入力に準備中' : `根拠候補${finalArticles.length}件を最終入力に準備中`);
     try {
-      await progress(onProgress, 78, `${fbModel}で軽量統合レポートを生成中`);
-      const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 600);
+      await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
       const completion = await withProgressHeartbeat(withTimeout(openai.chat.completions.create({
-        model: fbModel,
+        model: selectedModel,
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence.` },
+          { role: 'system', content: system },
           ...conversation,
-          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, articles_for_evidence: fallbackInput }) }
+          { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, articles_for_evidence: compactInput }) }
         ]
-      }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, {
-        from: 78,
-        to: 90,
+      }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, {
+        from: 68,
+        to: 86,
         intervalMs: 10000,
-        stage: `${fbModel}で軽量統合レポートを生成中`
+        stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中`
       });
       parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
-      generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
-    } catch (fallbackError) {
-      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'fallback report generation failed';
-      parsed = buildEmergencyAnswer(query, base, finalArticles, `${generationWarning}; fallback_failed: ${fallbackMessage}`);
-      generationWarning = `emergency_fallback_used: ${generationWarning}; fallback_failed: ${fallbackMessage}`;
+    } catch (primaryError) {
+      const primaryMessage = primaryError instanceof Error ? primaryError.message : 'final report generation failed';
+      const fbModel = fallbackModel(selectedModel);
+      generationWarning = `primary_failed: ${primaryMessage}`;
+      try {
+        await progress(onProgress, 78, `${fbModel}で軽量統合レポートを生成中`);
+        const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 600);
+        const completion = await withProgressHeartbeat(withTimeout(openai.chat.completions.create({
+          model: fbModel,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence.` },
+            ...conversation,
+            { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, articles_for_evidence: fallbackInput }) }
+          ]
+        }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, {
+          from: 78,
+          to: 90,
+          intervalMs: 10000,
+          stage: `${fbModel}で軽量統合レポートを生成中`
+        });
+        parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
+        generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'fallback report generation failed';
+        parsed = buildEmergencyAnswer(query, base, finalArticles, `${generationWarning}; fallback_failed: ${fallbackMessage}`);
+        generationWarning = `emergency_fallback_used: ${generationWarning}; fallback_failed: ${fallbackMessage}`;
+      }
     }
   }
 

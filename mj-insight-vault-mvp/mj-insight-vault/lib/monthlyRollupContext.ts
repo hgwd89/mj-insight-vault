@@ -58,12 +58,15 @@ export async function buildMonthlyRollupContext() {
     return counts;
   }, {});
   const totalArticleCount = Object.values(articleMonthCounts).reduce((sum, count) => sum + Number(count || 0), 0);
+  const readyArticleCount = readyRows.reduce((sum, row) => sum + Number(row.article_count || 0), 0);
+  const readyArticleCountMatches = totalArticleCount > 0 && readyArticleCount === totalArticleCount;
   const coverageComplete = articleMonths.length > 0
     && readyMonths.length === articleMonths.length
     && staleMonths.length === 0
     && failedMonths.length === 0
     && runningMonths.length === 0
-    && missingMonths.length === 0;
+    && missingMonths.length === 0
+    && readyArticleCountMatches;
 
   const base = {
     status_counts: statusCounts,
@@ -75,6 +78,8 @@ export async function buildMonthlyRollupContext() {
     article_months: articleMonths,
     article_month_count: articleMonths.length,
     total_article_count: totalArticleCount,
+    ready_article_count: readyArticleCount,
+    ready_article_count_matches: readyArticleCountMatches,
     coverage_complete: coverageComplete
   };
 
@@ -111,7 +116,7 @@ export async function buildMonthlyRollupContext() {
   return {
     has_rollups: true,
     rollup_count: readyRows.length,
-    article_count: readyRows.reduce((sum, row) => sum + Number(row.article_count || 0), 0),
+    article_count: readyArticleCount,
     context_text: sections.join('\n\n').slice(0, 30000),
     representative_article_ids: Array.from(representative).slice(0, 80),
     evidence_article_ids: Array.from(evidence).slice(0, 120),

@@ -187,6 +187,43 @@ function confidenceRubricFallback(answer: JsonRecord) {
   }));
 }
 
+function researchNeedsFallback(answer: JsonRecord) {
+  const evidence = asArray(answer.evidence_matrix).filter(isRecord).slice(0, 5);
+  if (!evidence.length) {
+    return [{
+      question: '記事群から見える生活者変化は、実際の生活者発話・購買継続・非購買理由で支持されるか。',
+      why_it_matters: '記事は企業施策や市場側の動きに偏りやすく、生活者インサイトとして断定するには追加検証が必要。',
+      needed_data: '生活者インタビュー、購買・利用継続データ、反例カテゴリ、非利用者の理由。',
+      method_hint: 'N1深掘り、投影法、生活文脈インタビュー、定量共感検証。',
+      priority: 'high'
+    }];
+  }
+
+  return evidence.map((item, index) => ({
+    question: `「${text(item.claim || `根拠候補 ${index + 1}`)}」は生活者側の行動・心理として再現性があるか。`,
+    why_it_matters: text(item.what_cannot_be_said || item.limitation || '記事単独では生活者全体の傾向とは断定できないため。'),
+    needed_data: '生活者発話、購買・利用継続、非利用理由、カテゴリ横断の反例。',
+    method_hint: '該当記事を刺激材にしたN1深掘りと、共感・行動意向の定量確認。',
+    evidence_article_link: articleLinkFromRecord(item),
+    priority: index < 2 ? 'high' : 'medium'
+  }));
+}
+
+function researchNeedsMarkdown(answer: JsonRecord) {
+  const needs = asArray(answer.research_needs).filter(isRecord).slice(0, 6);
+  if (!needs.length) return '';
+  return [
+    '## 10.7 調査論点補修',
+    ...needs.map((need, index) => {
+      const question = text(need.question || need.theme || `調査論点 ${index + 1}`);
+      const why = text(need.why_it_matters || need.reason || '追加検証が必要。');
+      const method = text(need.method_hint || need.needed_data || 'N1深掘りと定量検証。');
+      const link = text(need.evidence_article_link);
+      return `- ${question}${link ? `：${link}` : ''}\n  - 理由: ${why}\n  - 方法: ${method}`;
+    })
+  ].join('\n');
+}
+
 function coverageBlock(answer: JsonRecord, result: JsonRecord, relatedArticles: unknown[]) {
   const source = isRecord(answer.source_coverage) ? answer.source_coverage : isRecord(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {};
   const retrieved = firstNumber(answer.related_article_count, source.article_count, relatedArticles.length) ?? relatedArticles.length;
@@ -276,6 +313,7 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   if (!asArray(answer.refutation_audit).length) answer.refutation_audit = refutationFallback(answer);
   if (!asArray(answer.negative_space).length) answer.negative_space = negativeSpaceFallback(answer);
   if (!asArray(answer.confidence_rubric).length) answer.confidence_rubric = confidenceRubricFallback(answer);
+  if (!asArray(answer.research_needs).length) answer.research_needs = researchNeedsFallback(answer);
 
   const coverage = isRecord(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {};
   const coverageText = [
@@ -294,6 +332,11 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   const evidenceLinks = evidenceLinksMarkdown(answer);
   if (evidenceLinks && !body.includes('## 10.5 根拠記事リンク')) {
     body = `${body}\n\n${evidenceLinks}`.trim();
+  }
+
+  const researchNeeds = researchNeedsMarkdown(answer);
+  if (researchNeeds && !body.includes('## 10.7 調査論点補修')) {
+    body = `${body}\n\n${researchNeeds}`.trim();
   }
 
   const checks = buildChecks(answer, body);

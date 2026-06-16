@@ -33,7 +33,7 @@ const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
 const PAGE_SIZE = 1000;
 const RUNNING_LOCK_MS = 10 * 60 * 1000;
 const ROLLUP_TIMEOUT_MS = 80000;
-const MONTH_BATCH_LIMIT = Number(process.env.MONTHLY_ROLLUP_BATCH_LIMIT || 1);
+const MONTH_BATCH_LIMIT = Number(process.env.MONTHLY_ROLLUP_BATCH_LIMIT || 3);
 
 function active(article: RollupArticle) {
   return !article.status || !HIDDEN.has(article.status);
@@ -109,8 +109,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 function boundedBatchLimit(limit?: number) {
-  const n = Number(limit || MONTH_BATCH_LIMIT || 1);
-  return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 1));
+  const n = Number(limit || MONTH_BATCH_LIMIT || 3);
+  return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 3));
 }
 
 async function fetchAllRollupArticles(select = SELECT) {

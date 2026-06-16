@@ -14,19 +14,58 @@ type Report = {
   created_at: string;
 };
 
+const INTERNAL_PROMPT_MARKERS = [
+  '【レポート要件】',
+  '最重要: answer_text',
+  'answer_text は必須',
+  'JSONでは coverage_diagnosis',
+  '根拠記事IDのない重要主張は禁止'
+];
+
+function stripInternalPrompt(value: string | null | undefined) {
+  let text = value || '';
+  for (const marker of INTERNAL_PROMPT_MARKERS) {
+    const index = text.indexOf(marker);
+    if (index >= 0) text = text.slice(0, index);
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 function shortText(value: string | null | undefined, max = 280) {
-  const text = value || '';
+  const text = stripInternalPrompt(value);
   return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function answerPreview(report: Report) {
+  const answer = report.answer_json || {};
+  const text = typeof answer.answer_text === 'string' && answer.answer_text.trim()
+    ? answer.answer_text
+    : report.answer_text || '';
+  return shortText(text);
 }
 
 function reportTitle(report: Report) {
   const answer = report.answer_json || {};
-  if (typeof answer.report_title === 'string' && answer.report_title.trim()) return answer.report_title;
-  return report.user_query;
+  const title = typeof answer.report_title === 'string' ? stripInternalPrompt(answer.report_title) : '';
+  if (title) return title;
+  const query = stripInternalPrompt(report.user_query);
+  return query || '分析レポート';
+}
+
+function visibleQuery(report: Report) {
+  const clean = stripInternalPrompt(report.user_query);
+  return clean || '分析指示は保存されていません';
 }
 
 function isPinned(report: Report) {
   return Boolean(report.answer_json?.pinned);
+}
+
+function articleCount(report: Report) {
+  const answer = report.answer_json || {};
+  const rootCount = Number((answer.source_coverage as Record<string, unknown> | undefined)?.root_article_lookup_count || answer.root_article_lookup_count || 0);
+  if (Number.isFinite(rootCount) && rootCount > 0) return rootCount;
+  return report.related_article_ids?.length || 0;
 }
 
 export default function ReportsPage() {
@@ -75,7 +114,7 @@ export default function ReportsPage() {
           <div>
             <h1 className="text-xl font-black">分析履歴</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">
-              保存された分析レポートです。重要レポートはピン留めし、不要なレポートは削除できます。
+              保存された分析レポートです。内部プロンプトは表示せず、レポート本文と実際の指示だけを表示します。
             </p>
           </div>
           <Link className="btn" href="/chat">新しく分析する</Link>
@@ -92,6 +131,7 @@ export default function ReportsPage() {
         const outputTemplate = typeof answer.output_template === 'string' ? answer.output_template : '';
         const modelUsed = typeof answer.model_used === 'string' ? answer.model_used : '';
         const parentReportId = typeof answer.parent_report_id === 'string' ? answer.parent_report_id : '';
+        const preview = answerPreview(report);
 
         return (
           <div key={report.id} className="card p-4">
@@ -103,14 +143,18 @@ export default function ReportsPage() {
                   <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
                 </div>
                 <h2 className="mt-2 font-bold">{reportTitle(report)}</h2>
-                <p className="mt-1 text-sm text-zinc-500">元指示: {report.user_query}</p>
+                <p className="mt-1 line-clamp-2 text-sm text-zinc-500">指示: {visibleQuery(report)}</p>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs">
                   {targetScope && <span className="badge">scope: {targetScope}</span>}
                   {outputTemplate && <span className="badge">template: {outputTemplate}</span>}
                   {modelUsed && <span className="badge">model: {modelUsed}</span>}
-                  <span className="badge">記事 {report.related_article_ids?.length || 0}</span>
+                  <span className="badge">記事 {articleCount(report)}</span>
                 </div>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{shortText(report.answer_text)}</p>
+                {preview ? (
+                  <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{preview}</p>
+                ) : (
+                  <p className="mt-3 text-sm text-amber-700">本文プレビューがありません。開いて詳細を確認してください。</p>
+                )}
                 <p className="mt-3 text-sm font-semibold text-zinc-900">開いて対話する →</p>
               </Link>
 

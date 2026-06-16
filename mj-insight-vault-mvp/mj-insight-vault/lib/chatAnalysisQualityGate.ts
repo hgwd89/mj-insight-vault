@@ -229,19 +229,23 @@ function coverageBlock(answer: JsonRecord, result: JsonRecord, relatedArticles: 
   const retrieved = firstNumber(answer.related_article_count, source.article_count, relatedArticles.length) ?? relatedArticles.length;
   const scanned = firstNumber(answer.article_count_scanned, source.scanned_article_count, source.article_count, retrieved) ?? retrieved;
   const final = firstNumber(answer.article_count_for_report, source.final_article_count, source.report_article_count, asArray(answer.selected_article_ids).length) ?? null;
+  const rollupCount = firstNumber(source.monthly_rollup_source_article_count, answer.monthly_rollup_source_article_count) ?? null;
+  const total = firstNumber(source.monthly_rollup_total_article_count, source.active_article_count, source.article_count, retrieved) ?? retrieved;
   const scanModel = text(answer.scan_model || result.scan_model || source.scan_model || 'unknown');
   const mode = text(answer.retrieval_mode || result.retrieval_mode || source.retrieval_mode);
   const scanEnabled = Boolean(answer.scan_enabled || result.scan_enabled || mode);
 
   return {
     article_count: retrieved,
+    full_corpus_article_count: total,
+    monthly_rollup_source_article_count: rollupCount,
     scanned_article_count: scanned,
     final_article_count: final,
     scan_model: scanModel,
     scan_enabled: scanEnabled,
     retrieval_mode: mode,
     coverage_note: scanEnabled
-      ? `全体指定では、取得${retrieved}件・スキャン${scanned}件を${scanModel}で広域確認し、最終分析には代表性と関連性の高い${final ?? '複数'}件を選抜投入しています。全記事本文をそのまま単一プロンプトへ丸投げする設計ではありません。`
+      ? `全件カバレッジは${total}件、スキャンは${scanned}件、月別rollup対象は${rollupCount ?? '-'}件です。最終投入${final ?? '複数'}件は根拠確認用であり、直接該当率ではありません。全記事本文をそのまま単一プロンプトへ丸投げする設計ではありません。`
       : `対象記事${retrieved}件から分析しています。`,
     limitation: '最終レポートは選抜記事と月別rollupに基づく統合分析です。スキャン外・選抜外の記事に反例がある可能性は、調査論点として残します。'
   };
@@ -316,17 +320,22 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   if (!asArray(answer.research_needs).length) answer.research_needs = researchNeedsFallback(answer);
 
   const coverage = isRecord(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {};
-  const coverageText = [
-    '## 0. カバレッジ診断',
-    `取得記事数: ${text(coverage.article_count) || '-'}`,
-    `スキャン記事数: ${text(coverage.scanned_article_count) || '-'}`,
-    `最終投入記事数: ${text(coverage.final_article_count) || '-'}`,
-    `選抜方式: ${text(coverage.coverage_note) || '-'}`,
+  const source = isRecord(answer.source_coverage) ? answer.source_coverage : {};
+  body = body.replace(/直接該当\s*[:：]\s*\d+件/g, `根拠確認用記事: ${text(coverage.final_article_count || source.final_article_count) || '-'}件（全件カバレッジではない）`);
+
+  const systemCoverageText = [
+    '## 0.0 システムカバレッジ（自動検証）',
+    `全件カバレッジ: ${text(coverage.full_corpus_article_count || source.full_corpus_article_count || source.article_count) || '-'}件`,
+    `月別rollup対象記事数: ${text(coverage.monthly_rollup_source_article_count || source.monthly_rollup_source_article_count) || '-'}件`,
+    `スキャン記事数: ${text(coverage.scanned_article_count || source.scanned_article_count) || '-'}`,
+    `根拠確認用記事数: ${text(coverage.final_article_count || source.final_article_count) || '-'}件`,
+    `注記: 根拠確認用記事数は、直接該当率ではありません。全体分析の母集団は月別rollupと全件スキャンです。`,
+    `選抜方式: ${text(coverage.coverage_note || source.coverage_note) || '-'}`,
     ''
   ].join('\n');
 
-  if (body && !body.includes('## 0. カバレッジ診断')) {
-    body = `${coverageText}${body}`;
+  if (!body.includes('## 0.0 システムカバレッジ')) {
+    body = `${systemCoverageText}${body}`;
   }
 
   const evidenceLinks = evidenceLinksMarkdown(answer);
@@ -345,7 +354,7 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   const audit = qualityAuditText(checks);
   if (audit && !body.includes('## 12. 分析品質監査')) body = `${body}\n\n${audit}`.trim();
 
-  answer.answer_text = body || coverageText.trim();
+  answer.answer_text = body || systemCoverageText.trim();
   answer.quality_gate = {
     status: checks.every((check) => check.passed) ? 'passed' : 'needs_review',
     checks,

@@ -27,6 +27,19 @@ Universal analysis rules:
 8. The main objective is to find strong research themes, not to propose product actions.
 9. Weak evidence must be downgraded. If evidence is indirect or adjacent, write 仮説, 可能性, 未検証, or 調査が必要. Do not make it sound proven.
 10. If the article group does not directly support a requested theme, say so clearly in coverage_diagnosis and make the output a hypothesis map rather than a conclusion.
+11. A trend is not valid unless it is supported by repeated evidence, explicit market response, or a clearly marked weak-signal rationale.
+12. If only one article supports a point, call it an example or hypothesis, not a trend.
+13. If the evidence is mainly retailer/manufacturer action, label it as market-side signal. Do not call it consumer-side proof without sales, usage, adoption, repeat, or consumer response evidence.
+14. Always include negative_space: what expected evidence is missing, weak, or absent.
+15. Always include confidence_rubric: claim-level confidence and uncertainty.
+
+Hard failure conditions:
+- Generic summary without article links.
+- Consumer psychology asserted without evidence strength or caveat.
+- Company strategy converted directly into consumer need.
+- No refutation or no research need.
+- No distinction between fact, inference, and hypothesis.
+- No explanation of what cannot be concluded.
 
 Article citation/link rules:
 - The user should not have to read UUIDs to understand evidence.
@@ -80,6 +93,8 @@ Strict output schema rules:
 - evidence_matrix MUST be an array of evidence objects. Each object must include claim, article_id, headline, article_date, article_url, article_link, evidence_excerpt_or_fact, evidence_strength, limitation, what_can_be_said, what_cannot_be_said, research_need.
 - refutation_audit MUST be an array. Each object must include target_claim, possible_counterargument, evidence_gap, downgrade_or_revision, falsification_condition.
 - hypothesis_comparison MUST be an array. Each object must include phenomenon, hypothesis_options, currently_strongest_read, why, what_needs_research.
+- negative_space MUST be an array. Each object must include expected_but_weak_or_absent_theme, why_absence_matters, what_to_check_next.
+- confidence_rubric MUST be an array. Each object must include claim, confidence, reason_for_confidence, reason_for_uncertainty.
 - quality_score MUST use these keys: evidence_strength, hypothesis_depth, research_potential, restraint, originality, overall, reason.
 - Empty objects, empty headings, placeholder values, and unfilled array items are forbidden.
 
@@ -118,7 +133,7 @@ Write strongest evidence, adjacent evidence, weak evidence, noise/excluded items
 Reject shallow readings and state the deeper reading, but do not overclaim. If the stronger reading is still only a hypothesis, say so.
 
 Required JSON keys:
-report_title, answer_text, executive_summary, coverage_diagnosis, structure_layers, major_trends, cross_article_insights, consumer_narrative, explanatory_hypotheses, why_chains, hypothesis_comparison, tensions, research_needs, evidence_matrix, refutation_audit, weak_readings_to_avoid, limitations, cards, quality_score, selected_lenses, analysis_process, shallow_summary_check
+report_title, answer_text, executive_summary, coverage_diagnosis, structure_layers, major_trends, cross_article_insights, consumer_narrative, explanatory_hypotheses, why_chains, hypothesis_comparison, tensions, research_needs, evidence_matrix, refutation_audit, negative_space, confidence_rubric, weak_readings_to_avoid, limitations, cards, quality_score, selected_lenses, analysis_process, shallow_summary_check
 
 Final self-check before returning JSON:
 - Did I cite clickable article-title/date links, not only IDs?
@@ -126,6 +141,7 @@ Final self-check before returning JSON:
 - Did I refute my own major claims?
 - Did I downgrade weak claims instead of polishing them into certainty?
 - Did I show what cannot be concluded?
+- Did I include negative_space and confidence_rubric?
 - Did I avoid product/action recommendations unless asked?
 - Is answer_text understandable without reading the JSON keys?
 - Are all required arrays populated only with meaningful entries?

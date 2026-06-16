@@ -28,10 +28,6 @@ export type MonthlyRollupRow = {
   updated_at: string;
 };
 
-type ChatCompletionLike = {
-  choices?: Array<{ message?: { content?: string | null } }>;
-};
-
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
 const PAGE_SIZE = 1000;
@@ -324,8 +320,8 @@ export async function generateMonthlyRollup(monthKey: string) {
           { role: 'system', content: system },
           { role: 'user', content: JSON.stringify({ month_key: monthKey, article_count: articles.length, article_text_limit: limit, articles: articlePayload }) }
         ]
-      } as any) as Promise<ChatCompletionLike>, ROLLUP_TIMEOUT_MS, `monthly rollup generation (${candidateModel})`);
-      const raw = completion.choices?.[0]?.message?.content || '{}';
+      }), ROLLUP_TIMEOUT_MS, `monthly rollup generation (${candidateModel})`);
+      const raw = completion.choices[0]?.message.content || '{}';
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       const summary = typeof parsed.summary_text === 'string' ? parsed.summary_text : raw;
       const representative = Array.isArray(parsed.representative_article_ids) ? parsed.representative_article_ids.map(String).filter(Boolean) : [];

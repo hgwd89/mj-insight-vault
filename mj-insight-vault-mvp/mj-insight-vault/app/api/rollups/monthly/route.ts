@@ -19,8 +19,8 @@ function text(value: unknown) {
 }
 
 function limit(value: unknown) {
-  const n = Number(value || 1);
-  return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 1));
+  const n = Number(value || 3);
+  return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 3));
 }
 
 async function statusPayload(extra: Record<string, unknown> = {}) {

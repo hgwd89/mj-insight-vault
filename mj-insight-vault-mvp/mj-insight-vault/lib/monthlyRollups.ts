@@ -27,6 +27,8 @@ export type MonthlyRollupRow = {
   updated_at: string;
 };
 
+export const UNDATED_MONTH_KEY = 'undated';
+
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
 const PAGE_SIZE = 1000;
@@ -37,9 +39,10 @@ function active(article: RollupArticle) {
   return !article.status || !HIDDEN.has(article.status);
 }
 
-function monthRange(monthKey: string) {
+function validateMonthKey(monthKey: string) {
+  if (monthKey === UNDATED_MONTH_KEY) return;
   const [year, month] = monthKey.split('-').map(Number);
-  if (!year || !month || month < 1 || month > 12) throw new Error('month_key must be YYYY-MM');
+  if (!year || !month || month < 1 || month > 12) throw new Error('month_key must be YYYY-MM or undated');
 }
 
 export function monthKeyFromDate(value: unknown) {
@@ -50,7 +53,7 @@ export function monthKeyFromDate(value: unknown) {
   if (slash) return `${slash[1]}-${slash[2].padStart(2, '0')}`;
   const jp = date.match(/^(\d{4})年\s*(\d{1,2})月/);
   if (jp) return `${jp[1]}-${jp[2].padStart(2, '0')}`;
-  return '';
+  return UNDATED_MONTH_KEY;
 }
 
 function articleBelongsToMonth(article: RollupArticle, monthKey: string) {
@@ -62,7 +65,11 @@ function articleSortKey(article: RollupArticle) {
 }
 
 function articleLink(article: RollupArticle) {
-  return `[${article.headline || '無題の記事'}｜${article.article_date || '日付不明'}](/articles/${article.id})`;
+  return `[${article.headline || 'No title'}｜${article.article_date || 'No date'}](/articles/${article.id})`;
+}
+
+function monthLabel(monthKey: string) {
+  return monthKey === UNDATED_MONTH_KEY ? 'No date' : monthKey;
 }
 
 function isFreshRunningRollup(rollup: MonthlyRollupRow | null) {
@@ -116,7 +123,7 @@ export async function listStaleRollupMonths() {
 }
 
 export async function getArticlesForMonth(monthKey: string) {
-  monthRange(monthKey);
+  validateMonthKey(monthKey);
   const data = await fetchAllRollupArticles();
   return data
     .filter(active)
@@ -129,10 +136,13 @@ export async function listArticleMonths() {
   const months = new Set<string>();
   for (const row of data) {
     if (row.status && HIDDEN.has(row.status)) continue;
-    const monthKey = monthKeyFromDate(row.article_date);
-    if (monthKey) months.add(monthKey);
+    months.add(monthKeyFromDate(row.article_date));
   }
-  return Array.from(months).sort().reverse();
+  return Array.from(months).sort((a, b) => {
+    if (a === UNDATED_MONTH_KEY) return 1;
+    if (b === UNDATED_MONTH_KEY) return -1;
+    return b.localeCompare(a);
+  });
 }
 
 export async function listArticleMonthCounts() {
@@ -141,7 +151,6 @@ export async function listArticleMonthCounts() {
   for (const row of data) {
     if (row.status && HIDDEN.has(row.status)) continue;
     const monthKey = monthKeyFromDate(row.article_date);
-    if (!monthKey) continue;
     counts[monthKey] = (counts[monthKey] || 0) + 1;
   }
   return counts;
@@ -157,7 +166,7 @@ export async function listNeededRollupMonths() {
 }
 
 export async function markMonthlyRollupsStaleForArticleDates(articleDates: unknown[]) {
-  const months = Array.from(new Set(articleDates.map(monthKeyFromDate).filter(Boolean)));
+  const months = Array.from(new Set(articleDates.map(monthKeyFromDate)));
   if (!months.length) return { months: [], updated: 0 };
 
   const { data, error } = await supabaseAdmin
@@ -196,27 +205,30 @@ export async function generateNeededMonthlyRollups(limit?: number) {
 function buildFallbackRollup(monthKey: string, articles: RollupArticle[], reason: string) {
   const representative = articles.slice(0, 40).map((article) => article.id);
   const evidence = articles.slice(0, 80).map((article) => article.id);
-  const topLines = articles.slice(0, 30).map((article, index) => `${index + 1}. ${articleLink(article)}：${(article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 120)}`);
+  const topLines = articles.slice(0, 30).map((article, index) => `${index + 1}. ${articleLink(article)}: ${(article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 120)}`);
+  const label = monthLabel(monthKey);
   const summary = [
-    `## ${monthKey} 月別まとめ（抽出型・暫定）`,
-    `対象記事${articles.length}件。${reason}`,
+    `## ${label} monthly rollup (extractive fallback)`,
+    `Source articles: ${articles.length}. ${reason}`,
     '',
-    '## 代表記事候補',
-    topLines.join('\n') || '代表記事候補なし',
+    '## Evidence candidates',
+    topLines.join('\n') || 'No evidence candidates',
     '',
-    '## 限界',
-    'この月別まとめは抽出型フォールバックです。全記事IDは保持していますが、意味統合・反証・WHY分析の品質は通常の月別rollupより低いです。'
+    '## Limitation',
+    'This is an extractive fallback. All article IDs are preserved, but semantic synthesis, refutation, and WHY analysis are weaker than a normal LLM monthly rollup.'
   ].join('\n');
   return {
     summary,
     summaryJson: {
+      month_key: monthKey,
+      month_label: label,
       summary_text: summary,
-      major_themes: ['抽出型フォールバックのため、主要テーマは未統合'],
-      consumer_narrative: '全記事ID・代表記事候補のみ保持。',
+      major_themes: ['extractive fallback; themes not synthesized'],
+      consumer_narrative: 'Article IDs and representative evidence only.',
       weak_signals: [],
       evidence_matrix: topLines,
       refutation_notes: [reason],
-      research_needs: ['通常rollupを再生成し、抽出型フォールバックの読みを検証する'],
+      research_needs: ['Regenerate this month with normal LLM synthesis and compare against the fallback.'],
       representative_article_ids: representative,
       evidence_article_ids: evidence,
       generation_warning: 'extractive_fallback_rollup'
@@ -227,7 +239,7 @@ function buildFallbackRollup(monthKey: string, articles: RollupArticle[], reason
 }
 
 export async function generateMonthlyRollup(monthKey: string) {
-  monthRange(monthKey);
+  validateMonthKey(monthKey);
   const { data: existing, error: existingError } = await supabaseAdmin
     .from('monthly_rollups')
     .select('*')
@@ -241,10 +253,10 @@ export async function generateMonthlyRollup(monthKey: string) {
   const latestDate = articles.map((article) => article.article_date || article.created_at || '').filter(Boolean).sort().at(-1) || null;
 
   if (!articles.length) {
-    return upsertMonthlyRollup(monthKey, 0, [], null, 'extractive_fallback', `${monthKey}の対象記事はありません。`, { month_key: monthKey, article_count: 0 }, [], [], 'ready', null);
+    return upsertMonthlyRollup(monthKey, 0, [], null, 'extractive_fallback', `${monthLabel(monthKey)} has no source articles.`, { month_key: monthKey, article_count: 0 }, [], [], 'ready', null);
   }
 
-  const fallback = buildFallbackRollup(monthKey, articles, '本番build復旧を優先し、月別rollupは抽出型fallbackとして保存します。');
+  const fallback = buildFallbackRollup(monthKey, articles, 'Build recovery mode: monthly rollup is saved as extractive fallback.');
   return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, 'extractive_fallback', fallback.summary, fallback.summaryJson, fallback.representative, fallback.evidence, 'ready', null);
 }
 

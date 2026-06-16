@@ -35,6 +35,10 @@ function hasClickableArticleLink(value: string) {
   return /\[[^\]]+\]\(\/articles\/[a-zA-Z0-9_-]+\)/.test(value);
 }
 
+function countClickableArticleLinks(value: string) {
+  return (value.match(/\[[^\]]+\]\(\/articles\/[a-zA-Z0-9_-]+\)/g) || []).length;
+}
+
 function articleLinkFromRecord(record: JsonRecord) {
   const existing = text(record.article_link);
   if (existing) return existing;
@@ -96,14 +100,42 @@ function refutationFallback(answer: JsonRecord) {
   }));
 }
 
+function negativeSpaceFallback(answer: JsonRecord) {
+  const coverage = isRecord(answer.source_coverage) ? answer.source_coverage : {};
+  return [{
+    expected_but_weak_or_absent_theme: '生活者本人の発話・継続行動・不満の直接証拠',
+    why_absence_matters: 'MJ記事は企業施策・商品投入・売場側の情報が多く、生活者心理を直接観察しているとは限らない。',
+    what_to_check_next: '該当テーマについて、実購買者・非購買者の発話、継続率、比較対象カテゴリの反例を確認する。',
+    coverage_context: text(coverage.coverage_note)
+  }];
+}
+
+function confidenceRubricFallback(answer: JsonRecord) {
+  const evidence = asArray(answer.evidence_matrix).filter(isRecord).slice(0, 5);
+  if (!evidence.length) {
+    return [{
+      claim: '主要結論全体',
+      confidence: 'C',
+      reason_for_confidence: '記事群から方向性は読めるが、根拠マトリクスが弱い。',
+      reason_for_uncertainty: '直接の生活者発話・反例・継続性の確認が不足。'
+    }];
+  }
+  return evidence.map((item) => ({
+    claim: text(item.claim || '根拠付き主張'),
+    confidence: text(item.evidence_strength || 'B'),
+    reason_for_confidence: text(item.what_can_be_said || item.evidence_excerpt_or_fact || '記事事実に基づく。'),
+    reason_for_uncertainty: text(item.what_cannot_be_said || item.limitation || 'この記事単独では生活者全体の傾向とは断定できない。')
+  }));
+}
+
 function coverageBlock(answer: JsonRecord, result: JsonRecord, relatedArticles: unknown[]) {
   const source = isRecord(answer.source_coverage) ? answer.source_coverage : isRecord(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {};
   const retrieved = firstNumber(answer.related_article_count, source.article_count, relatedArticles.length) ?? relatedArticles.length;
   const scanned = firstNumber(answer.article_count_scanned, source.scanned_article_count, source.article_count, retrieved) ?? retrieved;
   const final = firstNumber(answer.article_count_for_report, source.final_article_count, source.report_article_count, asArray(answer.selected_article_ids).length) ?? null;
-  const scanModel = text(answer.scan_model || result.scan_model || 'gpt-5-nano');
-  const mode = text(answer.retrieval_mode || result.retrieval_mode);
-  const scanEnabled = Boolean(answer.scan_enabled || result.scan_enabled || mode === 'wide_all_data_scan');
+  const scanModel = text(answer.scan_model || result.scan_model || source.scan_model || 'unknown');
+  const mode = text(answer.retrieval_mode || result.retrieval_mode || source.retrieval_mode);
+  const scanEnabled = Boolean(answer.scan_enabled || result.scan_enabled || mode);
 
   return {
     article_count: retrieved,
@@ -113,20 +145,34 @@ function coverageBlock(answer: JsonRecord, result: JsonRecord, relatedArticles: 
     scan_enabled: scanEnabled,
     retrieval_mode: mode,
     coverage_note: scanEnabled
-      ? `全体指定では、取得${retrieved}件・スキャン${scanned}件を${scanModel}で広域確認し、最終分析には代表性と関連性の高い${final ?? '複数'}件を選抜投入しています。全記事本文をそのままgpt-5へ丸投げする設計ではありません。`
+      ? `全体指定では、取得${retrieved}件・スキャン${scanned}件を${scanModel}で広域確認し、最終分析には代表性と関連性の高い${final ?? '複数'}件を選抜投入しています。全記事本文をそのまま単一プロンプトへ丸投げする設計ではありません。`
       : `対象記事${retrieved}件から分析しています。`,
-    limitation: '最終レポートは選抜記事に基づく統合分析です。スキャン外・選抜外の記事に反例がある可能性は、調査論点として残します。'
+    limitation: '最終レポートは選抜記事と月別rollupに基づく統合分析です。スキャン外・選抜外の記事に反例がある可能性は、調査論点として残します。'
   };
 }
 
 function buildChecks(answer: JsonRecord, answerText: string) {
+  const evidenceCount = asArray(answer.evidence_matrix).length;
+  const refutationCount = asArray(answer.refutation_audit).length;
+  const researchNeedCount = asArray(answer.research_needs).length;
+  const linkCount = countClickableArticleLinks(answerText);
+  const sourceCoverage = isRecord(answer.source_coverage) ? answer.source_coverage : {};
+  const coverageComplete = Boolean(sourceCoverage.monthly_rollup_coverage_complete || answer.monthly_rollup_coverage_complete);
+  const provisional = Boolean(sourceCoverage.analysis_is_provisional || answer.analysis_is_provisional);
+  const fallbackRollup = text(sourceCoverage.scan_model || answer.scan_model).includes('fallback') || text(answer.generation_warning).includes('fallback');
+
   const checks: QualityCheck[] = [
     { key: 'answer_text', passed: answerText.length > 120, note: '本文が十分に生成されているか' },
     { key: 'coverage', passed: isRecord(answer.coverage_diagnosis) || isRecord(answer.source_coverage), note: '取得・スキャン・最終投入の範囲が見えるか' },
-    { key: 'evidence_matrix', passed: asArray(answer.evidence_matrix).length > 0, note: '根拠マトリクスが存在するか' },
-    { key: 'refutation_audit', passed: asArray(answer.refutation_audit).length > 0, note: '反証・別解釈・棄却条件が存在するか' },
-    { key: 'research_needs', passed: asArray(answer.research_needs).length > 0, note: '調査論点が存在するか' },
-    { key: 'article_links', passed: hasClickableArticleLink(answerText), note: '本文内にクリック可能な記事リンクがあるか' }
+    { key: 'coverage_complete_or_flagged', passed: coverageComplete || provisional, note: '全件カバレッジが完全、または暫定扱いが明示されているか' },
+    { key: 'evidence_matrix', passed: evidenceCount >= 3, note: '主要主張を支える根拠マトリクスが十分に存在するか' },
+    { key: 'refutation_audit', passed: refutationCount >= 1, note: '反証・別解釈・棄却条件が存在するか' },
+    { key: 'research_needs', passed: researchNeedCount >= 1, note: '調査論点が存在するか' },
+    { key: 'negative_space', passed: asArray(answer.negative_space).length >= 1, note: '見えていない論点・欠落証拠が明示されているか' },
+    { key: 'confidence_rubric', passed: asArray(answer.confidence_rubric).length >= 1, note: '主張ごとの信頼度と不確実性が明示されているか' },
+    { key: 'article_links', passed: hasClickableArticleLink(answerText), note: '本文内にクリック可能な記事リンクがあるか' },
+    { key: 'multiple_links', passed: linkCount >= Math.min(3, Math.max(1, evidenceCount)), note: '根拠リンクが少なすぎないか' },
+    { key: 'fallback_awareness', passed: !fallbackRollup || answerText.includes('暫定') || answerText.includes('抽出型') || answerText.includes('限界'), note: 'fallback利用時に品質限界が明示されているか' }
   ];
   return checks;
 }
@@ -137,6 +183,16 @@ function qualityAppendix(checks: QualityCheck[]) {
   return [
     '## 11. 品質ゲート補足',
     '以下の項目は、後処理バリデータで不足または弱さが検知されました。結論として断定せず、調査論点として扱ってください。',
+    ...failed.map((check) => `- ${check.key}: ${check.note}`)
+  ].join('\n');
+}
+
+function qualityAuditText(checks: QualityCheck[]) {
+  const failed = checks.filter((check) => !check.passed);
+  if (!failed.length) return '';
+  return [
+    '## 12. 分析品質監査',
+    `不足検知: ${failed.length}件`,
     ...failed.map((check) => `- ${check.key}: ${check.note}`)
   ].join('\n');
 }
@@ -162,6 +218,12 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   if (!asArray(answer.refutation_audit).length) {
     answer.refutation_audit = refutationFallback(answer);
   }
+  if (!asArray(answer.negative_space).length) {
+    answer.negative_space = negativeSpaceFallback(answer);
+  }
+  if (!asArray(answer.confidence_rubric).length) {
+    answer.confidence_rubric = confidenceRubricFallback(answer);
+  }
 
   const coverage = isRecord(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {};
   const coverageText = [
@@ -182,11 +244,16 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   if (appendix && !body.includes('## 11. 品質ゲート補足')) {
     body = `${body}\n\n${appendix}`.trim();
   }
+  const audit = qualityAuditText(checks);
+  if (audit && !body.includes('## 12. 分析品質監査')) {
+    body = `${body}\n\n${audit}`.trim();
+  }
 
   answer.answer_text = body || coverageText.trim();
   answer.quality_gate = {
     status: checks.every((check) => check.passed) ? 'passed' : 'needs_review',
     checks,
+    failed_checks: checks.filter((check) => !check.passed).map((check) => check.key),
     note: 'この品質ゲートは後処理バリデータです。独立LLMによる別人格監査ではありません。'
   };
 

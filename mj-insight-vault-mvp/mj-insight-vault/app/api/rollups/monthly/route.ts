@@ -23,6 +23,10 @@ function limit(value: unknown) {
   return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 3));
 }
 
+function validMonthKey(value: string) {
+  return /^\d{4}-\d{2}$/.test(value) || value === 'undated';
+}
+
 async function statusPayload(extra: Record<string, unknown> = {}) {
   const [months, month_counts, rollups, stale_months, needed_months] = await Promise.all([
     listArticleMonths(),
@@ -91,8 +95,8 @@ export async function POST(req: NextRequest) {
       }));
     }
 
-    if (!/^\d{4}-\d{2}$/.test(monthKey)) {
-      return Response.json({ error: 'month_key must be YYYY-MM' }, { status: 400 });
+    if (!validMonthKey(monthKey)) {
+      return Response.json({ error: 'month_key must be YYYY-MM or undated' }, { status: 400 });
     }
 
     const rollup = await generateMonthlyRollup(monthKey);

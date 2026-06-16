@@ -77,11 +77,16 @@ function sleep(ms: number) {
 
 export default function ReportDiagnosticsPage() {
   const password = useAppPassword();
-  const { data, error, loading, mutate } = useApi<Diagnostics>('/api/diagnostics/latest-report');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { data, error, loading } = useApi<Diagnostics>(`/api/diagnostics/latest-report?r=${refreshKey}`);
   const [query, setQuery] = useState(DEFAULT_QUERY);
   const [job, setJob] = useState<Job | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
+
+  function refreshDiagnostics() {
+    setRefreshKey((value) => value + 1);
+  }
 
   async function fetchJson(url: string, init?: RequestInit) {
     const res = await fetch(url, {
@@ -104,7 +109,7 @@ export default function ReportDiagnosticsPage() {
       setJob(nextJob);
 
       if (nextJob.status === 'completed') {
-        await mutate();
+        refreshDiagnostics();
         return;
       }
       if (nextJob.status === 'failed') {
@@ -169,7 +174,7 @@ export default function ReportDiagnosticsPage() {
           <button className="btn" type="button" onClick={runDiagnosticReport} disabled={running || !query.trim()}>
             {running ? '実行中' : '全体分析を実行して診断'}
           </button>
-          <button className="btn" type="button" onClick={() => mutate()} disabled={running}>診断だけ更新</button>
+          <button className="btn" type="button" onClick={refreshDiagnostics} disabled={running}>診断だけ更新</button>
         </div>
         {job && (
           <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">

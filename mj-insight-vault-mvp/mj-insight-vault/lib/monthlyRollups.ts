@@ -32,7 +32,8 @@ const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, headline, article_date, ocr_text, status, created_at';
 const PAGE_SIZE = 1000;
 const RUNNING_LOCK_MS = 10 * 60 * 1000;
-const ROLLUP_TIMEOUT_MS = 90000;
+const ROLLUP_TIMEOUT_MS = 80000;
+const MONTH_BATCH_LIMIT = Number(process.env.MONTHLY_ROLLUP_BATCH_LIMIT || 1);
 
 function active(article: RollupArticle) {
   return !article.status || !HIDDEN.has(article.status);
@@ -70,10 +71,13 @@ function articleLink(article: RollupArticle) {
 }
 
 function textLimit(count: number) {
-  if (count > 120) return 450;
-  if (count > 80) return 600;
-  if (count > 40) return 850;
-  return 1200;
+  if (count > 500) return 120;
+  if (count > 300) return 160;
+  if (count > 180) return 220;
+  if (count > 120) return 300;
+  if (count > 80) return 450;
+  if (count > 40) return 650;
+  return 1000;
 }
 
 function rollupModel() {
@@ -102,6 +106,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
     promise.then((value) => { clearTimeout(timer); resolve(value); }).catch((error) => { clearTimeout(timer); reject(error); });
   });
+}
+
+function boundedBatchLimit(limit?: number) {
+  const n = Number(limit || MONTH_BATCH_LIMIT || 1);
+  return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 1));
 }
 
 async function fetchAllRollupArticles(select = SELECT) {
@@ -203,8 +212,8 @@ export async function markMonthlyRollupsStaleForArticleDates(articleDates: unkno
   return { months, updated: data?.length || 0 };
 }
 
-export async function generateStaleMonthlyRollups() {
-  const months = await listStaleRollupMonths();
+export async function generateStaleMonthlyRollups(limit?: number) {
+  const months = (await listStaleRollupMonths()).slice(0, boundedBatchLimit(limit));
   const results = [];
   for (const month of months) {
     results.push(await generateMonthlyRollup(month));
@@ -212,13 +221,48 @@ export async function generateStaleMonthlyRollups() {
   return results;
 }
 
-export async function generateNeededMonthlyRollups() {
-  const months = await listNeededRollupMonths();
+export async function generateNeededMonthlyRollups(limit?: number) {
+  const months = (await listNeededRollupMonths()).slice(0, boundedBatchLimit(limit));
   const results = [];
   for (const month of months) {
     results.push(await generateMonthlyRollup(month));
   }
   return results;
+}
+
+function buildFallbackRollup(monthKey: string, articles: RollupArticle[], model: string, errorMessage: string) {
+  const representative = articles.slice(0, 40).map((article) => article.id);
+  const evidence = articles.slice(0, 80).map((article) => article.id);
+  const topLines = articles.slice(0, 30).map((article, index) => `${index + 1}. ${articleLink(article)}：${(article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 120)}`);
+  const summary = [
+    `## ${monthKey} 月別まとめ（抽出型・暫定）`,
+    `対象記事${articles.length}件。LLMによる月別統合生成が失敗したため、全記事IDを保存し、見出し・冒頭抜粋から暫定rollupを作成しました。`,
+    '',
+    '## 代表記事候補',
+    topLines.join('\n') || '代表記事候補なし',
+    '',
+    '## 限界',
+    'この月別まとめは抽出型フォールバックです。全記事はカバーしていますが、意味統合・反証・WHY分析の品質は通常の月別rollupより低いです。'
+  ].join('\n');
+  return {
+    summary,
+    summaryJson: {
+      summary_text: summary,
+      major_themes: ['抽出型フォールバックのため、主要テーマは未統合'],
+      consumer_narrative: 'LLM統合失敗。全記事ID・代表記事候補のみ保持。',
+      weak_signals: [],
+      evidence_matrix: topLines,
+      refutation_notes: [`LLM統合失敗: ${errorMessage}`],
+      research_needs: ['通常rollupを再生成し、抽出型フォールバックの読みを検証する'],
+      representative_article_ids: representative,
+      evidence_article_ids: evidence,
+      generation_warning: 'extractive_fallback_rollup',
+      generation_error: errorMessage,
+      attempted_model: model
+    },
+    representative,
+    evidence
+  };
 }
 
 export async function generateMonthlyRollup(monthKey: string) {
@@ -237,13 +281,13 @@ export async function generateMonthlyRollup(monthKey: string) {
   const articleIds = articles.map((article) => article.id);
   const latestDate = articles.map((article) => article.article_date || article.created_at || '').filter(Boolean).sort().at(-1) || null;
 
-  if (!openai) {
-    const summary = `OPENAI_API_KEY未設定のため、${monthKey}の月別まとめは生成できません。対象記事数: ${articles.length}`;
-    return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, model, summary, { error: 'OPENAI_API_KEY missing' }, [], [], 'failed', 'OPENAI_API_KEY missing');
-  }
-
   if (!articles.length) {
     return upsertMonthlyRollup(monthKey, 0, [], null, model, `${monthKey}の対象記事はありません。`, { month_key: monthKey, article_count: 0 }, [], [], 'ready', null);
+  }
+
+  if (!openai) {
+    const fallback = buildFallbackRollup(monthKey, articles, model, 'OPENAI_API_KEY missing');
+    return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, 'extractive_fallback', fallback.summary, fallback.summaryJson, fallback.representative, fallback.evidence, 'ready', 'OPENAI_API_KEY missing; extractive fallback saved');
   }
 
   await upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, model, '', {}, [], [], 'running', null);
@@ -255,12 +299,13 @@ export async function generateMonthlyRollup(monthKey: string) {
     article_link: articleLink(article),
     headline: article.headline,
     article_date: article.article_date || '日付不明',
-    text: (article.ocr_text || '').slice(0, limit)
+    text: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, limit)
   }));
 
   const system = [
     'Return JSON only.',
     'You create a monthly intelligence rollup for accumulated Nikkei MJ articles.',
+    'You must treat the supplied article list as the full monthly corpus, even when each article text is shortened.',
     'Do not write generic summaries. Preserve weak signals, contradictions, and research opportunities.',
     'Required keys: summary_text, major_themes, consumer_narrative, weak_signals, evidence_matrix, refutation_notes, research_needs, representative_article_ids, evidence_article_ids, next_month_watchpoints.',
     'Use article_link when citing evidence. Mark weak interpretations as hypotheses.'
@@ -274,7 +319,7 @@ export async function generateMonthlyRollup(monthKey: string) {
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: JSON.stringify({ month_key: monthKey, article_count: articles.length, articles: articlePayload }, null, 2) }
+          { role: 'user', content: JSON.stringify({ month_key: monthKey, article_count: articles.length, article_text_limit: limit, articles: articlePayload }) }
         ]
       }), ROLLUP_TIMEOUT_MS, `monthly rollup generation (${candidateModel})`);
       const raw = completion.choices[0]?.message.content || '{}';
@@ -290,7 +335,8 @@ export async function generateMonthlyRollup(monthKey: string) {
   }
 
   const message = errors.join(' / ') || 'monthly rollup failed';
-  return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, model, `月別まとめ生成に失敗しました: ${message}`, { error: message, attempted_models: rollupModelCandidates(model) }, [], [], 'failed', message);
+  const fallback = buildFallbackRollup(monthKey, articles, model, message);
+  return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, 'extractive_fallback', fallback.summary, fallback.summaryJson, fallback.representative, fallback.evidence, 'ready', message);
 }
 
 async function upsertMonthlyRollup(

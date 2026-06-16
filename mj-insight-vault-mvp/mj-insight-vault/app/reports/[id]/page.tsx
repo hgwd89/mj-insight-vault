@@ -41,8 +41,18 @@ const modelOptions = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] as con
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const textTokenPattern = /(\[[^\]]+\]\([^)]+\)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
 const markdownLinkPattern = /^\[([^\]]+)\]\(([^)]+)\)$/;
+const INTERNAL_PROMPT_MARKERS = ['【レポート要件】', '最重要: answer_text', 'JSONでは coverage_diagnosis', '根拠記事IDのない重要主張は禁止'];
 
 type ModelName = typeof modelOptions[number];
+
+function stripInternalPrompt(value: string | null | undefined) {
+  let text = value || '';
+  for (const marker of INTERNAL_PROMPT_MARKERS) {
+    const index = text.indexOf(marker);
+    if (index >= 0) text = text.slice(0, index);
+  }
+  return text.replace(/^\s*全記事を対象に、全データを広域スキャンしたうえで分析してください。[\s　]*/g, '').replace(/\s+/g, ' ').trim();
+}
 
 function getAnswerText(answer: ReportChatAnswer) {
   return typeof answer.answer_text === 'string' ? answer.answer_text : JSON.stringify(answer, null, 2);
@@ -58,7 +68,8 @@ function getInitialAnswer(report: Report) {
 
 function getReportTitle(report: Report) {
   const title = report.answer_json?.report_title;
-  return typeof title === 'string' && title.trim() ? title : report.user_query;
+  if (typeof title === 'string' && stripInternalPrompt(title)) return stripInternalPrompt(title);
+  return stripInternalPrompt(report.user_query) || '分析レポート';
 }
 
 function getPinned(report: Report) {
@@ -136,9 +147,9 @@ function buildMarkdown(report: Report, articles: Article[], latestAnswer: Report
     `# ${title}`,
     '',
     `- 作成日: ${new Date(report.created_at).toLocaleString('ja-JP')}`,
-    `- 元指示: ${report.user_query}`,
+    `- 指示: ${stripInternalPrompt(report.user_query) || '分析指示未保存'}`,
     '',
-    '## 元レポート',
+    '## 分析レポート',
     '',
     initialAnswer,
     ''
@@ -279,6 +290,7 @@ export default function ReportDetailPage() {
   if (error) return <div className="card p-5 text-red-600">{error}</div>;
   if (!report) return <div className="card p-5 text-red-600">レポートがありません</div>;
 
+  const cleanQuery = stripInternalPrompt(report.user_query) || '分析指示未保存';
   const suggestedQuestions = [
     'この分析の本質仮説をもっと尖らせて',
     'リサーチ課題に落とすとどうなる？',
@@ -296,33 +308,31 @@ export default function ReportDetailPage() {
             <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {pinned && <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">Pinned</span>}
-              <h1 className="text-xl font-black">レポート対話</h1>
+              <h1 className="text-xl font-black">分析レポート</h1>
             </div>
-            <p className="mt-2 text-sm leading-6 text-zinc-600">
-              既存レポートと根拠記事を前提に、GPTのように分析観点を追加しながら掘り下げます。
-            </p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">指示: {cleanQuery}</p>
           </div>
-          <Link className="btn" href="/reports">分析履歴へ戻る</Link>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn" onClick={copyMarkdown}>Markdownコピー</button>
+            <Link className="btn" href="/reports">分析履歴へ戻る</Link>
+          </div>
         </div>
       </div>
 
       <section className="card p-5">
-        <h2 className="font-bold">レポート設定</h2>
-        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+        <h2 className="font-bold">分析レポート本文</h2>
+        <MarkdownText text={getInitialAnswer(report)} articles={articles} className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700" />
+      </section>
+
+      <details className="card p-5">
+        <summary className="cursor-pointer font-bold">レポート設定・元指示</summary>
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto_auto]">
           <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="レポート名" disabled={metaBusy} />
           <button className="btn" onClick={() => saveMetadata()} disabled={metaBusy}>名前保存</button>
           <button className={pinned ? 'btn btn-primary' : 'btn'} onClick={togglePinned} disabled={metaBusy}>{pinned ? 'ピン解除' : 'ピン留め'}</button>
-          <button className="btn" onClick={copyMarkdown}>Markdownコピー</button>
         </div>
-      </section>
-
-      <section className="card p-5">
-        <h2 className="font-bold">元の指示</h2>
-        <p className="mt-2 rounded-xl bg-zinc-50 p-3 text-sm leading-7">{report.user_query}</p>
-
-        <h2 className="mt-5 font-bold">元レポート</h2>
-        <MarkdownText text={getInitialAnswer(report)} articles={articles} className="mt-2 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700" />
-      </section>
+        <p className="mt-4 rounded-xl bg-zinc-50 p-3 text-sm leading-7">{cleanQuery}</p>
+      </details>
 
       <section className="card p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -401,6 +411,7 @@ export default function ReportDetailPage() {
 
       <section className="card p-5">
         <h2 className="font-bold">根拠記事</h2>
+        <p className="mt-1 text-sm text-zinc-500">保存されている根拠記事リストです。全件の場合は件数が多くなります。</p>
         <div className="mt-3 grid gap-3">
           {articles.length === 0 && <p className="text-sm text-zinc-500">根拠記事は保存されていません。</p>}
           {articles.map((article) => (

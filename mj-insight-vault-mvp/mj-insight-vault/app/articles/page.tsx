@@ -16,6 +16,21 @@ type Article = {
   created_at: string;
   status?: string | null;
   article_tags?: { tag_type: string; tag_name: string }[];
+  search_score?: number;
+  lexical_score?: number;
+  semantic_score?: number;
+  semantic_similarity?: number;
+  search_reason?: string;
+  search_mode?: string;
+};
+
+type ArticlesResponse = {
+  articles: Article[];
+  total_fetched?: number;
+  total_visible?: number;
+  total_matched?: number;
+  search_mode?: string;
+  search_query?: string;
 };
 
 type FilterKind = 'all' | 'duplicate' | 'date_unknown' | 'needs_review' | 'has_table_chart';
@@ -37,13 +52,27 @@ function isDateUnknown(article: Article) {
   return !article.article_date || article.article_date === '日付不明';
 }
 
+function scoreLabel(value: unknown) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  return n.toFixed(n >= 10 ? 0 : 2);
+}
+
+function searchModeLabel(value: unknown) {
+  const mode = String(value || '');
+  if (mode === 'hybrid_lexical_semantic') return 'ハイブリッド検索';
+  if (mode === 'ranked_lexical') return '語句検索';
+  if (mode === 'ranked_multi_field_lexical') return '語句検索';
+  return mode || '検索なし';
+}
+
 export default function ArticlesPage() {
   const password = useAppPassword();
   const [q, setQ] = useState('');
   const [filterKind, setFilterKind] = useState<FilterKind>('all');
   const pendingScrollRef = useRef<number | null>(null);
 
-  const { data, error, loading } = useApi<{ articles: Article[] }>(
+  const { data, error, loading } = useApi<ArticlesResponse>(
     `/api/articles${q ? `?q=${encodeURIComponent(q)}` : ''}`
   );
 
@@ -263,7 +292,7 @@ export default function ArticlesPage() {
             className="input"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="見出し・本文検索"
+            placeholder="見出し・本文・意味検索"
           />
 
           <select className="input" value={filterKind} onChange={(e) => setFilterKind(e.target.value as FilterKind)}>
@@ -278,6 +307,8 @@ export default function ArticlesPage() {
         <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600">
           <span className="badge">表示 {visibleArticles.length}</span>
           <span className="badge">全体 {articles.length}</span>
+          {q && <span className="badge">一致 {data?.total_matched ?? visibleArticles.length}</span>}
+          {q && <span className="badge">{searchModeLabel(data?.search_mode)}</span>}
           <span className="badge">重複候補 {duplicateIds.size}</span>
           <span className="badge">日付不明 {articles.filter(isDateUnknown).length}</span>
           <span className="badge">選択 {selectedIds.size}</span>
@@ -337,6 +368,8 @@ export default function ArticlesPage() {
                       {a.headline || '無題の記事候補'}
                     </p>
                     <span className="badge">{a.article_date || '日付不明'}</span>
+                    {q && a.search_score !== undefined && <span className="badge">score {scoreLabel(a.search_score)}</span>}
+                    {q && a.semantic_similarity !== undefined && <span className="badge">意味 {scoreLabel(a.semantic_similarity)}</span>}
                     {duplicateIds.has(a.id) && (
                       <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">重複候補</span>
                     )}
@@ -345,6 +378,12 @@ export default function ArticlesPage() {
                   <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-600">
                     {a.ocr_text}
                   </p>
+
+                  {q && (a.search_reason || a.search_mode) && (
+                    <p className="mt-2 text-xs leading-5 text-zinc-500">
+                      検索理由: {searchModeLabel(a.search_mode)} / lexical {scoreLabel(a.lexical_score)} / semantic {scoreLabel(a.semantic_score)} / {a.search_reason || '理由なし'}
+                    </p>
+                  )}
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     <span className="badge">{a.article_type}</span>

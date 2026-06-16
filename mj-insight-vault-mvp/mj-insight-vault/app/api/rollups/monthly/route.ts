@@ -18,17 +18,26 @@ function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
 
+function limit(value: unknown) {
+  const n = Number(value || 1);
+  return Math.max(1, Math.min(3, Number.isFinite(n) ? n : 1));
+}
+
+async function statusPayload(extra: Record<string, unknown> = {}) {
+  const [months, month_counts, rollups, stale_months, needed_months] = await Promise.all([
+    listArticleMonths(),
+    listArticleMonthCounts(),
+    listMonthlyRollups(),
+    listStaleRollupMonths(),
+    listNeededRollupMonths()
+  ]);
+  return { months, month_counts, rollups, stale_months, needed_months, ...extra };
+}
+
 export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
-    const [months, month_counts, rollups, stale_months, needed_months] = await Promise.all([
-      listArticleMonths(),
-      listArticleMonthCounts(),
-      listMonthlyRollups(),
-      listStaleRollupMonths(),
-      listNeededRollupMonths()
-    ]);
-    return Response.json({ months, month_counts, rollups, stale_months, needed_months });
+    return Response.json(await statusPayload());
   } catch (error) {
     return jsonError(error);
   }
@@ -42,24 +51,44 @@ export async function POST(req: NextRequest) {
     const all = Boolean(body.all);
     const staleOnly = Boolean(body.stale_only);
     const needsOnly = Boolean(body.needs_only);
+    const maxMonths = limit(body.limit);
 
     if (needsOnly) {
-      const rollups = await generateNeededMonthlyRollups();
-      return Response.json({ rollups, mode: 'needs_only' });
+      const before = await listNeededRollupMonths();
+      const rollups = await generateNeededMonthlyRollups(maxMonths);
+      return Response.json(await statusPayload({
+        rollups_generated: rollups,
+        generated_count: rollups.length,
+        attempted_months: before.slice(0, maxMonths),
+        remaining_before: Math.max(0, before.length - rollups.length),
+        mode: 'needs_only'
+      }));
     }
 
     if (staleOnly) {
-      const rollups = await generateStaleMonthlyRollups();
-      return Response.json({ rollups, mode: 'stale_only' });
+      const before = await listStaleRollupMonths();
+      const rollups = await generateStaleMonthlyRollups(maxMonths);
+      return Response.json(await statusPayload({
+        rollups_generated: rollups,
+        generated_count: rollups.length,
+        attempted_months: before.slice(0, maxMonths),
+        remaining_before: Math.max(0, before.length - rollups.length),
+        mode: 'stale_only'
+      }));
     }
 
     if (all) {
-      const months = await listArticleMonths();
+      const months = (await listArticleMonths()).slice(0, maxMonths);
       const results = [];
       for (const month of months) {
         results.push(await generateMonthlyRollup(month));
       }
-      return Response.json({ rollups: results, mode: 'all' });
+      return Response.json(await statusPayload({
+        rollups_generated: results,
+        generated_count: results.length,
+        attempted_months: months,
+        mode: 'all_bounded'
+      }));
     }
 
     if (!/^\d{4}-\d{2}$/.test(monthKey)) {
@@ -67,7 +96,7 @@ export async function POST(req: NextRequest) {
     }
 
     const rollup = await generateMonthlyRollup(monthKey);
-    return Response.json({ rollup, mode: 'single' });
+    return Response.json(await statusPayload({ rollup, rollups_generated: [rollup], generated_count: 1, mode: 'single' }));
   } catch (error) {
     return jsonError(error);
   }

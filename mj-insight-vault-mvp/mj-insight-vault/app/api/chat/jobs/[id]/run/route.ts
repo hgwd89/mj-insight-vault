@@ -19,6 +19,10 @@ function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
 
+function hasSavedReport(job: Record<string, unknown>) {
+  return Boolean(job.report_id || job.finished_at);
+}
+
 function isStaleRunning(job: Record<string, unknown>) {
   if (job.status !== 'running') return false;
   const heartbeat = typeof job.heartbeat_at === 'string' ? Date.parse(job.heartbeat_at) : 0;
@@ -33,8 +37,23 @@ function clampProgress(value: unknown) {
 async function updateJob(id: string, patch: Record<string, unknown>) {
   await supabaseAdmin.from('chat_jobs').update({
     ...patch,
-    heartbeat_at: new Date().toISOString()
+    heartbeat_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
   }).eq('id', id);
+}
+
+async function completeSavedReportJob(id: string, job: Record<string, unknown>) {
+  const { data, error } = await supabaseAdmin.from('chat_jobs').update({
+    status: 'completed',
+    progress: 100,
+    stage: 'レポート生成完了',
+    error_message: null,
+    finished_at: job.finished_at || new Date().toISOString(),
+    heartbeat_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }).eq('id', id).select('*').single();
+  if (error) throw error;
+  return data;
 }
 
 function reportIdFromResult(result: unknown) {
@@ -64,6 +83,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id?
     if (!job) return Response.json({ error: 'job not found' }, { status: 404 });
 
     if (job.status === 'completed') return Response.json({ job });
+    if (hasSavedReport(job)) {
+      const completed = await completeSavedReportJob(jobId, job);
+      return Response.json({ job: completed, completed_recovered: true });
+    }
     if (job.status === 'running' && !isStaleRunning(job)) return Response.json({ job });
 
     const initialProgress = isStaleRunning(job)

@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { ChatPanel } from '@/components/ChatPanel';
 import { useAppPassword } from '@/components/PasswordGate';
-import { formatTokyoDateTime } from '@/lib/timeFormat';
 
 type LatestReport = {
   id: string;
@@ -21,6 +20,23 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function formatTokyoDateTime(value: unknown) {
+  const raw = text(value);
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(date);
 }
 
 async function fetchLatestReport(password: string): Promise<LatestReport | null> {

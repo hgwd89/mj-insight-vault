@@ -16,6 +16,7 @@ type ScanRun = {
   total_batches: number;
   completed_batches: number;
   failed_batches: number;
+  needs_review_batches?: number;
   analyzed_article_count: number;
   coverage_json: JsonRecord;
   error_message: string | null;
@@ -46,6 +47,11 @@ function safeJson(value: string): JsonRecord {
   } catch {
     return { raw_text: value };
   }
+}
+
+function asStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [] as string[];
+  return value.map((item) => text(item)).filter(Boolean);
 }
 
 function words(query: string) {
@@ -94,6 +100,7 @@ function fallbackBatchSummary(articles: WideArticle[], reason: string) {
     scan_type: 'full_corpus_batch',
     prompt_version: 'full_corpus_batch_v1',
     analysis_is_validated: false,
+    fallback_used: true,
     fallback_reason: reason,
     article_count: articles.length,
     read_article_ids: articles.map((article) => article.id),
@@ -136,6 +143,28 @@ function evidenceIdsFromSummary(summary: JsonRecord, fallbackIds: string[]) {
   return Array.from(ids);
 }
 
+function validateBatchSummary(summary: JsonRecord, articleIds: string[]) {
+  const readIds = new Set(asStringArray(summary.read_article_ids));
+  const missingReadIds = articleIds.filter((id) => !readIds.has(id));
+  const validated = summary.analysis_is_validated === true && summary.fallback_used !== true;
+  const hasEvidence = Array.isArray(summary.evidence) && summary.evidence.length > 0;
+  const hasNarrativeOrSignal = (Array.isArray(summary.consumer_narratives) && summary.consumer_narratives.length > 0)
+    || (Array.isArray(summary.behavior_signals) && summary.behavior_signals.length > 0)
+    || (Array.isArray(summary.weak_signals) && summary.weak_signals.length > 0);
+
+  const failures: string[] = [];
+  if (!validated) failures.push('analysis_is_validated is not true or fallback was used');
+  if (missingReadIds.length) failures.push(`read_article_ids missing ${missingReadIds.length} article(s)`);
+  if (!hasEvidence) failures.push('evidence is empty');
+  if (!hasNarrativeOrSignal) failures.push('consumer_narratives / behavior_signals / weak_signals are all empty');
+
+  return {
+    passed: failures.length === 0,
+    failures,
+    missing_read_article_ids: missingReadIds
+  };
+}
+
 async function analyzeBatch(articles: WideArticle[], model: string, scopeType: string, scopeQuery: string) {
   const openai = getOpenAI();
   if (!openai) return fallbackBatchSummary(articles, 'OPENAI_API_KEY is not configured');
@@ -165,7 +194,7 @@ async function analyzeBatch(articles: WideArticle[], model: string, scopeType: s
       model,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: 'You are a strict consumer-insight analyst. Read all supplied article texts. Output only JSON. Never claim full-corpus coverage beyond this batch.' },
+        { role: 'system', content: 'You are a strict consumer-insight analyst. Read all supplied article texts. Output only JSON. Never claim full-corpus coverage beyond this batch. If a batch contains weak evidence, still record observed facts and what cannot be said.' },
         { role: 'user', content: JSON.stringify(payload) }
       ]
     });
@@ -276,6 +305,52 @@ export async function getLatestFullCorpusScanRun(scopeType = 'all', scopeQuery =
   return data as ScanRun | null;
 }
 
+export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
+  const run = await getLatestFullCorpusScanRun(scopeType, scopeQuery);
+  if (!run) return { run: null, context_text: '', full_corpus_gate: 'failed', reason: 'no_full_corpus_scan_run' };
+
+  const { data: batches, error } = await supabaseAdmin
+    .from('full_corpus_scan_batches')
+    .select('batch_index, article_count, status, summary_json, evidence_article_ids')
+    .eq('run_id', run.id)
+    .order('batch_index', { ascending: true });
+  if (error) throw error;
+
+  const completed = (batches || []).filter((batch) => batch.status === 'completed');
+  const fullCorpusPassed = run.status === 'completed'
+    && run.completed_batches === run.total_batches
+    && Number(run.needs_review_batches || 0) === 0
+    && run.failed_batches === 0
+    && run.analyzed_article_count === run.ocr_ready_article_count;
+
+  const context = completed.map((batch) => ({
+    batch_index: batch.batch_index,
+    article_count: batch.article_count,
+    summary: batch.summary_json
+  }));
+
+  return {
+    run,
+    batches: batches || [],
+    completed_batches: completed.length,
+    full_corpus_gate: fullCorpusPassed ? 'passed' : 'failed',
+    context_text: JSON.stringify({
+      full_corpus_gate: fullCorpusPassed ? 'passed' : 'failed',
+      run_id: run.id,
+      scope_type: run.scope_type,
+      scope_query: run.scope_query,
+      active_article_count: run.active_article_count,
+      ocr_ready_article_count: run.ocr_ready_article_count,
+      analyzed_article_count: run.analyzed_article_count,
+      total_batches: run.total_batches,
+      completed_batches: run.completed_batches,
+      failed_batches: run.failed_batches,
+      needs_review_batches: run.needs_review_batches || 0,
+      batch_summaries: context
+    })
+  };
+}
+
 export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
   const { data: run, error } = await supabaseAdmin
     .from('full_corpus_scan_runs')
@@ -296,7 +371,7 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
     .from('full_corpus_scan_batches')
     .select('*')
     .eq('run_id', id)
-    .in('status', ['queued', 'failed'])
+    .in('status', ['queued', 'failed', 'needs_review'])
     .order('batch_index', { ascending: true })
     .limit(Math.max(1, Math.min(10, Math.round(maxBatches))));
   if (batchError) throw batchError;
@@ -310,16 +385,18 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
     try {
       const articles = await loadArticlesByIds(batch.article_ids);
       const summary = await analyzeBatch(articles, batch.model || run.model, run.scope_type, run.scope_query || '');
+      const validation = validateBatchSummary(summary, batch.article_ids);
       const evidenceIds = evidenceIdsFromSummary(summary, batch.article_ids);
+      const status = validation.passed ? 'completed' : 'needs_review';
       await supabaseAdmin
         .from('full_corpus_scan_batches')
         .update({
-          status: 'completed',
-          summary_json: summary,
+          status,
+          summary_json: { ...summary, validation },
           evidence_article_ids: evidenceIds,
           finished_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          error_message: null
+          error_message: validation.passed ? null : validation.failures.join('; ')
         })
         .eq('id', batch.id);
     } catch (error) {
@@ -336,8 +413,9 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
   }
 
   const latest = await getFullCorpusScanRun(id);
-  const done = latest.run.completed_batches === latest.run.total_batches && latest.run.total_batches > 0;
-  const failed = latest.run.failed_batches > 0;
+  const needsReview = Number(latest.run.needs_review_batches || 0);
+  const done = latest.run.completed_batches === latest.run.total_batches && latest.run.total_batches > 0 && needsReview === 0;
+  const failed = latest.run.failed_batches > 0 || needsReview > 0;
   const nextStatus = done ? 'completed' : failed ? 'needs_review' : 'running';
   const fullCorpusGate = done && latest.run.analyzed_article_count === latest.run.ocr_ready_article_count ? 'passed' : 'failed';
 
@@ -351,6 +429,7 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
         ...(latest.run.coverage_json || {}),
         completed_batches: latest.run.completed_batches,
         failed_batches: latest.run.failed_batches,
+        needs_review_batches: needsReview,
         analyzed_article_count: latest.run.analyzed_article_count,
         full_corpus_gate: fullCorpusGate
       }

@@ -1,9 +1,9 @@
-import { ChatPanelModelOptionsPatch } from '@/components/ChatPanelModelOptionsPatch';
+import { ChatPanelShell } from '@/components/ChatPanelShell';
 
 export default function ChatPage() {
   return (
     <div className="space-y-4">
-      <ChatPanelModelOptionsPatch />
+      <ChatPanelShell />
     </div>
   );
 }

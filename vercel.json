@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "mj-insight-vault-mvp/mj-insight-vault/package.json",
+      "use": "@vercel/next"
+    }
+  ]
+}

@@ -2,9 +2,8 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useApi } from '@/components/DataHooks';
-import { useAppPassword } from '@/components/PasswordGate';
 
 type Report = {
   id: string;
@@ -20,398 +19,117 @@ type Article = {
   headline: string | null;
   article_date: string | null;
   ocr_text: string | null;
-  status: string | null;
-  created_at: string;
 };
 
-type ConversationTurn = {
-  role: 'user' | 'assistant';
-  content: string;
-};
+function asText(value: unknown) {
+  return value === undefined || value === null ? '' : String(value);
+}
 
-type ReportChatAnswer = {
-  answer_text?: string;
-  suggested_next_angles?: string[];
-  referenced_articles?: { article_id?: string; headline?: string; reason?: string }[];
-  model_used?: string;
-  [key: string]: unknown;
-};
+function formatTokyo(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(date);
+}
 
-const modelOptions = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] as const;
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const textTokenPattern = /(\[[^\]]+\]\([^)]+\)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
-const markdownLinkPattern = /^\[([^\]]+)\]\(([^)]+)\)$/;
-const INTERNAL_PROMPT_MARKERS = ['【レポート要件】', '最重要: answer_text', 'JSONでは coverage_diagnosis', '根拠記事IDのない重要主張は禁止'];
+function cutAtFirst(value: string, markers: string[]) {
+  const indexes = markers.map((marker) => value.indexOf(marker)).filter((index) => index >= 0);
+  return indexes.length ? value.slice(0, Math.min(...indexes)) : value;
+}
 
-type ModelName = typeof modelOptions[number];
+function cleanDisplayText(value: unknown) {
+  let text = asText(value);
+  text = cutAtFirst(text, [
+    '【レポート要件】',
+    '[レポート要件]',
+    'レポート要件',
+    '最重要:',
+    'coverage_diagnosis',
+    'source_coverage',
+    'explanatory_hypotheses',
+    'hypothesis_comparison',
+    'research_needs',
+    'evidence_matrix',
+    '必ず以下を出してください',
+    '根拠記事IDのない重要主張は禁止'
+  ]);
+  return text
+    .replace(/^\s*全記事を対象に、全データを広域スキャンしたうえで分析してください。[\s　]*/g, '')
+    .replace(/^\s*MJ記事群から生活者動向を読み、説明仮説・根拠・調査が必要そうな論点を抽出します。[\s　]*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
-function stripInternalPrompt(value: string | null | undefined) {
-  let text = value || '';
-  for (const marker of INTERNAL_PROMPT_MARKERS) {
-    const index = text.indexOf(marker);
-    if (index >= 0) text = text.slice(0, index);
+function getAnswer(report: Report) {
+  const json = report.answer_json || {};
+  const candidates = [json.answer_text, json.summary, report.answer_text];
+  for (const candidate of candidates) {
+    const cleaned = cleanDisplayText(candidate);
+    if (cleaned) return cleaned;
   }
-  return text.replace(/^\s*全記事を対象に、全データを広域スキャンしたうえで分析してください。[\s　]*/g, '').replace(/\s+/g, ' ').trim();
+  return '表示できるレポート本文がありません。';
 }
 
-function getAnswerText(answer: ReportChatAnswer) {
-  return typeof answer.answer_text === 'string' ? answer.answer_text : JSON.stringify(answer, null, 2);
+function getTitle(report: Report) {
+  const json = report.answer_json || {};
+  const title = cleanDisplayText(json.report_title);
+  if (title) return title.replace(/\s+/g, ' ').trim();
+  const query = cleanDisplayText(report.user_query).replace(/\s+/g, ' ').trim();
+  return query || '分析レポート';
 }
 
-function getInitialAnswer(report: Report) {
-  if (report.answer_text) return report.answer_text;
-  const answer = report.answer_json || {};
-  if (typeof answer.answer_text === 'string') return answer.answer_text;
-  if (typeof answer.summary === 'string') return answer.summary;
-  return JSON.stringify(answer, null, 2);
-}
-
-function getReportTitle(report: Report) {
-  const title = report.answer_json?.report_title;
-  if (typeof title === 'string' && stripInternalPrompt(title)) return stripInternalPrompt(title);
-  return stripInternalPrompt(report.user_query) || '分析レポート';
-}
-
-function getPinned(report: Report) {
-  return Boolean(report.answer_json?.pinned);
-}
-
-function articleLabel(article: Article) {
-  return `${article.headline || '無題の記事'}｜${article.article_date || '日付不明'}`;
-}
-
-function articleHref(articleId: string) {
-  return `/articles/${articleId}`;
-}
-
-function normalizeInternalHref(href: string) {
-  if (href.startsWith('/articles/')) return href;
-  try {
-    const url = new URL(href);
-    return url.pathname.startsWith('/articles/') ? url.pathname : '';
-  } catch {
-    return '';
-  }
-}
-
-function MarkdownText({ text, articles, className }: { text: string; articles: Article[]; className?: string }) {
-  const articleMap = useMemo(() => new Map(articles.map((article) => [article.id, article])), [articles]);
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
-
-  for (const match of text.matchAll(textTokenPattern)) {
-    const token = match[0];
-    const index = match.index || 0;
-    if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
-
-    const markdownLink = token.match(markdownLinkPattern);
-    if (markdownLink) {
-      const label = markdownLink[1];
-      const href = normalizeInternalHref(markdownLink[2]);
-      if (href) {
-        nodes.push(
-          <Link key={`${index}-${token}`} href={href} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">
-            {label}
-          </Link>
-        );
-      } else {
-        nodes.push(label);
-      }
-    } else if (uuidPattern.test(token)) {
-      const article = articleMap.get(token);
-      if (article) {
-        nodes.push(
-          <Link key={`${index}-${token}`} href={articleHref(article.id)} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">
-            {articleLabel(article)}
-          </Link>
-        );
-      } else {
-        nodes.push(token);
-      }
-    } else {
-      nodes.push(token);
-    }
-
-    lastIndex = index + token.length;
-  }
-
-  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
-
-  return <div className={className}>{nodes}</div>;
-}
-
-function buildMarkdown(report: Report, articles: Article[], latestAnswer: ReportChatAnswer | null) {
-  const title = getReportTitle(report);
-  const initialAnswer = getInitialAnswer(report);
-  const lines = [
-    `# ${title}`,
-    '',
-    `- 作成日: ${new Date(report.created_at).toLocaleString('ja-JP')}`,
-    `- 指示: ${stripInternalPrompt(report.user_query) || '分析指示未保存'}`,
-    '',
-    '## 分析レポート',
-    '',
-    initialAnswer,
-    ''
-  ];
-
-  if (latestAnswer) {
-    lines.push('## 追加回答', '', getAnswerText(latestAnswer), '');
-  }
-
-  lines.push('## 根拠記事', '');
-
-  if (!articles.length) {
-    lines.push('- 根拠記事なし');
-  } else {
-    for (const article of articles) {
-      lines.push(`- [${articleLabel(article)}](${articleHref(article.id)})`);
-    }
-  }
-
-  return lines.join('\n');
+function getQuery(report: Report) {
+  return cleanDisplayText(report.user_query).replace(/\s+/g, ' ').trim() || '分析指示未保存';
 }
 
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
-  const password = useAppPassword();
   const { data, error, loading } = useApi<{ report: Report; related_articles: Article[] }>(`/api/reports/${params.id}`);
-
-  const [query, setQuery] = useState('');
-  const [model, setModel] = useState<ModelName>('gpt-4.1');
-  const [busy, setBusy] = useState(false);
-  const [metaBusy, setMetaBusy] = useState(false);
-  const [conversation, setConversation] = useState<ConversationTurn[]>([]);
-  const [latestAnswer, setLatestAnswer] = useState<ReportChatAnswer | null>(null);
-  const [raw, setRaw] = useState('');
-  const [title, setTitle] = useState('');
-  const [pinned, setPinned] = useState(false);
-
   const report = data?.report;
   const articles = useMemo(() => data?.related_articles || [], [data?.related_articles]);
-
-  useEffect(() => {
-    if (!report) return;
-    setTitle(getReportTitle(report));
-    setPinned(getPinned(report));
-  }, [report]);
-
-  async function saveMetadata(nextPinned = pinned) {
-    if (!report) return;
-
-    setMetaBusy(true);
-
-    try {
-      const res = await fetch(`/api/reports/${params.id}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json', 'x-app-password': password },
-        body: JSON.stringify({ report_title: title, pinned: nextPinned })
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'レポート設定の保存に失敗しました');
-
-      setPinned(Boolean(json.report?.answer_json?.pinned));
-      alert('保存しました');
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'レポート設定の保存に失敗しました');
-    } finally {
-      setMetaBusy(false);
-    }
-  }
-
-  async function togglePinned() {
-    const next = !pinned;
-    setPinned(next);
-    await saveMetadata(next);
-  }
-
-  async function copyMarkdown() {
-    if (!report) return;
-
-    try {
-      await navigator.clipboard.writeText(buildMarkdown(report, articles, latestAnswer));
-      alert('Markdownをコピーしました');
-    } catch {
-      alert('コピーに失敗しました。ブラウザの権限を確認してください。');
-    }
-  }
-
-  async function send(q = query) {
-    const trimmed = q.trim();
-    if (!trimmed) return;
-
-    setBusy(true);
-    setRaw('');
-
-    const userTurn: ConversationTurn = { role: 'user', content: trimmed };
-    const nextConversation: ConversationTurn[] = [...conversation, userTurn];
-
-    try {
-      const res = await fetch(`/api/reports/${params.id}/chat`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-app-password': password
-        },
-        body: JSON.stringify({
-          query: trimmed,
-          model,
-          conversation
-        })
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'レポートチャットに失敗しました');
-
-      const answer = json.answer as ReportChatAnswer;
-      const answerText = getAnswerText(answer);
-      const assistantTurn: ConversationTurn = { role: 'assistant', content: answerText };
-
-      setLatestAnswer(answer);
-      setRaw(JSON.stringify(json, null, 2));
-      setConversation([...nextConversation, assistantTurn].slice(-12));
-      setQuery('');
-    } catch (error) {
-      setRaw(error instanceof Error ? error.message : 'エラーが発生しました');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function resetChat() {
-    setConversation([]);
-    setLatestAnswer(null);
-    setRaw('');
-    setQuery('');
-  }
 
   if (loading) return <div className="card p-5">読み込み中</div>;
   if (error) return <div className="card p-5 text-red-600">{error}</div>;
   if (!report) return <div className="card p-5 text-red-600">レポートがありません</div>;
 
-  const cleanQuery = stripInternalPrompt(report.user_query) || '分析指示未保存';
-  const suggestedQuestions = [
-    'この分析の本質仮説をもっと尖らせて',
-    'リサーチ課題に落とすとどうなる？',
-    'N1探索で聞くべき質問を出して',
-    '提案書の見出し案にして',
-    '見落としている生活者変化を追加して',
-    '根拠記事ごとに使い道を整理して'
-  ];
+  const answer = getAnswer(report);
+  const title = getTitle(report);
+  const query = getQuery(report);
 
   return (
     <div className="space-y-5">
       <div className="card p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="flex-1">
-            <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {pinned && <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">Pinned</span>}
-              <h1 className="text-xl font-black">分析レポート</h1>
-            </div>
-            <p className="mt-2 text-sm leading-6 text-zinc-600">指示: {cleanQuery}</p>
+          <div>
+            <p className="text-xs text-zinc-500">{formatTokyo(report.created_at)}</p>
+            <h1 className="mt-2 text-xl font-black">{title}</h1>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">指示: {query}</p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button className="btn" onClick={copyMarkdown}>Markdownコピー</button>
-            <Link className="btn" href="/reports">分析履歴へ戻る</Link>
-          </div>
+          <Link className="btn" href="/reports">分析履歴へ戻る</Link>
         </div>
       </div>
 
       <section className="card p-5">
         <h2 className="font-bold">分析レポート本文</h2>
-        <MarkdownText text={getInitialAnswer(report)} articles={articles} className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700" />
+        <div className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700">{answer}</div>
       </section>
 
       <details className="card p-5">
         <summary className="cursor-pointer font-bold">レポート設定・元指示</summary>
-        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto_auto]">
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="レポート名" disabled={metaBusy} />
-          <button className="btn" onClick={() => saveMetadata()} disabled={metaBusy}>名前保存</button>
-          <button className={pinned ? 'btn btn-primary' : 'btn'} onClick={togglePinned} disabled={metaBusy}>{pinned ? 'ピン解除' : 'ピン留め'}</button>
-        </div>
-        <p className="mt-4 rounded-xl bg-zinc-50 p-3 text-sm leading-7">{cleanQuery}</p>
+        <p className="mt-4 rounded-xl bg-zinc-50 p-3 text-sm leading-7">{query}</p>
       </details>
 
       <section className="card p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="font-bold">MJ記事エージェントに追加質問</h2>
-            <p className="mt-1 text-sm leading-6 text-zinc-600">
-              結果への質問、分析観点の追加、仮説の再整理、リサーチ設計への変換ができます。
-            </p>
-          </div>
-          <button className="btn" onClick={resetChat} disabled={busy}>会話リセット</button>
-        </div>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-[240px_1fr]">
-          <label className="block">
-            <span className="text-sm font-bold text-zinc-700">APIモデル</span>
-            <select className="input mt-2" value={model} onChange={(e) => setModel(e.target.value as ModelName)} disabled={busy}>
-              {modelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </label>
-
-          <div>
-            <span className="text-sm font-bold text-zinc-700">よく使う追加指示</span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {suggestedQuestions.map((q) => (
-                <button key={q} className="btn" onClick={() => send(q)} disabled={busy}>{q}</button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {conversation.length > 0 && (
-          <div className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-            {conversation.map((turn, index) => (
-              <div key={index} className="text-sm leading-6">
-                <b>{turn.role === 'user' ? 'あなた' : 'MJ記事エージェント'}：</b>
-                <MarkdownText text={turn.content} articles={articles} className="inline whitespace-pre-wrap" />
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="mt-4 flex gap-2">
-          <input
-            className="input"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="このレポートについて追加で聞く"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) send();
-            }}
-          />
-          <button className="btn btn-primary" onClick={() => send()} disabled={busy || !query.trim()}>
-            {busy ? '分析中' : '送信'}
-          </button>
-        </div>
-      </section>
-
-      {latestAnswer && (
-        <section className="card p-5">
-          <h2 className="font-bold">追加回答</h2>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs">
-            {latestAnswer.model_used && <span className="badge">model: {latestAnswer.model_used}</span>}
-          </div>
-          <MarkdownText text={getAnswerText(latestAnswer)} articles={articles} className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700" />
-
-          {Array.isArray(latestAnswer.suggested_next_angles) && latestAnswer.suggested_next_angles.length > 0 && (
-            <div className="mt-4">
-              <h3 className="font-bold">次に掘る観点</h3>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-700">
-                {latestAnswer.suggested_next_angles.map((angle, index) => <li key={index}>{angle}</li>)}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
-
-      <section className="card p-5">
         <h2 className="font-bold">根拠記事</h2>
-        <p className="mt-1 text-sm text-zinc-500">保存されている根拠記事リストです。全件の場合は件数が多くなります。</p>
+        <p className="mt-1 text-sm text-zinc-500">保存されている根拠記事リストです。</p>
         <div className="mt-3 grid gap-3">
           {articles.length === 0 && <p className="text-sm text-zinc-500">根拠記事は保存されていません。</p>}
           {articles.map((article) => (
@@ -419,26 +137,17 @@ export default function ReportDetailPage() {
               <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Link href={articleHref(article.id)} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">
-                      {article.headline || '無題の記事'}
-                    </Link>
+                    <Link href={`/articles/${article.id}`} className="font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900">{article.headline || '無題の記事'}</Link>
                     <span className="badge">{article.article_date || '日付不明'}</span>
                   </div>
                   <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-600">{article.ocr_text}</p>
                 </div>
-                <Link className="btn shrink-0" href={articleHref(article.id)}>記事詳細</Link>
+                <Link className="btn shrink-0" href={`/articles/${article.id}`}>記事詳細</Link>
               </div>
             </div>
           ))}
         </div>
       </section>
-
-      {raw && (
-        <details className="card p-5">
-          <summary className="cursor-pointer font-bold">JSON出力</summary>
-          <pre className="mt-3 whitespace-pre-wrap text-xs leading-6">{raw}</pre>
-        </details>
-      )}
     </div>
   );
 }

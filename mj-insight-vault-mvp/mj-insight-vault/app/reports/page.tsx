@@ -22,6 +22,21 @@ const INTERNAL_PROMPT_MARKERS = [
   '根拠記事IDのない重要主張は禁止'
 ];
 
+function formatTokyo(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(date);
+}
+
 function stripInternalPrompt(value: string | null | undefined) {
   let text = value || '';
   for (const marker of INTERNAL_PROMPT_MARKERS) {
@@ -140,7 +155,7 @@ export default function ReportsPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   {isPinned(report) && <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">Pinned</span>}
                   {parentReportId && <span className="badge">深掘り</span>}
-                  <p className="text-xs text-zinc-500">{new Date(report.created_at).toLocaleString('ja-JP')}</p>
+                  <p className="text-xs text-zinc-500">{formatTokyo(report.created_at)}</p>
                 </div>
                 <h2 className="mt-2 font-bold">{reportTitle(report)}</h2>
                 <p className="mt-1 line-clamp-2 text-sm text-zinc-500">指示: {visibleQuery(report)}</p>

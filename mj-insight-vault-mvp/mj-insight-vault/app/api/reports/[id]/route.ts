@@ -10,11 +10,35 @@ function mergeAnswerJson(current: unknown, patch: Record<string, unknown>) {
   return { ...base, ...patch };
 }
 
+function articleIdsFromAnswer(answer: unknown) {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return [] as string[];
+  const a = answer as Record<string, unknown>;
+  const ids = new Set<string>();
+  for (const key of ['selected_article_ids', 'evidence_article_ids']) {
+    const value = a[key];
+    if (Array.isArray(value)) value.forEach((id) => { if (typeof id === 'string') ids.add(id); });
+  }
+  for (const key of ['evidence_matrix', 'article_lookup']) {
+    const value = a[key];
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        const id = (item as Record<string, unknown>).article_id || (item as Record<string, unknown>).id;
+        if (typeof id === 'string') ids.add(id);
+      }
+    }
+  }
+  return Array.from(ids);
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
 
     const { id } = await params;
+    const url = new URL(req.url);
+    const includeOcr = url.searchParams.get('include_ocr') === '1';
+    const limit = Math.max(0, Math.min(200, Number(url.searchParams.get('related_limit') || 80)));
 
     const { data: report, error } = await supabaseAdmin
       .from('chat_reports')
@@ -25,21 +49,35 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (error) throw error;
 
     let related_articles: unknown[] = [];
-    const articleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
+    const rootIds = Array.isArray(report.related_article_ids) ? report.related_article_ids as string[] : [];
+    const priorityIds = articleIdsFromAnswer(report.answer_json);
+    const orderedIds = Array.from(new Set([...priorityIds, ...rootIds])).slice(0, limit);
 
-    if (articleIds.length > 0) {
+    if (orderedIds.length > 0) {
+      const columns = includeOcr
+        ? 'id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)'
+        : 'id, headline, article_date, status, created_at, article_tags(tag_type, tag_name)';
       const { data: articles, error: articleError } = await supabaseAdmin
         .from('articles')
-        .select('id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)')
-        .in('id', articleIds);
+        .select(columns)
+        .in('id', orderedIds);
 
       if (articleError) throw articleError;
 
       const byId = new Map((articles || []).map((article) => [article.id, article]));
-      related_articles = articleIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
+      related_articles = orderedIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
     }
 
-    return Response.json({ report, related_articles });
+    return Response.json({
+      report,
+      related_articles,
+      related_articles_meta: {
+        total_related_ids: rootIds.length,
+        returned: related_articles.length,
+        include_ocr: includeOcr,
+        limit
+      }
+    });
   } catch (error) {
     return jsonError(error);
   }

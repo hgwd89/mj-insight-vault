@@ -83,8 +83,23 @@ function compactArticle(article: WideArticle, index: number) {
     article_id: article.id,
     headline: article.headline || '無題の記事',
     article_date: article.article_date || '日付不明',
-    text: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 3500)
+    text: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 6000)
   };
+}
+
+async function fetchScopedArticles(scopeType: string, scopeQuery: string) {
+  const all = await fetchAllWideArticles();
+  if (scopeType !== 'category' || !scopeQuery) return all;
+
+  const { data, error } = await supabaseAdmin
+    .from('article_category_memberships')
+    .select('article_id')
+    .eq('category_id', scopeQuery);
+  if (error) throw error;
+  const ids = new Set((data || []).map((row) => text(row.article_id)).filter(Boolean));
+  if (ids.size > 0) return all.filter((article) => ids.has(article.id));
+
+  return all.filter((article) => matchesScope(article, scopeType, scopeQuery));
 }
 
 function fallbackBatchSummary(articles: WideArticle[], reason: string) {
@@ -158,11 +173,7 @@ function validateBatchSummary(summary: JsonRecord, articleIds: string[]) {
   if (!hasEvidence) failures.push('evidence is empty');
   if (!hasNarrativeOrSignal) failures.push('consumer_narratives / behavior_signals / weak_signals are all empty');
 
-  return {
-    passed: failures.length === 0,
-    failures,
-    missing_read_article_ids: missingReadIds
-  };
+  return { passed: failures.length === 0, failures, missing_read_article_ids: missingReadIds };
 }
 
 async function analyzeBatch(articles: WideArticle[], model: string, scopeType: string, scopeQuery: string) {
@@ -198,8 +209,7 @@ async function analyzeBatch(articles: WideArticle[], model: string, scopeType: s
         { role: 'user', content: JSON.stringify(payload) }
       ]
     });
-    const content = completion.choices[0]?.message.content || '{}';
-    const parsed = safeJson(content);
+    const parsed = safeJson(completion.choices[0]?.message.content || '{}');
     parsed.scan_type = 'full_corpus_batch';
     parsed.prompt_version = 'full_corpus_batch_v1';
     parsed.model_used = model;
@@ -217,8 +227,7 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
   const model = text(input.model) || process.env.OPENAI_SCAN_MODEL || 'gpt-4o-mini';
   const batchSize = Math.max(5, Math.min(50, Math.round(Number(input.batch_size || 30))));
 
-  const all = await fetchAllWideArticles();
-  const scoped = all.filter((article) => matchesScope(article, scopeType, scopeQuery));
+  const scoped = await fetchScopedArticles(scopeType, scopeQuery);
   const ocrReady = scoped.filter((article) => text(article.ocr_text));
   const batches = chunk(ocrReady, batchSize);
 
@@ -305,9 +314,31 @@ export async function getLatestFullCorpusScanRun(scopeType = 'all', scopeQuery =
   return data as ScanRun | null;
 }
 
+function compactSummary(summary: unknown) {
+  if (!isRecord(summary)) return summary;
+  return {
+    article_count: summary.article_count,
+    read_article_ids: Array.isArray(summary.read_article_ids) ? summary.read_article_ids.slice(0, 40) : [],
+    consumer_narratives: Array.isArray(summary.consumer_narratives) ? summary.consumer_narratives.slice(0, 8) : [],
+    behavior_signals: Array.isArray(summary.behavior_signals) ? summary.behavior_signals.slice(0, 8) : [],
+    constraints: Array.isArray(summary.constraints) ? summary.constraints.slice(0, 6) : [],
+    contradictions: Array.isArray(summary.contradictions) ? summary.contradictions.slice(0, 6) : [],
+    category_signals: Array.isArray(summary.category_signals) ? summary.category_signals.slice(0, 6) : [],
+    weak_signals: Array.isArray(summary.weak_signals) ? summary.weak_signals.slice(0, 6) : [],
+    research_needs: Array.isArray(summary.research_needs) ? summary.research_needs.slice(0, 6) : [],
+    evidence: Array.isArray(summary.evidence) ? summary.evidence.slice(0, 10) : []
+  };
+}
+
 export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
   const run = await getLatestFullCorpusScanRun(scopeType, scopeQuery);
   if (!run) return { run: null, context_text: '', full_corpus_gate: 'failed', reason: 'no_full_corpus_scan_run' };
+
+  const { data: gateData } = await supabaseAdmin
+    .from('corpus_scan_gate_view')
+    .select('full_corpus_gate, gate_reason, current_article_count, current_article_count_diff')
+    .eq('id', run.id)
+    .maybeSingle();
 
   const { data: batches, error } = await supabaseAdmin
     .from('full_corpus_scan_batches')
@@ -317,29 +348,31 @@ export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
   if (error) throw error;
 
   const completed = (batches || []).filter((batch) => batch.status === 'completed');
-  const fullCorpusPassed = run.status === 'completed'
-    && run.completed_batches === run.total_batches
-    && Number(run.needs_review_batches || 0) === 0
-    && run.failed_batches === 0
-    && run.analyzed_article_count === run.ocr_ready_article_count;
+  const gate = text(gateData?.full_corpus_gate) || 'failed';
 
   const context = completed.map((batch) => ({
     batch_index: batch.batch_index,
     article_count: batch.article_count,
-    summary: batch.summary_json
+    summary: compactSummary(batch.summary_json)
   }));
 
   return {
     run,
     batches: batches || [],
     completed_batches: completed.length,
-    full_corpus_gate: fullCorpusPassed ? 'passed' : 'failed',
+    full_corpus_gate: gate,
+    gate_reason: text(gateData?.gate_reason),
+    current_article_count: Number(gateData?.current_article_count || run.active_article_count),
+    current_article_count_diff: Number(gateData?.current_article_count_diff || 0),
     context_text: JSON.stringify({
-      full_corpus_gate: fullCorpusPassed ? 'passed' : 'failed',
+      full_corpus_gate: gate,
+      gate_reason: text(gateData?.gate_reason),
       run_id: run.id,
       scope_type: run.scope_type,
       scope_query: run.scope_query,
       active_article_count: run.active_article_count,
+      current_article_count: Number(gateData?.current_article_count || run.active_article_count),
+      current_article_count_diff: Number(gateData?.current_article_count_diff || 0),
       ocr_ready_article_count: run.ocr_ready_article_count,
       analyzed_article_count: run.analyzed_article_count,
       total_batches: run.total_batches,
@@ -352,6 +385,15 @@ export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
 }
 
 export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
+  const { data: gateData } = await supabaseAdmin
+    .from('corpus_scan_gate_view')
+    .select('gate_reason, current_article_count_diff')
+    .eq('id', id)
+    .maybeSingle();
+  if (gateData?.gate_reason === 'run_stale_article_count_mismatch') {
+    throw new Error(`run is stale; rebuild required. current_article_count_diff=${gateData.current_article_count_diff}`);
+  }
+
   const { data: run, error } = await supabaseAdmin
     .from('full_corpus_scan_runs')
     .select('*')

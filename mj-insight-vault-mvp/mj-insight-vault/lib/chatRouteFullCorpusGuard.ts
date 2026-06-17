@@ -12,25 +12,17 @@ type Scope = { scopeType: 'all' | 'category'; scopeQuery: string; categoryName?:
 function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
 function isRecord(value: unknown): value is JsonRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 function num(run: JsonRecord, key: string) { return Number(run[key] || 0); }
-
-function requestedCategory(body: JsonRecord) {
-  return text(body.category_id || body.analysis_category_id || body.category);
-}
+function requestedCategory(body: JsonRecord) { return text(body.category_id || body.analysis_category_id || body.category); }
 
 async function inferCategoryFromQuery(query: string) {
-  const { data, error } = await supabaseAdmin
-    .from('analysis_categories')
-    .select('id, name_ja, keywords')
-    .eq('is_active', true);
+  const { data, error } = await supabaseAdmin.from('analysis_categories').select('id, name_ja, keywords').eq('is_active', true);
   if (error) return null;
   const q = query.toLowerCase();
   for (const row of data || []) {
     const id = text(row.id);
     const name = text(row.name_ja);
     const keywords = Array.isArray(row.keywords) ? row.keywords.map(text) : [];
-    if (q.includes(id.toLowerCase()) || (name && query.includes(name)) || keywords.some((kw) => kw && q.includes(kw.toLowerCase()))) {
-      return { id, name };
-    }
+    if (q.includes(id.toLowerCase()) || (name && query.includes(name)) || keywords.some((kw) => kw && q.includes(kw.toLowerCase()))) return { id, name };
   }
   return null;
 }
@@ -70,8 +62,20 @@ function passed(context: CorpusContext) {
 function corpusMessage(context: CorpusContext, scope: Scope) {
   const contextText = text(context.context_text);
   if (!contextText) return [];
-  const label = scope.scopeType === 'category' ? `CATEGORY_FULL_CORPUS_BATCH_ANALYSIS_PRIMARY:${scope.scopeQuery}` : 'FULL_CORPUS_BATCH_ANALYSIS_PRIMARY';
-  return [{ role: 'user', content: [`【${label}】`, contextText].join('\n') }];
+  if (scope.scopeType === 'category') {
+    return [{ role: 'user', content: [
+      `【CATEGORY_FULL_CORPUS_BATCH_ANALYSIS_PRIMARY:${scope.scopeQuery}】`,
+      'このカテゴリ本文読解結果を一次入力にしてください。代表記事検索や月別rollupより優先してください。',
+      'カテゴリ外の記事は、比較・反証目的以外では主要根拠に使わないでください。',
+      contextText
+    ].join('\n') }];
+  }
+  return [{ role: 'user', content: ['【FULL_CORPUS_BATCH_ANALYSIS_PRIMARY】', contextText].join('\n') }];
+}
+
+function categoryQuery(query: string, scope: Scope) {
+  if (scope.scopeType !== 'category') return query;
+  return [query, `対象カテゴリID: ${scope.scopeQuery}`, scope.categoryName ? `対象カテゴリ名: ${scope.categoryName}` : '', 'このカテゴリの生活者ナラティブとインサイトに限定して分析してください。'].filter(Boolean).join('\n');
 }
 
 async function diagnostic(query: string, body: JsonRecord, context: CorpusContext, scope: Scope) {
@@ -118,9 +122,7 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
       `- 要レビューBatch: ${num(run, 'needs_review_batches')}`,
       '',
       '## 3. 必要な対応',
-      scope.scopeType === 'category'
-        ? `カテゴリ ${scope.scopeQuery} のrunを /api/corpus-scans/progress で完了させてください。`
-        : '/api/corpus-scans/progress で全体runを完了させてください。'
+      scope.scopeType === 'category' ? `カテゴリ ${scope.scopeQuery} のrunを /api/corpus-scans/progress で完了させてください。` : '/api/corpus-scans/progress で全体runを完了させてください。'
     ].join('\n')
   };
   let report = null;
@@ -147,7 +149,16 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     return result;
   }
   const conversation = Array.isArray(body.conversation) ? body.conversation : [];
-  const result = await runBaseChatAnalysis({ ...body, target_scope: scope.scopeType, category_id: scope.scopeQuery, conversation: [...conversation, ...corpusMessage(context, scope)], full_corpus_gate: 'passed' }, onProgress) as JsonRecord;
+  const routedBody = {
+    ...body,
+    query: categoryQuery(query, scope),
+    target_scope: 'all',
+    category_id: scope.scopeQuery,
+    analysis_scope_type: scope.scopeType,
+    conversation: [...conversation, ...corpusMessage(context, scope)],
+    full_corpus_gate: 'passed'
+  };
+  const result = await runBaseChatAnalysis(routedBody, onProgress) as JsonRecord;
   if (isRecord(result.answer)) {
     const run = isRecord(context.run) ? context.run : {};
     result.answer.full_corpus_gate = 'passed';

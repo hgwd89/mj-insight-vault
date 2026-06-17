@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
+type ArticleRow = { id: string; [key: string]: unknown };
+
 function mergeAnswerJson(current: unknown, patch: Record<string, unknown>) {
   const base = current && typeof current === 'object' && !Array.isArray(current)
     ? current as Record<string, unknown>
@@ -23,7 +25,8 @@ function articleIdsFromAnswer(answer: unknown) {
     if (!Array.isArray(value)) continue;
     for (const item of value) {
       if (item && typeof item === 'object' && !Array.isArray(item)) {
-        const id = (item as Record<string, unknown>).article_id || (item as Record<string, unknown>).id;
+        const record = item as Record<string, unknown>;
+        const id = record.article_id || record.id;
         if (typeof id === 'string') ids.add(id);
       }
     }
@@ -47,10 +50,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       .single();
 
     if (error) throw error;
+    if (!report) return Response.json({ error: 'report not found' }, { status: 404 });
 
-    let related_articles: unknown[] = [];
-    const rootIds = Array.isArray(report.related_article_ids) ? report.related_article_ids as string[] : [];
-    const priorityIds = articleIdsFromAnswer(report.answer_json);
+    let related_articles: ArticleRow[] = [];
+    const reportRecord = report as Record<string, unknown>;
+    const rootIds = Array.isArray(reportRecord.related_article_ids) ? reportRecord.related_article_ids.filter((value): value is string => typeof value === 'string') : [];
+    const priorityIds = articleIdsFromAnswer(reportRecord.answer_json);
     const orderedIds = Array.from(new Set([...priorityIds, ...rootIds])).slice(0, limit);
 
     if (orderedIds.length > 0) {
@@ -64,8 +69,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
       if (articleError) throw articleError;
 
-      const byId = new Map((articles || []).map((article) => [article.id, article]));
-      related_articles = orderedIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
+      const rows = (articles || []) as ArticleRow[];
+      const byId = new Map(rows.map((article) => [article.id, article]));
+      related_articles = orderedIds.map((articleId: string) => byId.get(articleId)).filter((article): article is ArticleRow => Boolean(article));
     }
 
     return Response.json({
@@ -97,7 +103,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       .single();
 
     if (currentError) throw currentError;
+    if (!currentReport) return Response.json({ error: 'report not found' }, { status: 404 });
 
+    const currentRecord = currentReport as Record<string, unknown>;
     const metadataPatch: Record<string, unknown> = {};
 
     if ('report_title' in body) metadataPatch.report_title = String(body.report_title || '').trim();
@@ -110,7 +118,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       metadataPatch.hidden_at = body.hidden ? new Date().toISOString() : null;
     }
 
-    const answerJson = mergeAnswerJson(currentReport.answer_json, metadataPatch);
+    const answerJson = mergeAnswerJson(currentRecord.answer_json, metadataPatch);
 
     const { data: report, error } = await supabaseAdmin
       .from('chat_reports')
@@ -140,8 +148,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       .single();
 
     if (currentError) throw currentError;
+    if (!currentReport) return Response.json({ error: 'report not found' }, { status: 404 });
+    const currentRecord = currentReport as Record<string, unknown>;
 
-    const answerJson = mergeAnswerJson(currentReport.answer_json, {
+    const answerJson = mergeAnswerJson(currentRecord.answer_json, {
       hidden: true,
       hidden_at: new Date().toISOString()
     });

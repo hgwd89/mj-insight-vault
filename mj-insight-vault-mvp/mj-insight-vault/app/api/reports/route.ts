@@ -11,16 +11,19 @@ function isHidden(report: { answer_json?: unknown }) {
 export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
+    const url = new URL(req.url);
+    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 100)));
+    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
 
-    const { data, error } = await supabaseAdmin
+    const { data, error, count } = await supabaseAdmin
       .from('chat_reports')
-      .select('*')
+      .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
-      .limit(200);
+      .range(offset, offset + limit - 1);
 
     if (error) throw error;
-
-    return Response.json({ reports: (data || []).filter((report) => !isHidden(report)).slice(0, 100) });
+    const visible = (data || []).filter((report) => !isHidden(report));
+    return Response.json({ reports: visible, meta: { limit, offset, returned: visible.length, total_estimate: count || 0 } });
   } catch (error) {
     return jsonError(error);
   }

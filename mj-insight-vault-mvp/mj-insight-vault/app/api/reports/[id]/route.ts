@@ -32,17 +32,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const articleIds = allArticleIds.slice(0, limit);
 
     if (articleIds.length > 0) {
-      const columns = includeOcr
-        ? 'id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)'
-        : 'id, headline, article_date, status, created_at, article_tags(tag_type, tag_name)';
-      const { data: articles, error: articleError } = await supabaseAdmin
-        .from('articles')
-        .select(columns)
-        .in('id', articleIds);
+      const result = includeOcr
+        ? await supabaseAdmin
+          .from('articles')
+          .select('id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)')
+          .in('id', articleIds)
+        : await supabaseAdmin
+          .from('articles')
+          .select('id, headline, article_date, status, created_at, article_tags(tag_type, tag_name)')
+          .in('id', articleIds);
 
-      if (articleError) throw articleError;
+      if (result.error) throw result.error;
 
-      const byId = new Map((articles || []).map((article) => [article.id, article]));
+      const byId = new Map((result.data || []).map((article) => [article.id, article]));
       related_articles = articleIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
     }
 

@@ -16,9 +16,17 @@ type Report = {
 
 const INTERNAL_PROMPT_MARKERS = [
   '【レポート要件】',
-  '最重要: answer_text',
+  '[レポート要件]',
+  'レポート要件',
+  '最重要:',
   'answer_text は必須',
-  'JSONでは coverage_diagnosis',
+  'coverage_diagnosis',
+  'source_coverage',
+  'explanatory_hypotheses',
+  'hypothesis_comparison',
+  'research_needs',
+  'evidence_matrix',
+  '必ず以下を出してください',
   '根拠記事IDのない重要主張は禁止'
 ];
 
@@ -37,16 +45,18 @@ function formatTokyo(value: string) {
   }).format(date);
 }
 
-function stripInternalPrompt(value: string | null | undefined) {
-  let text = value || '';
-  for (const marker of INTERNAL_PROMPT_MARKERS) {
-    const index = text.indexOf(marker);
-    if (index >= 0) text = text.slice(0, index);
-  }
-  return text.replace(/\s+/g, ' ').trim();
+function stripInternalPrompt(value: unknown) {
+  let text = value === undefined || value === null ? '' : String(value);
+  const indexes = INTERNAL_PROMPT_MARKERS.map((marker) => text.indexOf(marker)).filter((index) => index >= 0);
+  if (indexes.length) text = text.slice(0, Math.min(...indexes));
+  return text
+    .replace(/^\s*全記事を対象に、全データを広域スキャンしたうえで分析してください。[\s　]*/g, '')
+    .replace(/^\s*MJ記事群から生活者動向を読み、説明仮説・根拠・調査が必要そうな論点を抽出します。[\s　]*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function shortText(value: string | null | undefined, max = 280) {
+function shortText(value: unknown, max = 280) {
   const text = stripInternalPrompt(value);
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }
@@ -55,7 +65,9 @@ function answerPreview(report: Report) {
   const answer = report.answer_json || {};
   const text = typeof answer.answer_text === 'string' && answer.answer_text.trim()
     ? answer.answer_text
-    : report.answer_text || '';
+    : typeof answer.summary === 'string'
+      ? answer.summary
+      : report.answer_text || '';
   return shortText(text);
 }
 
@@ -78,8 +90,9 @@ function isPinned(report: Report) {
 
 function articleCount(report: Report) {
   const answer = report.answer_json || {};
-  const rootCount = Number((answer.source_coverage as Record<string, unknown> | undefined)?.root_article_lookup_count || answer.root_article_lookup_count || 0);
-  if (Number.isFinite(rootCount) && rootCount > 0) return rootCount;
+  const sourceCoverage = answer.source_coverage as Record<string, unknown> | undefined;
+  const fullCorpusCount = Number(sourceCoverage?.full_corpus_analyzed_article_count || answer.full_corpus_analyzed_article_count || 0);
+  if (Number.isFinite(fullCorpusCount) && fullCorpusCount > 0) return fullCorpusCount;
   return report.related_article_ids?.length || 0;
 }
 
@@ -96,18 +109,14 @@ export default function ReportsPage() {
   async function hideReport(reportId: string) {
     const ok = window.confirm('この分析レポートを一覧から削除します。元記事や画像は削除されません。');
     if (!ok) return;
-
     setBusyId(reportId);
     try {
-      const res = await fetch(`/api/reports/${reportId}`, {
-        method: 'DELETE',
-        headers: { 'x-app-password': password }
-      });
+      const res = await fetch(`/api/reports/${reportId}`, { method: 'DELETE', headers: { 'x-app-password': password } });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'レポート削除に失敗しました');
       setReports((prev) => prev.filter((report) => report.id !== reportId));
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'レポート削除に失敗しました');
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'レポート削除に失敗しました');
     } finally {
       setBusyId('');
     }
@@ -128,17 +137,13 @@ export default function ReportsPage() {
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-xl font-black">分析履歴</h1>
-            <p className="mt-2 text-sm leading-6 text-zinc-600">
-              保存された分析レポートです。内部プロンプトは表示せず、レポート本文と実際の指示だけを表示します。
-            </p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">保存された分析レポートです。内部プロンプトは表示しません。</p>
           </div>
           <Link className="btn" href="/chat">新しく分析する</Link>
         </div>
       </div>
 
-      {sortedReports.length === 0 && (
-        <div className="card p-5 text-sm text-zinc-500">分析履歴はありません。</div>
-      )}
+      {sortedReports.length === 0 && <div className="card p-5 text-sm text-zinc-500">分析履歴はありません。</div>}
 
       {sortedReports.map((report) => {
         const answer = report.answer_json || {};
@@ -165,21 +170,10 @@ export default function ReportsPage() {
                   {modelUsed && <span className="badge">model: {modelUsed}</span>}
                   <span className="badge">記事 {articleCount(report)}</span>
                 </div>
-                {preview ? (
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{preview}</p>
-                ) : (
-                  <p className="mt-3 text-sm text-amber-700">本文プレビューがありません。開いて詳細を確認してください。</p>
-                )}
-                <p className="mt-3 text-sm font-semibold text-zinc-900">開いて対話する →</p>
+                {preview ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{preview}</p> : <p className="mt-3 text-sm text-amber-700">本文プレビューがありません。開いて詳細を確認してください。</p>}
+                <p className="mt-3 text-sm font-semibold text-zinc-900">開く →</p>
               </Link>
-
-              <button
-                className="btn shrink-0 border-red-300 text-red-600 hover:bg-red-50"
-                onClick={() => hideReport(report.id)}
-                disabled={busyId === report.id}
-              >
-                {busyId === report.id ? '削除中' : '削除'}
-              </button>
+              <button className="btn shrink-0 border-red-300 text-red-600 hover:bg-red-50" onClick={() => hideReport(report.id)} disabled={busyId === report.id}>{busyId === report.id ? '削除中' : '削除'}</button>
             </div>
           </div>
         );

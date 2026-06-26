@@ -42,7 +42,7 @@ assert(/evidenceFallback/.test(qualityGate), 'Quality gate must backfill evidenc
 assert(/enhanceChatAnalysisResult/.test(no160), 'Direct chat route must run the quality gate.');
 assert(/enhanceChatAnalysisResult/.test(jobRun), 'Chat job route must run the quality gate.');
 
-assert(/MarkdownText/.test(reportPage) && /articleLabel/.test(reportPage), 'Report detail page must render article links readably.');
+assert(/MarkdownArticleText/.test(reportPage) && /articleLabel/.test(markdown), 'Report detail page must render article links readably.');
 assert(/internalArticleHref/.test(markdown), 'Markdown article text renderer must constrain article links to internal article routes.');
 assert(!/OCR照合メモ/.test(prompt), 'Report prompt must not ask reports to include OCR reference memo blocks.');
 

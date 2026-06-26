@@ -3,7 +3,7 @@
   { "input": "2026/05/12", "expected": "2026-05" },
   { "input": "2026-05-12", "expected": "2026-05" },
   { "input": "2026年11月", "expected": "2026-11" },
-  { "input": "不明日付", "expected": "" },
-  { "input": "", "expected": "" },
-  { "input": null, "expected": "" }
+  { "input": "不明日付", "expected": "undated" },
+  { "input": "", "expected": "undated" },
+  { "input": null, "expected": "undated" }
 ]

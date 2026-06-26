@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMemo } from 'react';
 import { useApi } from '@/components/DataHooks';
+import { MarkdownArticleText } from '@/components/MarkdownArticleText';
 
 type Report = {
   id: string;
@@ -119,7 +120,7 @@ export default function ReportDetailPage() {
 
       <section className="card p-5">
         <h2 className="font-bold">分析レポート本文</h2>
-        <div className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700">{answer}</div>
+        <MarkdownArticleText text={answer} articles={articles} className="mt-3 whitespace-pre-wrap rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-700" />
       </section>
 
       <details className="card p-5">

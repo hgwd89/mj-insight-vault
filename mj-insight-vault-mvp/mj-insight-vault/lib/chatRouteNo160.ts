@@ -251,6 +251,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   const coverageComplete = Boolean(monthlyContext?.coverage_complete);
   const finalLimit = monthlyUsed ? 80 : selectedModel === 'gpt-5' ? 44 : 32;
   const finalArticles = await selectEvidenceArticles(query, allArticles, monthlyContext, finalLimit);
+  const responseArticles = finalArticles;
   const rollupArticleCount = monthlyContext?.article_count || 0;
   const activeArticleCount = monthlyContext?.total_article_count || allArticles.length;
   const missingMonths = monthlyContext?.missing_months || [];
@@ -316,7 +317,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
 
   const answerText = typeof parsed.answer_text === 'string' ? parsed.answer_text : JSON.stringify(parsed);
   const answer = { ...base, quality_instructions: qualityInstructions, ...parsed, answer_text: answerText, generation_warning: generationWarning };
-  const enhanced = enhanceChatAnalysisResult({ report: null, report_error: '', related_articles: allArticles, selectable_models: models(), answer }) as ChatResult;
+  const enhanced = enhanceChatAnalysisResult({ report: null, report_error: '', related_articles: responseArticles, selectable_models: models(), answer }) as ChatResult;
   const enhancedAnswer = isRecord(enhanced.answer) ? enhanced.answer : answer;
   let report = null;
   let report_error = '';

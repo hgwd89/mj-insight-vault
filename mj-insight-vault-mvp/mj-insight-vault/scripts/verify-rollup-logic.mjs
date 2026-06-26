@@ -43,9 +43,10 @@ assert(/monthly_rollup_used/.test(chatRouteNo160), 'Chat result must expose mont
 assert(/monthly_rollups/.test(monthlyContext) && /readyRows/.test(monthlyContext), 'Monthly rollup context should use ready rollups.');
 assert(/missing_months/.test(monthlyContext) && /stale_months/.test(monthlyContext) && /failed_months/.test(monthlyContext), 'Monthly rollup context must expose missing/stale/failed months.');
 
-const functionMatch = monthly.match(/export function monthKeyFromDate[\s\S]*?  return '';\r?\n}/);
+const functionMatch = monthly.match(/export function monthKeyFromDate[\s\S]*?  return UNDATED_MONTH_KEY;\r?\n}/);
 assert(functionMatch, 'monthKeyFromDate() source could not be extracted for fixture execution.');
-const executableSource = `${functionMatch[0]
+const executableSource = `const UNDATED_MONTH_KEY = 'undated';
+${functionMatch[0]
   .replace('export function', 'function')
   .replace('(value: unknown)', '(value)')}; monthKeyFromDate;`;
 const monthKeyFromDate = vm.runInNewContext(executableSource);

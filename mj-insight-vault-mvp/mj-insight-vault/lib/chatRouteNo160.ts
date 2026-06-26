@@ -238,6 +238,13 @@ function monthlyPromptMessage(context: MonthlyContext | null): Turn[] {
   return [{ role: 'user', content: ['【MONTHLY_ROLLUP_CONTEXT_PRIMARY】', '以下は全記事を月別に集約した中間レイヤーです。全体分析では、ここを一次情報として必ず横断してください。', '最終投入する個別記事は根拠確認・具体例用であり、分析母集団を個別記事数に限定してはいけません。', `rollup_count: ${context.rollup_count}`, `rollup_source_article_count: ${context.article_count}`, context.context_text].join('\n') }];
 }
 
+function hasUsableReportJson(value: Record<string, unknown>) {
+  const answer = text(value.answer_text);
+  const title = text(value.report_title);
+  if (answer.length >= 120) return true;
+  if (title && answer.length >= 60) return true;
+  return false;
+}
 function buildEmergencyAnswer(query: string, base: Record<string, unknown>, finalArticles: WideArticle[], error: string) {
   const sourceCoverage = isRecord(base.source_coverage) ? base.source_coverage : {};
   const articleLines = finalArticles.slice(0, 16).map((article, index) => `${index + 1}. ${articleLink(article)}\n   ${excerpt(article, 180)}`).join('\n');
@@ -319,6 +326,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
       const completion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, response_format: { type: 'json_object' }, max_completion_tokens: FINAL_MAX_TOKENS, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: compactInput }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
       parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
+      if (!hasUsableReportJson(parsed)) throw new Error('model returned empty report JSON');
     } catch (primaryError) {
       const primaryMessage = primaryError instanceof Error ? primaryError.message : 'final report generation failed';
       const fbModel = fallbackModel(selectedModel);
@@ -328,6 +336,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
         const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 360);
         const completion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: fbModel, response_format: { type: 'json_object' }, max_completion_tokens: FALLBACK_MAX_TOKENS, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count.` }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: fallbackInput }) }] }, { signal }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
         parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
+        if (!hasUsableReportJson(parsed)) throw new Error('fallback model returned empty report JSON');
         generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
       } catch (fallbackError) {
         const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'fallback report generation failed';

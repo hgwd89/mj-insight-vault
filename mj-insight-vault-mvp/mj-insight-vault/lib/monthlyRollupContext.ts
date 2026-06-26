@@ -106,7 +106,7 @@ export async function buildMonthlyRollupContext() {
     const researchNeeds = extractBullets(json, 'research_needs');
     return [
       `## ${row.month_key}（${row.article_count}記事）`,
-      row.summary_text ? row.summary_text.slice(0, 1800) : '',
+      row.summary_text ? row.summary_text.slice(0, 1200) : '',
       themes.length ? `主要テーマ:\n- ${themes.join('\n- ')}` : '',
       weakSignals.length ? `弱い兆し:\n- ${weakSignals.join('\n- ')}` : '',
       researchNeeds.length ? `調査論点:\n- ${researchNeeds.join('\n- ')}` : ''
@@ -117,7 +117,7 @@ export async function buildMonthlyRollupContext() {
     has_rollups: true,
     rollup_count: readyRows.length,
     article_count: readyArticleCount,
-    context_text: sections.join('\n\n').slice(0, 30000),
+    context_text: sections.join('\n\n').slice(0, 18000),
     representative_article_ids: Array.from(representative).slice(0, 80),
     evidence_article_ids: Array.from(evidence).slice(0, 120),
     ...base

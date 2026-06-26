@@ -324,7 +324,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
 
   await progress(onProgress, 94, '分析履歴を保存中');
   try {
-    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: text(enhancedAnswer.answer_text), answer_json: enhancedAnswer, related_article_ids: allArticles.map((article) => article.id) }).select('*').single();
+    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: text(enhancedAnswer.answer_text), answer_json: enhancedAnswer, related_article_ids: finalArticles.map((article) => article.id) }).select('*').single();
     if (saved.error) throw saved.error;
     report = saved.data;
   } catch (error) { report_error = error instanceof Error ? error.message : 'chat_reports insert failed'; }

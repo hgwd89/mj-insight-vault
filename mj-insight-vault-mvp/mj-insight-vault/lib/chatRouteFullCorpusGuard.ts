@@ -128,13 +128,13 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
   let report = null;
   let report_error = '';
   try {
-    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: answer.answer_text, answer_json: answer, related_article_ids: allArticles.map((article) => article.id) }).select('*').single();
+    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: answer.answer_text, answer_json: answer, related_article_ids: [] }).select('*').single();
     if (saved.error) throw saved.error;
     report = saved.data;
   } catch (error) {
     report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
   }
-  return { report, report_error, related_articles: allArticles, selectable_models: [], answer };
+  return { report, report_error, related_articles: [], selectable_models: [], answer };
 }
 
 export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressReporter) {

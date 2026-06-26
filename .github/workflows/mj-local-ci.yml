@@ -1,6 +1,12 @@
 name: MJ Local CI
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mj-insight-vault-mvp/mj-insight-vault/**'
+      - '.github/workflows/mj-local-ci.yml'
   pull_request:
     branches:
       - main

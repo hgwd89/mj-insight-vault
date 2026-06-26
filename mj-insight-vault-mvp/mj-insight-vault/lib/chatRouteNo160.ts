@@ -11,8 +11,8 @@ import { rankArticlesHybrid } from '@/lib/articleSearch';
 
 const ALL_WORDS = /全期間|全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
-const FINAL_TIMEOUT_MS = 105000;
-const FALLBACK_TIMEOUT_MS = 65000;
+const FINAL_TIMEOUT_MS = 85000;
+const FALLBACK_TIMEOUT_MS = 45000;
 
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type Turn = { role: 'user' | 'assistant'; content: string };
@@ -180,10 +180,30 @@ async function selectEvidenceArticles(query: string, articles: WideArticle[], co
   return selected.slice(0, max);
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withAbortTimeout<T>(factory: (signal: AbortSignal) => Promise<T>, ms: number, label: string): Promise<T> {
+  const controller = new AbortController();
+  let settled = false;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then((value) => { clearTimeout(timer); resolve(value); }).catch((error) => { clearTimeout(timer); reject(error); });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+
+    factory(controller.signal)
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
   });
 }
 
@@ -249,7 +269,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   const monthlyContext = await getMonthlyContext();
   const monthlyUsed = Boolean(monthlyContext?.has_rollups && monthlyContext.context_text);
   const coverageComplete = Boolean(monthlyContext?.coverage_complete);
-  const finalLimit = monthlyUsed ? 80 : selectedModel === 'gpt-5' ? 44 : 32;
+  const finalLimit = monthlyUsed ? (selectedModel === 'gpt-5' ? 44 : 32) : selectedModel === 'gpt-5' ? 36 : 24;
   const finalArticles = await selectEvidenceArticles(query, allArticles, monthlyContext, finalLimit);
   const responseArticles = finalArticles;
   const rollupArticleCount = monthlyContext?.article_count || 0;
@@ -279,7 +299,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     article_lookup: finalArticles.map((article) => ({ article_id: article.id, headline: article.headline || '無題の記事', article_date: article.article_date || '日付不明', article_link: articleLink(article), article_url: `/articles/${article.id}`, month_key: monthKey(article) }))
   };
 
-  const compactInput = buildArticleInput(finalArticles, monthlyUsed ? 430 : 900);
+  const compactInput = buildArticleInput(finalArticles, monthlyUsed ? 320 : 720);
   const conversation = [...turns(body.conversation), ...monthlyPromptMessage(monthlyContext)];
   const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit, confidence_rubric, negative_space and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and individual articles as evidence examples. Do not use 直接該当 to describe coverage; separate full-corpus coverage from evidence articles.`;
   const provisionalInstruction = provisional ? '月別rollupに未作成・要更新・失敗・生成中の月がある場合、このレポートは「暫定分析」と明示し、coverage_diagnosisに不足月の状態を残してください。' : '月別rollupは全記事あり月をカバーしています。個別記事数ではなく月別rollupを全体分析の一次入力として扱ってください。「直接該当」ではなく「根拠確認用記事数」と表記してください。';
@@ -295,7 +315,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     await progress(onProgress, 62, monthlyUsed ? '月別まとめと根拠記事を最終入力に準備中' : `根拠候補${finalArticles.length}件を最終入力に準備中`);
     try {
       await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
-      const completion = await withProgressHeartbeat(withTimeout(openai.chat.completions.create({ model: selectedModel, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: compactInput }) }] }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
+      const completion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: compactInput }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
       parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
     } catch (primaryError) {
       const primaryMessage = primaryError instanceof Error ? primaryError.message : 'final report generation failed';
@@ -303,8 +323,8 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       generationWarning = `primary_failed: ${primaryMessage}`;
       try {
         await progress(onProgress, 78, `${fbModel}で軽量統合レポートを生成中`);
-        const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(36, finalArticles.length)), 520);
-        const completion = await withProgressHeartbeat(withTimeout(openai.chat.completions.create({ model: fbModel, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count.` }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: fallbackInput }) }] }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
+        const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 360);
+        const completion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: fbModel, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count.` }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: fallbackInput }) }] }, { signal }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
         parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Record<string, unknown>;
         generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
       } catch (fallbackError) {

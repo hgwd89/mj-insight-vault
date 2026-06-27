@@ -44,6 +44,15 @@ assert(/enhanceChatAnalysisResult/.test(jobRun), 'Chat job route must run the qu
 assert(/reasoning_effort: 'low'/.test(no160), 'GPT-5 report generation must reserve output budget by lowering reasoning effort.');
 assert(/OPENAI_FINAL_FALLBACK_MODEL \|\| 'gpt-4\.1-mini'/.test(no160), 'Report fallback must use a non-reasoning model by default.');
 assert(/reasoning_tokens/.test(no160) && /finish_reason/.test(no160), 'Empty report diagnostics must retain finish reason and reasoning token usage.');
+assert(no160.includes('DEFAULT_WRITER_TIMEOUT_MS = 130000'), 'Writer timeout must default to 130 seconds.');
+assert(no160.includes('MAX_WRITER_TIMEOUT_MS = 135000'), 'Writer timeout must remain capped at 135 seconds.');
+assert(no160.includes('resolveWriterTimeoutMs(process.env.WRITER_TIMEOUT_MS)'), 'Writer timeout must support bounded environment configuration.');
+assert(no160.includes('writer_diagnostics: writerDiagnostics'), 'Reports must persist additive Writer diagnostics in answer_json.');
+assert(no160.includes('evidence_text_characters') && no160.includes('monthly_rollup_context_characters'), 'Writer diagnostics must record bounded input sizes.');
+assert(qualityGate.includes('const answer = isRecord(result.answer) ? { ...result.answer } : {}'), 'Quality gate must preserve additive answer_json fields.');
+assert(no160.includes('Math.min(MAX_WRITER_TIMEOUT_MS'), 'Writer timeout configuration must enforce the upper bound.');
+assert(no160.includes('answer_json: enhancedAnswer'), 'Enhanced answer fields must be persisted to chat_reports.answer_json.');
+assert(no160.includes('elapsed_ms') && no160.includes('user_payload_characters'), 'Writer diagnostics must retain elapsed time and total user payload size.');
 assert(/Monthly rollup vs evidence article discipline/.test(no160), 'Monthly rollup reports must define a strict rollup/evidence role split.');
 assert(/articles_for_citation_and_linking_only/.test(no160), 'Monthly rollup reports must label selected articles as citation-only input.');
 assert(/insight_source: 'monthly_rollup_context_above'/.test(no160), 'Monthly rollup reports must identify rollups as the insight source.');

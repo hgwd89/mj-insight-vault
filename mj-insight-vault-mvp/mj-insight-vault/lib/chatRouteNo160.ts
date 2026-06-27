@@ -12,7 +12,9 @@ import { rankArticlesHybrid } from '@/lib/articleSearch';
 
 const ALL_WORDS = /全期間|全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
-const FINAL_TIMEOUT_MS = 85000;
+const DEFAULT_WRITER_TIMEOUT_MS = 130000;
+const MIN_WRITER_TIMEOUT_MS = 85000;
+const MAX_WRITER_TIMEOUT_MS = 135000;
 const FALLBACK_TIMEOUT_MS = 45000;
 const FINAL_MAX_TOKENS = 8000;
 const FALLBACK_MAX_TOKENS = 4000;
@@ -26,9 +28,33 @@ type ProgressReporter = (update: { progress: number; stage: string }) => void | 
 type Turn = { role: 'user' | 'assistant'; content: string };
 type MonthlyContext = Awaited<ReturnType<typeof buildMonthlyRollupContext>>;
 type ChatResult = { report: unknown; report_error: string; related_articles: WideArticle[]; selectable_models: string[]; answer: Record<string, unknown> };
+type WriterDiagnostics = {
+  schema_version: 1;
+  model: string;
+  timeout_ms: number;
+  outcome: 'pending' | 'completed' | 'failed' | 'not_run';
+  elapsed_ms: number;
+  evidence_article_count: number;
+  evidence_text_characters: number;
+  evidence_payload_characters: number;
+  user_payload_characters: number;
+  system_prompt_characters: number;
+  conversation_characters: number;
+  monthly_rollup_context_characters: number;
+  finish_reason: string | null;
+  completion_tokens: number | null;
+  reasoning_tokens: number | null;
+  error: string | null;
+};
 
 function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
+function resolveWriterTimeoutMs(value: string | undefined) {
+  const configured = Number(value);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_WRITER_TIMEOUT_MS;
+  return Math.min(MAX_WRITER_TIMEOUT_MS, Math.max(MIN_WRITER_TIMEOUT_MS, Math.round(configured)));
+}
+const FINAL_TIMEOUT_MS = resolveWriterTimeoutMs(process.env.WRITER_TIMEOUT_MS);
 function wantsWide(body: Record<string, unknown>) { return text(body.target_scope || 'all') === 'all' || ALL_WORDS.test(text(body.query)); }
 function isBroadAllQuery(query: string) { return ALL_WORDS.test(query) || /全期間|全体|全件|全記事|全データ|すべて|全部/.test(query); }
 function models() { return Array.from(new Set([TEXT_MODEL, ...(process.env.OPENAI_CHAT_MODELS || '').split(',').map((v) => v.trim()).filter(Boolean), ...MODELS].filter(Boolean))); }
@@ -285,6 +311,13 @@ function unusableReportError(label: string, completion: { choices: Array<{ finis
 }
 type ApiCompletion = { choices: Array<{ finish_reason?: string | null; message: { content?: string | null } }>; usage?: { completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } } | null };
 function completionDiag(c: ApiCompletion | undefined) { if (!c) return ''; return ` (finish_reason=${c.choices[0]?.finish_reason ?? 'unknown'}, completion_tokens=${c.usage?.completion_tokens ?? 'unknown'}, reasoning_tokens=${c.usage?.completion_tokens_details?.reasoning_tokens ?? 'unknown'})`; }
+function completionMetrics(c: ApiCompletion | undefined) {
+  return {
+    finish_reason: c?.choices[0]?.finish_reason ?? null,
+    completion_tokens: c?.usage?.completion_tokens ?? null,
+    reasoning_tokens: c?.usage?.completion_tokens_details?.reasoning_tokens ?? null
+  };
+}
 function buildEmergencyAnswer(query: string, base: Record<string, unknown>, finalArticles: WideArticle[], error: string) {
   const sourceCoverage = isRecord(base.source_coverage) ? base.source_coverage : {};
   const articleLines = finalArticles.slice(0, 16).map((article, index) => `${index + 1}. ${articleLink(article)}\n   ${excerpt(article, 180)}`).join('\n');
@@ -477,6 +510,35 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit, confidence_rubric, negative_space and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and individual articles as evidence examples. Do not use 直接該当 to describe coverage; separate full-corpus coverage from evidence articles.${rollupEvidenceDiscipline(monthlyUsed)}`;
   const provisionalInstruction = provisional ? '月別rollupに未作成・要更新・失敗・生成中の月がある場合、このレポートは「暫定分析」と明示し、coverage_diagnosisに不足月の状態を残してください。' : '月別rollupは全記事あり月をカバーしています。個別記事数ではなく月別rollupを全体分析の一次入力として扱ってください。「直接該当」ではなく「根拠確認用記事数」と表記してください。';
   const qualityInstructions = buildQualityInstructions(provisional);
+  const primaryEvidencePayload = evidencePayload(monthlyUsed, compactInput);
+  const primaryUserPayload = {
+    query,
+    coverage: base.source_coverage,
+    coverage_diagnosis: base.coverage_diagnosis,
+    monthly_rollup_context_used: monthlyUsed,
+    analysis_instruction: provisionalInstruction,
+    quality_instructions: qualityInstructions,
+    ...primaryEvidencePayload
+  };
+  const primaryUserContent = JSON.stringify(primaryUserPayload);
+  let writerDiagnostics: WriterDiagnostics = {
+    schema_version: 1,
+    model: selectedModel,
+    timeout_ms: FINAL_TIMEOUT_MS,
+    outcome: openai ? 'pending' : 'not_run',
+    elapsed_ms: 0,
+    evidence_article_count: compactInput.length,
+    evidence_text_characters: compactInput.reduce((sum, article) => sum + (typeof article.text === 'string' ? article.text.length : 0), 0),
+    evidence_payload_characters: JSON.stringify(primaryEvidencePayload).length,
+    user_payload_characters: primaryUserContent.length,
+    system_prompt_characters: system.length,
+    conversation_characters: conversation.reduce((sum, turn) => sum + turn.content.length, 0),
+    monthly_rollup_context_characters: monthlyContext?.context_text?.length || 0,
+    finish_reason: null,
+    completion_tokens: null,
+    reasoning_tokens: null,
+    error: openai ? null : 'OPENAI_API_KEY missing'
+  };
   let parsed: Record<string, unknown> = {};
   let generationWarning = '';
 
@@ -487,13 +549,16 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   } else {
     await progress(onProgress, 62, monthlyUsed ? '月別まとめと根拠記事を最終入力に準備中' : `根拠候補${finalArticles.length}件を最終入力に準備中`);
     let primaryCompletion: ApiCompletion | undefined;
+    const writerStartedAt = Date.now();
     try {
       await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
       primaryCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, ...reasoningOptions(selectedModel), response_format: { type: 'json_object' }, max_completion_tokens: FINAL_MAX_TOKENS, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, compactInput) }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
       parsed = JSON.parse(primaryCompletion.choices[0]?.message.content || '{}') as Record<string, unknown>;
       if (!hasUsableReportJson(parsed)) throw unusableReportError('model', primaryCompletion);
+      writerDiagnostics = { ...writerDiagnostics, outcome: 'completed', elapsed_ms: Date.now() - writerStartedAt, ...completionMetrics(primaryCompletion), error: null };
     } catch (primaryError) {
       const primaryMessage = `${primaryError instanceof Error ? primaryError.message : 'final report generation failed'}${completionDiag(primaryCompletion)}`;
+      writerDiagnostics = { ...writerDiagnostics, outcome: 'failed', elapsed_ms: Date.now() - writerStartedAt, ...completionMetrics(primaryCompletion), error: primaryMessage.slice(0, 1000) };
       const fbModel = fallbackModel(selectedModel);
       generationWarning = `primary_failed: ${primaryMessage}`;
       let fallbackCompletion: ApiCompletion | undefined;
@@ -528,7 +593,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   }
 
   const answerText = typeof parsed.answer_text === 'string' ? parsed.answer_text : JSON.stringify(parsed);
-  const answer = { ...base, quality_instructions: qualityInstructions, ...parsed, answer_text: answerText, generation_warning: generationWarning, ...(criticResult !== null ? { critic_result: criticResult } : {}) };
+  const answer = { ...base, quality_instructions: qualityInstructions, ...parsed, answer_text: answerText, generation_warning: generationWarning, writer_diagnostics: writerDiagnostics, ...(criticResult !== null ? { critic_result: criticResult } : {}) };
   const enhanced = enhanceChatAnalysisResult({ report: null, report_error: '', related_articles: responseArticles, selectable_models: models(), answer }) as ChatResult;
   const enhancedAnswer = isRecord(enhanced.answer) ? enhanced.answer : answer;
   let report = null;

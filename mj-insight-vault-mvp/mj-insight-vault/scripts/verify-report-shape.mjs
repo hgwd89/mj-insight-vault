@@ -44,6 +44,8 @@ assert(/enhanceChatAnalysisResult/.test(jobRun), 'Chat job route must run the qu
 assert(/reasoning_effort: 'low'/.test(no160), 'GPT-5 report generation must reserve output budget by lowering reasoning effort.');
 assert(/OPENAI_FINAL_FALLBACK_MODEL \|\| 'gpt-4\.1-mini'/.test(no160), 'Report fallback must use a non-reasoning model by default.');
 assert(/reasoning_tokens/.test(no160) && /finish_reason/.test(no160), 'Empty report diagnostics must retain finish reason and reasoning token usage.');
+assert(/WRITER_TIMEOUT_MS/.test(no160) && /150000/.test(no160), 'Writer timeout must allow the expanded report input and output budgets to complete.');
+assert(/Math\.min\(170000, Math\.max\(85000/.test(no160), 'Writer timeout configuration must remain within the Vercel execution budget.');
 assert(/Monthly rollup vs evidence article discipline/.test(no160), 'Monthly rollup reports must define a strict rollup/evidence role split.');
 assert(/articles_for_citation_and_linking_only/.test(no160), 'Monthly rollup reports must label selected articles as citation-only input.');
 assert(/insight_source: 'monthly_rollup_context_above'/.test(no160), 'Monthly rollup reports must identify rollups as the insight source.');

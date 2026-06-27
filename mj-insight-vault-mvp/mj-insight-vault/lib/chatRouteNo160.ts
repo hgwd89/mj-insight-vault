@@ -12,7 +12,7 @@ import { rankArticlesHybrid } from '@/lib/articleSearch';
 
 const ALL_WORDS = /全期間|全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
-const FINAL_TIMEOUT_MS = 85000;
+const FINAL_TIMEOUT_MS = Math.min(170000, Math.max(85000, Number(process.env.WRITER_TIMEOUT_MS) || 150000));
 const FALLBACK_TIMEOUT_MS = 45000;
 const FINAL_MAX_TOKENS = 8000;
 const FALLBACK_MAX_TOKENS = 4000;

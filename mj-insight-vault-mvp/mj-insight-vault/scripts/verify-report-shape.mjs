@@ -48,6 +48,10 @@ assert(/Monthly rollup vs evidence article discipline/.test(no160), 'Monthly rol
 assert(/articles_for_citation_and_linking_only/.test(no160), 'Monthly rollup reports must label selected articles as citation-only input.');
 assert(/insight_source: 'monthly_rollup_context_above'/.test(no160), 'Monthly rollup reports must identify rollups as the insight source.');
 assert((no160.match(/rollupEvidenceDiscipline\(monthlyUsed\)/g) || []).length >= 2, 'Primary and fallback report prompts must enforce rollup evidence discipline.');
+assert(/EVIDENCE_TEXT_LIMIT = 720/.test(no160), 'Evidence excerpts must retain enough article text for specific report claims.');
+assert(/MIN_UNDATED_EVIDENCE_TEXT = 500/.test(no160), 'Thin undated evidence must have an explicit minimum text threshold.');
+assert(/filtered\.length >= max \? filtered : articles/.test(no160), 'Evidence noise filtering must fall back when it would exhaust candidates.');
+assert(/evidence_noise_guard/.test(no160), 'Report coverage metadata must expose the evidence noise guard.');
 
 assert(/MarkdownArticleText/.test(reportPage) && /articleLabel/.test(markdown), 'Report detail page must render article links readably.');
 assert(/internalArticleHref/.test(markdown), 'Markdown article text renderer must constrain article links to internal article routes.');

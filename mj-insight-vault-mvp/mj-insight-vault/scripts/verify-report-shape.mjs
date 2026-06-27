@@ -41,6 +41,9 @@ assert(/refutationFallback/.test(qualityGate), 'Quality gate must backfill refut
 assert(/evidenceFallback/.test(qualityGate), 'Quality gate must backfill evidence matrix.');
 assert(/enhanceChatAnalysisResult/.test(no160), 'Direct chat route must run the quality gate.');
 assert(/enhanceChatAnalysisResult/.test(jobRun), 'Chat job route must run the quality gate.');
+assert(/reasoning_effort: 'low'/.test(no160), 'GPT-5 report generation must reserve output budget by lowering reasoning effort.');
+assert(/OPENAI_FINAL_FALLBACK_MODEL \|\| 'gpt-4\.1-mini'/.test(no160), 'Report fallback must use a non-reasoning model by default.');
+assert(/reasoning_tokens/.test(no160) && /finish_reason/.test(no160), 'Empty report diagnostics must retain finish reason and reasoning token usage.');
 
 assert(/MarkdownArticleText/.test(reportPage) && /articleLabel/.test(markdown), 'Report detail page must render article links readably.');
 assert(/internalArticleHref/.test(markdown), 'Markdown article text renderer must constrain article links to internal article routes.');

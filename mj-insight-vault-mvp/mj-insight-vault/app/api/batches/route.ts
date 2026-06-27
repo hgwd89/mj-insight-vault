@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await supabaseAdmin
       .from('upload_batches')
-      .select('*, source_images(count), articles(count)')
+      .select('*')
       .order('created_at', { ascending: false })
       .limit(100);
 

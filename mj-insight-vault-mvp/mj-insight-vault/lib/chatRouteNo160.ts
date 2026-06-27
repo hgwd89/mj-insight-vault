@@ -239,6 +239,26 @@ function monthlyPromptMessage(context: MonthlyContext | null): Turn[] {
   return [{ role: 'user', content: ['【MONTHLY_ROLLUP_CONTEXT_PRIMARY】', '以下は全記事を月別に集約した中間レイヤーです。全体分析では、ここを一次情報として必ず横断してください。', '最終投入する個別記事は根拠確認・具体例用であり、分析母集団を個別記事数に限定してはいけません。', `rollup_count: ${context.rollup_count}`, `rollup_source_article_count: ${context.article_count}`, context.context_text].join('\n') }];
 }
 
+function rollupEvidenceDiscipline(monthlyUsed: boolean) {
+  if (!monthlyUsed) return '';
+  return `
+
+## CRITICAL: Monthly rollup vs evidence article discipline
+全体傾向・インサイト・ナラティブは【MONTHLY_ROLLUP_CONTEXT_PRIMARY】が示すパターンからのみ導出すること。
+- 個別記事は引用根拠、記事リンク、事実確認にのみ使い、個別記事群から全体結論を導出しないこと。
+- rollupにないトピックを個別記事だけが示す場合は「単一記事の観察・全体傾向への昇格不可」と明示し、根拠強度をD以下にすること。
+- 選抜記事は月別分布を補正した根拠確認用サンプルであり、そのテーマ分布を母集団の分布とみなさないこと。`;
+}
+
+function evidencePayload(monthlyUsed: boolean, articles: ReturnType<typeof buildArticleInput>) {
+  if (!monthlyUsed) return { articles_for_evidence: articles, insight_source: 'articles_for_evidence' };
+  return {
+    articles_for_citation_and_linking_only: articles,
+    insight_source: 'monthly_rollup_context_above',
+    note_on_articles: '個別記事は引用・リンク・事実確認専用。ここから全体傾向やインサイトを導出しない。'
+  };
+}
+
 function hasUsableReportJson(value: Record<string, unknown>) {
   const answer = text(value.answer_text);
   const title = text(value.report_title);
@@ -319,7 +339,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
 
   const compactInput = buildArticleInput(finalArticles, monthlyUsed ? 320 : 720);
   const conversation = [...turns(body.conversation), ...monthlyPromptMessage(monthlyContext)];
-  const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit, confidence_rubric, negative_space and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and individual articles as evidence examples. Do not use 直接該当 to describe coverage; separate full-corpus coverage from evidence articles.`;
+  const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit, confidence_rubric, negative_space and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and individual articles as evidence examples. Do not use 直接該当 to describe coverage; separate full-corpus coverage from evidence articles.${rollupEvidenceDiscipline(monthlyUsed)}`;
   const provisionalInstruction = provisional ? '月別rollupに未作成・要更新・失敗・生成中の月がある場合、このレポートは「暫定分析」と明示し、coverage_diagnosisに不足月の状態を残してください。' : '月別rollupは全記事あり月をカバーしています。個別記事数ではなく月別rollupを全体分析の一次入力として扱ってください。「直接該当」ではなく「根拠確認用記事数」と表記してください。';
   const qualityInstructions = buildQualityInstructions(provisional);
   let parsed: Record<string, unknown> = {};
@@ -334,7 +354,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     let primaryCompletion: ApiCompletion | undefined;
     try {
       await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
-      primaryCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, ...reasoningOptions(selectedModel), response_format: { type: 'json_object' }, max_completion_tokens: FINAL_MAX_TOKENS, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: compactInput }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
+      primaryCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, ...reasoningOptions(selectedModel), response_format: { type: 'json_object' }, max_completion_tokens: FINAL_MAX_TOKENS, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, compactInput) }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
       parsed = JSON.parse(primaryCompletion.choices[0]?.message.content || '{}') as Record<string, unknown>;
       if (!hasUsableReportJson(parsed)) throw unusableReportError('model', primaryCompletion);
     } catch (primaryError) {
@@ -345,7 +365,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       try {
         await progress(onProgress, 78, `${fbModel}で軽量統合レポートを生成中`);
         const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 360);
-        fallbackCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: fbModel, ...reasoningOptions(fbModel), response_format: { type: 'json_object' }, max_completion_tokens: FALLBACK_MAX_TOKENS, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON with report_title and answer_text. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count. Never return an empty object.` }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, articles_for_evidence: fallbackInput }) }] }, { signal }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
+        fallbackCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: fbModel, ...reasoningOptions(fbModel), response_format: { type: 'json_object' }, max_completion_tokens: FALLBACK_MAX_TOKENS, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON with report_title and answer_text. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count. Never return an empty object.${rollupEvidenceDiscipline(monthlyUsed)}` }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, fallbackInput) }) }] }, { signal }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
         parsed = JSON.parse(fallbackCompletion.choices[0]?.message.content || '{}') as Record<string, unknown>;
         if (!hasUsableReportJson(parsed)) throw unusableReportError('fallback model', fallbackCompletion);
         generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;

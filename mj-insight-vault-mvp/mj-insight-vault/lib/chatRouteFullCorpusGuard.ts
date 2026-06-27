@@ -144,6 +144,21 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
   await onProgress?.({ progress: 12, stage: scope.scopeType === 'category' ? 'カテゴリ本文読解ゲートを確認中' : '全件本文読解ゲートを確認中' });
   const context = await getFullCorpusContext(scope.scopeType, scope.scopeQuery) as CorpusContext;
   if (!passed(context)) {
+    if (scope.scopeType === 'all') {
+      // Degraded route: gate failed but monthly rollups + all articles are available.
+      // Route to runWide so users get provisional analysis instead of a blank diagnostic.
+      // Cost: AI call fires on every request in degraded mode (accepted; see PR description).
+      // Category-scope stays on diagnostic — separate PR post-Step C resolveScope fix.
+      await onProgress?.({ progress: 20, stage: '本文読解バッチ未完了 — 月別rollupで縮退分析を実行中' });
+      const run = isRecord(context.run) ? context.run : {};
+      const provisionalBody = { ...body, full_corpus_gate: 'provisional' };
+      const result = await runBaseChatAnalysis(provisionalBody, onProgress) as JsonRecord;
+      if (isRecord(result.answer)) {
+        result.answer.full_corpus_gate = 'provisional';
+        result.answer.full_corpus_gate_note = `本文読解バッチ未完了（${num(run, 'completed_batches')}/${num(run, 'total_batches')} 完了）のため、月別rollup+全記事による縮退分析を実施しました。`;
+      }
+      return result;
+    }
     const result = await diagnostic(query, body, context, scope);
     await onProgress?.({ progress: 100, stage: '本文読解未完了' });
     return result;

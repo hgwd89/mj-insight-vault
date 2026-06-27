@@ -17,6 +17,7 @@ const articlesApi = read('app/api/articles/route.ts');
 const chatNo160 = read('lib/chatRouteNo160.ts');
 const chatCore = read('lib/chatRouteCore.ts');
 const wide = read('lib/wideArticleRetrieval.ts');
+const batchesApi = read('app/api/batches/route.ts');
 
 assert(/const MAX_ATTEMPTS = 3;/.test(stable), 'Upload retry count must remain MAX_ATTEMPTS = 3.');
 assert(/const OCR_MAX_IMAGE_SIDE = 4200;/.test(stable), 'OCR max image side must remain 4200.');
@@ -36,5 +37,7 @@ for (const [file, source] of [['lib/chatRouteNo160.ts', chatNo160], ['lib/chatRo
 }
 assert(/fetchAllWideArticles/.test(chatNo160), 'No-160 chat route must use wide article retrieval.');
 assert(/PAGE_SIZE = 1000/.test(wide) && /\.range\(from, from \+ PAGE_SIZE - 1\)/.test(wide), 'Wide article retrieval must page through all articles.');
+assert(/\.from\('upload_batches'\)[\s\S]*?\.select\('\*'\)/.test(batchesApi), '/api/batches must fetch the batch list without unused embedded relation counts.');
+assert(!/source_images\(count\)|articles\(count\)/.test(batchesApi), '/api/batches must not depend on embedded relation count resolution.');
 
 console.log('verify-upload-constants: ok');

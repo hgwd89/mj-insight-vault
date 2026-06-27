@@ -11,8 +11,6 @@ type Batch = {
   image_count: number;
   status: string;
   created_at: string;
-  source_images?: { count: number }[];
-  articles?: { count: number }[];
 };
 
 export default function BatchesPage() {

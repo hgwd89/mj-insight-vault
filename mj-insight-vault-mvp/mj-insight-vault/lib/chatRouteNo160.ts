@@ -15,6 +15,9 @@ const FINAL_TIMEOUT_MS = 85000;
 const FALLBACK_TIMEOUT_MS = 45000;
 const FINAL_MAX_TOKENS = 8000;
 const FALLBACK_MAX_TOKENS = 4000;
+const EVIDENCE_TEXT_LIMIT = 720;
+const MIN_UNDATED_EVIDENCE_TEXT = 500;
+const EVIDENCE_SELECTION_MODE = 'thin_undated_guard_plus_balanced_month_quota_plus_hybrid_semantic_lexical';
 
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type Turn = { role: 'user' | 'assistant'; content: string };
@@ -32,6 +35,10 @@ function reasoningOptions(model: string) { return model.startsWith('gpt-5') ? { 
 function articleLink(article: WideArticle) { return `[${article.headline || '無題の記事'}｜${article.article_date || '日付不明'}](/articles/${article.id})`; }
 function excerpt(article: WideArticle, length: number) { return (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, length); }
 function monthKey(article: WideArticle) { const date = text(article.article_date); const iso = date.match(/^(\d{4})[-/](\d{1,2})/); if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}`; const jp = date.match(/^(\d{4})年\s*(\d{1,2})月/); if (jp) return `${jp[1]}-${jp[2].padStart(2, '0')}`; return 'undated'; }
+function evidenceCandidatePool(articles: WideArticle[], max: number) {
+  const filtered = articles.filter((article) => monthKey(article) !== 'undated' || (article.ocr_text || '').trim().length >= MIN_UNDATED_EVIDENCE_TEXT);
+  return filtered.length >= max ? filtered : articles;
+}
 
 function turns(value: unknown): Turn[] {
   if (!Array.isArray(value)) return [];
@@ -119,10 +126,11 @@ function computeMonthQuotas(articles: WideArticle[], max: number) {
 }
 
 async function selectEvidenceArticles(query: string, articles: WideArticle[], context: MonthlyContext | null, max: number) {
-  if (!context?.has_rollups) return hybridSelect(query, articles, max);
+  const candidates = evidenceCandidatePool(articles, max);
+  if (!context?.has_rollups) return hybridSelect(query, candidates, max);
 
   const broad = isBroadAllQuery(query);
-  const byId = new Map(articles.map((article) => [article.id, article]));
+  const byId = new Map(candidates.map((article) => [article.id, article]));
   const preferredIds = [...context.evidence_article_ids, ...context.representative_article_ids];
   const selected: WideArticle[] = [];
   const used = new Set<string>();
@@ -134,10 +142,10 @@ async function selectEvidenceArticles(query: string, articles: WideArticle[], co
     return true;
   }
 
-  const ranked = await hybridSelect(query, articles, Math.max(180, max * 3));
+  const ranked = await hybridSelect(query, candidates, Math.max(180, max * 3));
   const rankedByMonth = groupByMonth(ranked);
-  const articleByMonth = groupByMonth(articles);
-  const quotas = computeMonthQuotas(articles, max);
+  const articleByMonth = groupByMonth(candidates);
+  const quotas = computeMonthQuotas(candidates, max);
 
   if (broad) {
     for (const [month, quota] of quotas.entries()) {
@@ -179,7 +187,7 @@ async function selectEvidenceArticles(query: string, articles: WideArticle[], co
     if (selected.length >= max) return selected;
   }
 
-  for (const article of lexicalSelect(query, articles, max)) add(article);
+  for (const article of lexicalSelect(query, candidates, max)) add(article);
   return selected.slice(0, max);
 }
 
@@ -330,14 +338,14 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       article_count: allArticles.length, active_article_count: activeArticleCount, scanned_article_count: allArticles.length, final_article_count: finalArticles.length,
       monthly_rollup_used: monthlyUsed, monthly_rollup_count: monthlyContext?.rollup_count || 0, monthly_rollup_source_article_count: rollupArticleCount, monthly_rollup_total_article_count: activeArticleCount, monthly_rollup_article_month_count: monthlyContext?.article_month_count || 0,
       monthly_rollup_coverage_complete: coverageComplete, monthly_rollup_status_counts: monthlyContext?.status_counts || {}, monthly_rollup_ready_months: monthlyContext?.ready_months || [], monthly_rollup_missing_months: missingMonths, monthly_rollup_stale_months: staleMonths, monthly_rollup_failed_months: failedMonths, monthly_rollup_running_months: runningMonths,
-      evidence_selection_mode: 'balanced_month_quota_plus_hybrid_semantic_lexical', evidence_month_distribution: evidenceMonthDistribution, analysis_is_provisional: provisional,
+      evidence_selection_mode: EVIDENCE_SELECTION_MODE, evidence_noise_guard: `exclude undated articles under ${MIN_UNDATED_EVIDENCE_TEXT} characters when enough candidates remain`, evidence_month_distribution: evidenceMonthDistribution, analysis_is_provisional: provisional,
       coverage_note: monthlyUsed ? `全記事${allArticles.length}件をページング取得し、ready月別rollup ${monthlyContext?.rollup_count}ヶ月・${rollupArticleCount}記事分を一次入力として横断。個別記事${finalArticles.length}件は月別分布を補正したうえでハイブリッド検索と月別代表根拠から選抜した根拠確認用。これは直接該当率ではありません。160件制限は使用していません。${coverageComplete ? '月別rollupは全記事あり月をカバーしています。' : `未作成${missingMonths.length}ヶ月、要更新${staleMonths.length}ヶ月、失敗${failedMonths.length}ヶ月、生成中${runningMonths.length}ヶ月があるため暫定分析です。`}` : `全記事${allArticles.length}件をページング取得。ただし使用可能な月別rollupがないため、個別記事${finalArticles.length}件のハイブリッド検索による暫定分析。160件制限は使用していません。`
     },
-    coverage_diagnosis: { monthly_rollup_used: monthlyUsed, monthly_rollup_coverage_complete: coverageComplete, analysis_is_provisional: provisional, ready_month_count: monthlyContext?.ready_months.length || 0, article_month_count: monthlyContext?.article_month_count || 0, missing_month_count: missingMonths.length, stale_month_count: staleMonths.length, failed_month_count: failedMonths.length, running_month_count: runningMonths.length, evidence_selection_mode: 'balanced_month_quota_plus_hybrid_semantic_lexical', guidance: provisional ? '月別rollupが未作成・要更新・失敗・生成中の月を含むため、全体分析は暫定です。/rollupsで必要な月だけ生成してください。' : '月別rollupが全記事あり月をカバーしているため、全体分析の一次入力として使用できます。' },
+    coverage_diagnosis: { monthly_rollup_used: monthlyUsed, monthly_rollup_coverage_complete: coverageComplete, analysis_is_provisional: provisional, ready_month_count: monthlyContext?.ready_months.length || 0, article_month_count: monthlyContext?.article_month_count || 0, missing_month_count: missingMonths.length, stale_month_count: staleMonths.length, failed_month_count: failedMonths.length, running_month_count: runningMonths.length, evidence_selection_mode: EVIDENCE_SELECTION_MODE, guidance: provisional ? '月別rollupが未作成・要更新・失敗・生成中の月を含むため、全体分析は暫定です。/rollupsで必要な月だけ生成してください。' : '月別rollupが全記事あり月をカバーしているため、全体分析の一次入力として使用できます。' },
     article_lookup: finalArticles.map((article) => ({ article_id: article.id, headline: article.headline || '無題の記事', article_date: article.article_date || '日付不明', article_link: articleLink(article), article_url: `/articles/${article.id}`, month_key: monthKey(article) }))
   };
 
-  const compactInput = buildArticleInput(finalArticles, monthlyUsed ? 320 : 720);
+  const compactInput = buildArticleInput(finalArticles, EVIDENCE_TEXT_LIMIT);
   const conversation = [...turns(body.conversation), ...monthlyPromptMessage(monthlyContext)];
   const system = `${MJ_REPORT_SYSTEM_PROMPT}\nUse article_link when citing evidence. Include coverage_diagnosis, evidence_matrix, refutation_audit, confidence_rubric, negative_space and research_needs. If monthly rollup context is present, treat it as the primary full-corpus analysis layer and individual articles as evidence examples. Do not use 直接該当 to describe coverage; separate full-corpus coverage from evidence articles.${rollupEvidenceDiscipline(monthlyUsed)}`;
   const provisionalInstruction = provisional ? '月別rollupに未作成・要更新・失敗・生成中の月がある場合、このレポートは「暫定分析」と明示し、coverage_diagnosisに不足月の状態を残してください。' : '月別rollupは全記事あり月をカバーしています。個別記事数ではなく月別rollupを全体分析の一次入力として扱ってください。「直接該当」ではなく「根拠確認用記事数」と表記してください。';

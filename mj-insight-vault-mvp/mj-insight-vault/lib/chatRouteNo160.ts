@@ -3,6 +3,7 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
+import { CRITIC_MODEL, CRITIC_MAX_TOKENS, MJ_CRITIC_SYSTEM_PROMPT, isCriticResult, type CriticResult } from '@/lib/criticPrompt';
 import { fetchAllWideArticles, type WideArticle } from '@/lib/wideArticleRetrieval';
 import { runChatAnalysis as legacyRunChatAnalysis } from '@/lib/chatRouteCore';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
@@ -18,6 +19,8 @@ const FALLBACK_MAX_TOKENS = 4000;
 const EVIDENCE_TEXT_LIMIT = 720;
 const MIN_UNDATED_EVIDENCE_TEXT = 500;
 const EVIDENCE_SELECTION_MODE = 'thin_undated_guard_plus_balanced_month_quota_plus_hybrid_semantic_lexical';
+const CRITIC_TIMEOUT_MS = Number(process.env.CRITIC_TIMEOUT_MS) || 30000;
+const REVISED_TIMEOUT_MS = Number(process.env.REVISED_TIMEOUT_MS) || 60000;
 
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type Turn = { role: 'user' | 'assistant'; content: string };
@@ -290,6 +293,22 @@ function buildEmergencyAnswer(query: string, base: Record<string, unknown>, fina
 
 async function getMonthlyContext() { try { return await buildMonthlyRollupContext(); } catch { return null; } }
 
+function countArticleLinksInText(t: string): number {
+  return (t.match(/\[[^\]]+\]\(\/articles\/[a-zA-Z0-9_-]+\)/g) || []).length;
+}
+function countSpecificsInText(t: string): number {
+  const nums = (t.match(/\d+(?:[,.\s]\d+)*\s*(?:円|%|件|万|億|個|回|年|月|人|倍|店|品|千)/g) || []).length;
+  const kata = (t.match(/[ァ-ヶー]{3,}/g) || []).length;
+  return nums + kata;
+}
+function isQualityRegression(origText: string, revisedText: string): boolean {
+  const origLinks = countArticleLinksInText(origText);
+  if (origLinks > 0 && countArticleLinksInText(revisedText) < origLinks * 0.75) return true;
+  const origSpec = countSpecificsInText(origText);
+  if (origSpec > 0 && countSpecificsInText(revisedText) < origSpec * 0.80) return true;
+  return false;
+}
+
 function buildQualityInstructions(provisional: boolean) {
   return {
     evidence_selection: 'Evidence articles are selected by balanced month-aware sampling plus hybrid semantic/lexical search. Do not treat selected articles as the full universe when monthly rollups exist.',
@@ -299,6 +318,114 @@ function buildQualityInstructions(provisional: boolean) {
     coverage_wording: 'Do not write 直接該当 as if it were full-corpus coverage. Use 全件カバレッジ, 月別rollup対象記事数, and 根拠確認用記事数 separately.',
     if_provisional: provisional ? 'Mark as provisional and downgrade claims.' : 'Coverage is complete, but still grade evidence strength claim by claim.'
   };
+}
+
+async function runCriticCycle(
+  parsed: Record<string, unknown>,
+  query: string,
+  compactInput: ReturnType<typeof buildArticleInput>,
+  conversation: Turn[],
+  system: string,
+  provisionalInstruction: string,
+  qualityInstructions: ReturnType<typeof buildQualityInstructions>,
+  monthlyUsed: boolean,
+  selectedModel: string,
+  onProgress: ProgressReporter | undefined
+): Promise<{ parsed: Record<string, unknown>; criticResult: CriticResult | null; warning: string }> {
+  const openai = getOpenAI();
+  if (!openai) return { parsed, criticResult: null, warning: 'critic:skipped_no_openai' };
+
+  // Step 1: Critic (gpt-4.1-mini — 異なるモデルファミリーでミラーリング問題を回避)
+  let criticResult: CriticResult | null = null;
+  try {
+    await progress(onProgress, 88, 'Criticがレポートを検査中（品質監査）');
+    const criticCompletion = await withAbortTimeout(
+      (signal) => openai.chat.completions.create({
+        model: CRITIC_MODEL,
+        response_format: { type: 'json_object' },
+        max_completion_tokens: CRITIC_MAX_TOKENS,
+        messages: [
+          { role: 'system', content: MJ_CRITIC_SYSTEM_PROMPT },
+          { role: 'user', content: JSON.stringify({ query, report_to_audit: parsed, article_lookup: Array.isArray(parsed.article_lookup) ? parsed.article_lookup : [] }) }
+        ]
+      }, { signal }),
+      CRITIC_TIMEOUT_MS,
+      'critic'
+    );
+    const raw = JSON.parse(criticCompletion.choices[0]?.message.content || '{}') as unknown;
+    if (isCriticResult(raw) && raw.critical_flaws.length > 0) {
+      criticResult = raw;
+    } else {
+      return { parsed, criticResult: null, warning: 'critic:no_flaws_returned' };
+    }
+  } catch (e) {
+    return { parsed, criticResult: null, warning: `critic:failed: ${e instanceof Error ? e.message : 'unknown'}` };
+  }
+
+  // Revised Writer skip: only run if ≥1 critical or major flaw (all-minor = good enough report)
+  const hasCriticalOrMajor = criticResult.critical_flaws.some(f => f.severity === 'critical' || f.severity === 'major');
+  if (!hasCriticalOrMajor) {
+    return { parsed, criticResult, warning: 'critic:minor_only: revision_skipped' };
+  }
+
+  // Step 2: Revised Writer (same model as primary Writer)
+  try {
+    await progress(onProgress, 91, 'Revised Writerが指摘を反映して改稿中');
+    const revisedCompletion = await withProgressHeartbeat(
+      withAbortTimeout(
+        (signal) => openai.chat.completions.create({
+          model: selectedModel,
+          ...reasoningOptions(selectedModel),
+          response_format: { type: 'json_object' },
+          max_completion_tokens: FINAL_MAX_TOKENS,
+          messages: [
+            { role: 'system', content: system },
+            ...conversation,
+            { role: 'user', content: JSON.stringify({
+              query,
+              coverage: parsed.source_coverage,
+              coverage_diagnosis: parsed.coverage_diagnosis,
+              monthly_rollup_context_used: monthlyUsed,
+              analysis_instruction: provisionalInstruction,
+              quality_instructions: qualityInstructions,
+              ...evidencePayload(monthlyUsed, compactInput),
+              critic_feedback: {
+                instruction: '以下のクリティク結果を全て反映してレポートを修正してください。',
+                revision_priority: criticResult.revision_priority,
+                revision_instructions_summary: criticResult.revision_instructions_summary,
+                critical_flaws: criticResult.critical_flaws,
+                revision_rules: [
+                  'revision_priorityの順にフローを全て修正してください',
+                  '無根拠主張には article_link を追加するか、根拠強度をD以下に格下げして [調査必要] タグを付けてください',
+                  'evidence_matrix の全エントリに具体的な根拠抜粋を必ず記載してください（「記事参照」禁止）',
+                  'WHY3段階の各レベルに具体的な article_id を付けてください',
+                  'refutation_audit の各エントリに実際の反論と具体的な反証条件を記載してください',
+                  '元のレポートで根拠ある主張は変更しないでください',
+                  '同じJSONスキーマを維持してください'
+                ]
+              }
+            }) }
+          ]
+        }, { signal }),
+        REVISED_TIMEOUT_MS,
+        'revised writer'
+      ),
+      onProgress,
+      { from: 91, to: 96, intervalMs: 10000, stage: 'Revised Writerが指摘を反映して改稿中' }
+    );
+    const revisedParsed = JSON.parse(revisedCompletion.choices[0]?.message.content || '{}') as Record<string, unknown>;
+    if (!hasUsableReportJson(revisedParsed)) {
+      return { parsed, criticResult, warning: 'critic:revision_failed: unusable_output' };
+    }
+    const origText = typeof parsed.answer_text === 'string' ? parsed.answer_text : '';
+    const revisedText = typeof revisedParsed.answer_text === 'string' ? revisedParsed.answer_text : '';
+    if (isQualityRegression(origText, revisedText)) {
+      return { parsed, criticResult, warning: 'critic:failed_revision: regression_detected' };
+    }
+    return { parsed: revisedParsed, criticResult, warning: 'critic:revision_applied' };
+  } catch (e) {
+    return { parsed, criticResult, warning: `critic:revision_failed: ${e instanceof Error ? e.message : 'unknown'}` };
+  }
 }
 
 async function runWide(body: Record<string, unknown>, onProgress?: ProgressReporter) {
@@ -385,14 +512,29 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     }
   }
 
+  // Writer-Critic-Revised Writer cycle (opt-in: ENABLE_WRITER_CRITIC_CYCLE=true or body.enable_critic_cycle=true)
+  // Cost: ~3.2× tokens vs single Writer call. Latency: +50-75s. Default OFF.
+  let criticResult: CriticResult | null = null;
+  const shouldRunCycle =
+    (process.env.ENABLE_WRITER_CRITIC_CYCLE === 'true' || body.enable_critic_cycle === true) &&
+    monthlyUsed === true &&
+    hasUsableReportJson(parsed);
+  if (shouldRunCycle) {
+    await progress(onProgress, 87, 'Writer-Criticサイクルを開始');
+    const cycleResult = await runCriticCycle(parsed, query, compactInput, conversation, system, provisionalInstruction, qualityInstructions, monthlyUsed, selectedModel, onProgress);
+    parsed = cycleResult.parsed;
+    criticResult = cycleResult.criticResult;
+    if (cycleResult.warning) generationWarning = generationWarning ? `${generationWarning}; ${cycleResult.warning}` : cycleResult.warning;
+  }
+
   const answerText = typeof parsed.answer_text === 'string' ? parsed.answer_text : JSON.stringify(parsed);
-  const answer = { ...base, quality_instructions: qualityInstructions, ...parsed, answer_text: answerText, generation_warning: generationWarning };
+  const answer = { ...base, quality_instructions: qualityInstructions, ...parsed, answer_text: answerText, generation_warning: generationWarning, ...(criticResult !== null ? { critic_result: criticResult } : {}) };
   const enhanced = enhanceChatAnalysisResult({ report: null, report_error: '', related_articles: responseArticles, selectable_models: models(), answer }) as ChatResult;
   const enhancedAnswer = isRecord(enhanced.answer) ? enhanced.answer : answer;
   let report = null;
   let report_error = '';
 
-  await progress(onProgress, 94, '分析履歴を保存中');
+  await progress(onProgress, shouldRunCycle ? 97 : 94, '分析履歴を保存中');
   try {
     const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: text(enhancedAnswer.answer_text), answer_json: enhancedAnswer, related_article_ids: finalArticles.map((article) => article.id) }).select('*').single();
     if (saved.error) throw saved.error;

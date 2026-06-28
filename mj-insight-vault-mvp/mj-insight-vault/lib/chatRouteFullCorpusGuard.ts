@@ -174,6 +174,19 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
   return { report, report_error, related_articles: [], selectable_models: [], answer };
 }
 
+async function persistAugmentedResult(result: JsonRecord) {
+  if (!isRecord(result.answer) || !isRecord(result.report)) return;
+  const reportId = text(result.report.id);
+  if (!reportId) return;
+  await supabaseAdmin
+    .from('chat_reports')
+    .update({
+      answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
+      answer_json: result.answer
+    })
+    .eq('id', reportId);
+}
+
 export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressReporter) {
   const query = text(body.query);
   const scope = await resolveScope(body);
@@ -198,6 +211,7 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
         result.answer.analysis_layer_2_cluster_count = clusterContext.count;
         result.answer.full_corpus_gate_note = `本文読解バッチ未完了（${num(run, 'completed_batches')}/${num(run, 'total_batches')} 完了）のため、月別rollup+全記事による縮退分析を実施しました。`;
       }
+      await persistAugmentedResult(result);
       return result;
     }
     const result = await diagnostic(query, body, context, scope);
@@ -225,5 +239,6 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     result.answer.analysis_layer_2_cluster_count = clusterContext.count;
     result.answer.source_coverage = { ...(isRecord(result.answer.source_coverage) ? result.answer.source_coverage : {}), scope_type: scope.scopeType, scope_query: scope.scopeQuery, full_corpus_gate: 'passed', full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'), analysis_layer_2_clusters_used: clusterContext.count > 0, analysis_layer_2_cluster_count: clusterContext.count };
   }
+  await persistAugmentedResult(result);
   return result;
 }

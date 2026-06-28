@@ -3,7 +3,7 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { rebuildConceptClusters, CONCEPT_CLUSTERS_K_DEFAULT } from '@/lib/conceptClusters';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {

@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { fetchAllWideArticles } from '@/lib/wideArticleRetrieval';
 import { getFullCorpusContext } from '@/lib/fullCorpusScan';
+import { getConceptClusters } from '@/lib/conceptClusters';
 import { runChatAnalysis as runBaseChatAnalysis } from '@/lib/chatRouteNo160';
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
@@ -8,6 +9,8 @@ type ProgressReporter = (update: { progress: number; stage: string }) => void | 
 type JsonRecord = Record<string, unknown>;
 type CorpusContext = { run?: JsonRecord | null; context_text?: string; full_corpus_gate?: string };
 type Scope = { scopeType: 'all' | 'category'; scopeQuery: string; categoryName?: string };
+type ContextMessage = { role: 'user'; content: string };
+type ConceptClusterContext = { messages: ContextMessage[]; count: number };
 
 function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
 function isRecord(value: unknown): value is JsonRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
@@ -71,6 +74,40 @@ function corpusMessage(context: CorpusContext, scope: Scope) {
     ].join('\n') }];
   }
   return [{ role: 'user', content: ['【FULL_CORPUS_BATCH_ANALYSIS_PRIMARY】', contextText].join('\n') }];
+}
+
+async function conceptClusterContext(): Promise<ConceptClusterContext> {
+  try {
+    const clusters = await getConceptClusters();
+    if (!clusters.length) return { messages: [], count: 0 };
+    const clusterLines = clusters.slice(0, 20).map((cluster, index) => {
+      const members = (cluster.member_summaries || []).slice(0, 3).map((member) => {
+        const summary = text(member.summary_text).replace(/\s+/g, ' ').slice(0, 140);
+        return `- ${member.headline || '無題の記事'} (/articles/${member.article_id}): ${summary}`;
+      }).join('\n');
+      return [
+        `${index + 1}. ${cluster.cluster_label || `クラスタ${cluster.cluster_index + 1}`} (${cluster.total_articles}件; months: ${(cluster.source_rollup_months || []).join(', ') || '-'})`,
+        cluster.cluster_description ? `説明: ${cluster.cluster_description}` : '',
+        members ? `代表記事:\n${members}` : ''
+      ].filter(Boolean).join('\n');
+    }).join('\n\n');
+
+    return {
+      count: clusters.length,
+      messages: [{
+        role: 'user',
+        content: [
+          '【ANALYSIS_LAYER_2_CONCEPT_CLUSTERS】',
+          '以下は evidence_matrix と article_embeddings から生成した横断クラスタです。月別rollupとは別の第2分析レイヤーとして、全体傾向の整理・反証・コンセプト候補抽出に使ってください。',
+          'ただし、クラスタは中間解釈レイヤーです。最終的な根拠引用は記事リンク・記事ID・月別rollupで確認してください。',
+          `cluster_count: ${clusters.length}`,
+          clusterLines
+        ].join('\n')
+      }]
+    };
+  } catch {
+    return { messages: [], count: 0 };
+  }
 }
 
 function categoryQuery(query: string, scope: Scope) {
@@ -143,6 +180,7 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
   if (!shouldGuard(body, scope)) return runBaseChatAnalysis(body, onProgress);
   await onProgress?.({ progress: 12, stage: scope.scopeType === 'category' ? 'カテゴリ本文読解ゲートを確認中' : '全件本文読解ゲートを確認中' });
   const context = await getFullCorpusContext(scope.scopeType, scope.scopeQuery) as CorpusContext;
+  const clusterContext = await conceptClusterContext();
   if (!passed(context)) {
     if (scope.scopeType === 'all') {
       // Degraded route: gate failed but monthly rollups + all articles are available.
@@ -151,10 +189,13 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
       // Category-scope stays on diagnostic — separate PR post-Step C resolveScope fix.
       await onProgress?.({ progress: 20, stage: '本文読解バッチ未完了 — 月別rollupで縮退分析を実行中' });
       const run = isRecord(context.run) ? context.run : {};
-      const provisionalBody = { ...body, full_corpus_gate: 'provisional' };
+      const conversation = Array.isArray(body.conversation) ? body.conversation : [];
+      const provisionalBody = { ...body, conversation: [...conversation, ...clusterContext.messages], full_corpus_gate: 'provisional' };
       const result = await runBaseChatAnalysis(provisionalBody, onProgress) as JsonRecord;
       if (isRecord(result.answer)) {
         result.answer.full_corpus_gate = 'provisional';
+        result.answer.analysis_layer_2_clusters_used = clusterContext.count > 0;
+        result.answer.analysis_layer_2_cluster_count = clusterContext.count;
         result.answer.full_corpus_gate_note = `本文読解バッチ未完了（${num(run, 'completed_batches')}/${num(run, 'total_batches')} 完了）のため、月別rollup+全記事による縮退分析を実施しました。`;
       }
       return result;
@@ -170,7 +211,7 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     target_scope: 'all',
     category_id: scope.scopeQuery,
     analysis_scope_type: scope.scopeType,
-    conversation: [...conversation, ...corpusMessage(context, scope)],
+    conversation: [...conversation, ...corpusMessage(context, scope), ...clusterContext.messages],
     full_corpus_gate: 'passed'
   };
   const result = await runBaseChatAnalysis(routedBody, onProgress) as JsonRecord;
@@ -180,7 +221,9 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     result.answer.target_scope = scope.scopeType;
     result.answer.category_id = scope.scopeQuery;
     result.answer.full_corpus_run_id = text(run.id);
-    result.answer.source_coverage = { ...(isRecord(result.answer.source_coverage) ? result.answer.source_coverage : {}), scope_type: scope.scopeType, scope_query: scope.scopeQuery, full_corpus_gate: 'passed', full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count') };
+    result.answer.analysis_layer_2_clusters_used = clusterContext.count > 0;
+    result.answer.analysis_layer_2_cluster_count = clusterContext.count;
+    result.answer.source_coverage = { ...(isRecord(result.answer.source_coverage) ? result.answer.source_coverage : {}), scope_type: scope.scopeType, scope_query: scope.scopeQuery, full_corpus_gate: 'passed', full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'), analysis_layer_2_clusters_used: clusterContext.count > 0, analysis_layer_2_cluster_count: clusterContext.count };
   }
   return result;
 }

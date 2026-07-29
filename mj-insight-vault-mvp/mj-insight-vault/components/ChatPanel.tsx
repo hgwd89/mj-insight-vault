@@ -429,8 +429,22 @@ export function ChatPanel() {
   const answerText = answer ? getAnswerText(answer) : '';
   const fullCorpusGate = answer ? str(answer.full_corpus_gate || coverage?.full_corpus_gate) : '';
   const generationStatus = answer ? str(answer.generation_status) : '';
-  const isBlockedReport = fullCorpusGate === 'failed' || generationStatus === 'blocked' || answer?.is_formal_report === false;
   const nextAction = answer ? str(answer.next_action) : '';
+  const qualityGate = answer && answer.quality_gate && typeof answer.quality_gate === 'object'
+    ? answer.quality_gate as Record<string, unknown>
+    : {};
+  const qualityGateStatus = str(qualityGate.status);
+  const failedQualityChecks = Array.isArray(qualityGate.failed_checks)
+    ? qualityGate.failed_checks.map(str).filter(Boolean)
+    : [];
+  const corpusGateBlocked = fullCorpusGate === 'failed';
+  const qualityGateBlocked = !corpusGateBlocked && (
+    qualityGateStatus === 'failed'
+    || qualityGateStatus === 'needs_review'
+    || (generationStatus === 'blocked' && fullCorpusGate === 'passed')
+    || (answer?.is_formal_report === false && fullCorpusGate === 'passed')
+  );
+  const isBlockedReport = corpusGateBlocked || qualityGateBlocked;
 
   return (
     <div className="space-y-5">
@@ -495,9 +509,19 @@ export function ChatPanel() {
             <h2 className="font-bold">{isBlockedReport ? '正式レポート未生成' : '回答'}</h2>
             {isBlockedReport && (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
-                <p className="font-bold">本文読解バッチが完了していないため、正式レポートとして保存していません。</p>
-                <p className="mt-1">{nextAction || '/corpus-scans で対象runを完了してから、同じ指示で再分析してください。'}</p>
-                <Link className="btn mt-3 bg-white" href="/corpus-scans">本文読解バッチを確認</Link>
+                {corpusGateBlocked ? (
+                  <>
+                    <p className="font-bold">本文読解バッチが完了していないため、正式レポートとして保存していません。</p>
+                    <p className="mt-1">{nextAction || '/corpus-scans で対象runを完了してから、同じ指示で再分析してください。'}</p>
+                    <Link className="btn mt-3 bg-white" href="/corpus-scans">本文読解バッチを確認</Link>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-bold">品質ゲート未通過のため、正式レポートとして保存していません。</p>
+                    <p className="mt-1">{nextAction || `不足項目: ${failedQualityChecks.join(', ') || 'quality_gate'}`}</p>
+                    <Link className="btn mt-3 bg-white" href="/chat">条件を見直して再分析</Link>
+                  </>
+                )}
               </div>
             )}
             <div className="mt-2 flex flex-wrap gap-2 text-xs">

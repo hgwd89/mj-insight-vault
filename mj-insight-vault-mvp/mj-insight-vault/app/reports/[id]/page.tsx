@@ -49,18 +49,10 @@ function cutAtFirst(value: string, markers: string[]) {
 function cleanDisplayText(value: unknown) {
   let text = asText(value);
   text = cutAtFirst(text, [
-    '【レポート要件】',
-    '[レポート要件]',
-    'レポート要件',
-    '最重要:',
-    'coverage_diagnosis',
-    'source_coverage',
-    'explanatory_hypotheses',
-    'hypothesis_comparison',
-    'research_needs',
-    'evidence_matrix',
-    '必ず以下を出してください',
-    '根拠記事IDのない重要主張は禁止'
+    '\n\n【レポート要件】',
+    '\r\n\r\n【レポート要件】',
+    '\n\n[レポート要件]',
+    '\r\n\r\n[レポート要件]'
   ]);
   return text
     .replace(/^\s*全記事を対象に、全データを広域スキャンしたうえで分析してください。[\s　]*/g, '')

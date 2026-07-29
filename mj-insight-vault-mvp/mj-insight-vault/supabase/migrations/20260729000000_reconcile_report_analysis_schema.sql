@@ -271,22 +271,11 @@ declare
   marker text;
   marker_position integer;
   cut_position integer := coalesce(length(input_text), 0) + 1;
-  cleaned text := coalesce(input_text, '');
+  cleaned text := replace(coalesce(input_text, ''), E'\r\n', E'\n');
 begin
   foreach marker in array array[
-    '【レポート要件】',
-    '[レポート要件]',
-    'レポート要件',
-    '最重要:',
-    'answer_text は必須',
-    'coverage_diagnosis',
-    'source_coverage',
-    'explanatory_hypotheses',
-    'hypothesis_comparison',
-    'research_needs',
-    'evidence_matrix',
-    '必ず以下を出してください',
-    '根拠記事IDのない重要主張は禁止'
+    E'\n\n【レポート要件】',
+    E'\n\n[レポート要件]'
   ] loop
     marker_position := strpos(cleaned, marker);
     if marker_position > 0 and marker_position < cut_position then

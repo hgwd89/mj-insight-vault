@@ -160,7 +160,7 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
     }
   }, [password, pathname]);
 
-  const refresh = useCallback(async (current: ChatRunState | null = run) => {
+  const refresh = useCallback(async (current: ChatRunState | null) => {
     if (!current?.job_id) return;
     try {
       const response = await fetch(`/api/chat/jobs/${current.job_id}`, {
@@ -175,7 +175,7 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
     } catch {
       // best-effort
     }
-  }, [password, resumeQueuedJob, run]);
+  }, [password, resumeQueuedJob]);
 
   useEffect(() => {
     const stored = readChatRunState();

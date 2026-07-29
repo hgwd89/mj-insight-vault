@@ -57,7 +57,7 @@ export default function Page() {
       if (!res.ok) throw new Error(json.error || 'priority取得に失敗しました');
       const nextRuns = json.runs || [];
       setRuns(nextRuns);
-      if (!runId && nextRuns[0]?.run_id) setRunId(nextRuns[0].run_id);
+      setRunId((current) => current || nextRuns[0]?.run_id || '');
       setResult(JSON.stringify({ loaded_runs: nextRuns.length, first: nextRuns[0] || null }, null, 2));
       return nextRuns as Run[];
     } catch (error) {
@@ -66,7 +66,7 @@ export default function Page() {
     } finally {
       setBusy(false);
     }
-  }, [password, runId]);
+  }, [password]);
 
   async function advanceOnce(targetRunId = runId, silent = false) {
     if (!targetRunId) throw new Error('run id がありません');

@@ -9,24 +9,15 @@ const INTERNAL_KEYS = new Set([
   'messages'
 ]);
 
-const INTERNAL_MARKERS = [
-  '【レポート要件】',
-  '[レポート要件]',
-  'レポート要件',
-  '最重要:',
-  'answer_text は必須',
-  'coverage_diagnosis',
-  'source_coverage',
-  'explanatory_hypotheses',
-  'hypothesis_comparison',
-  'research_needs',
-  'evidence_matrix',
-  '必ず以下を出してください',
-  '根拠記事IDのない重要主張は禁止'
+const INTERNAL_PROMPT_DELIMITERS = [
+  '\n\n【レポート要件】',
+  '\r\n\r\n【レポート要件】',
+  '\n\n[レポート要件]',
+  '\r\n\r\n[レポート要件]'
 ];
 
 function cutInternalPrompt(value: string) {
-  const indexes = INTERNAL_MARKERS
+  const indexes = INTERNAL_PROMPT_DELIMITERS
     .map((marker) => value.indexOf(marker))
     .filter((index) => index >= 0);
   return indexes.length ? value.slice(0, Math.min(...indexes)) : value;

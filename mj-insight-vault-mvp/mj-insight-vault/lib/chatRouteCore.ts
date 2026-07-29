@@ -308,11 +308,7 @@ export async function runChatAnalysis(body: Record<string, unknown>, onProgress?
       user_query: text(safeEnvelope.user_query),
       answer_text: text(safeEnvelope.answer_text),
       answer_json: safeAnswer,
-      report_kind: 'provisional',
-      generation_status: 'completed',
-      is_formal_report: false,
-      analysis_verification_status: 'provisional_unverified',
-      full_corpus_gate: text(safeAnswer.full_corpus_gate) || 'failed',
+
       related_article_ids: retrieval.articles.map((a) => a.id)
     }).select('*').single();
     if (error) throw error;

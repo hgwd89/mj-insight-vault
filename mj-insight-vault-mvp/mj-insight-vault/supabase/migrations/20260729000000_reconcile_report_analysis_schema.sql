@@ -377,6 +377,45 @@ set
 
 create index if not exists chat_reports_verification_idx
   on public.chat_reports(is_formal_report, analysis_verification_status, created_at desc);
+
+create or replace function public.sync_chat_report_metadata()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  payload jsonb := coalesce(new.answer_json, '{}'::jsonb);
+  gate text := coalesce(payload ->> 'full_corpus_gate', 'failed');
+  quality_status text := coalesce(payload #>> '{quality_gate,status}', '');
+  formal boolean := gate = 'passed'
+    and quality_status = 'passed'
+    and coalesce(payload ->> 'generation_status', '') <> 'blocked';
+begin
+  new.full_corpus_gate := gate;
+  new.is_formal_report := formal;
+  new.generation_status := coalesce(nullif(payload ->> 'generation_status', ''), 'completed');
+  new.report_kind := case
+    when coalesce(payload ->> 'report_kind', '') = 'diagnostic'
+      or new.generation_status = 'blocked' then 'diagnostic'
+    when coalesce(payload ->> 'report_chat', '') = 'true' then 'followup'
+    when formal then 'formal'
+    else 'provisional'
+  end;
+  new.analysis_verification_status := case
+    when formal then 'full_corpus_verified'
+    when new.report_kind = 'followup' then 'derived_followup'
+    when new.report_kind = 'diagnostic' then 'blocked_diagnostic'
+    else 'provisional_unverified'
+  end;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sync_chat_report_metadata on public.chat_reports;
+create trigger trg_sync_chat_report_metadata
+before insert or update of answer_json on public.chat_reports
+for each row execute function public.sync_chat_report_metadata();
+
 drop view if exists public.analysis_readiness_view;
 create view public.analysis_readiness_view as
 with article_counts as (

@@ -573,14 +573,9 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     return { ...enhanced, report: null, report_error: 'formal_report_quality_gate_failed', answer: blockedAnswer };
   }
 
-  const formalReport = formalReportGateRequired(body);
-  const reportMetadata = formalReport
-    ? { report_kind: 'formal', generation_status: 'completed', is_formal_report: true, analysis_verification_status: 'full_corpus_verified', full_corpus_gate: text(safeAnswer.full_corpus_gate) || 'passed' }
-    : { report_kind: 'provisional', generation_status: 'completed', is_formal_report: false, analysis_verification_status: 'provisional_unverified', full_corpus_gate: text(safeAnswer.full_corpus_gate) || 'failed' };
-
   await progress(onProgress, shouldRunCycle ? 97 : 94, '分析履歴を保存中');
   try {
-    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: text(safeEnvelope.user_query), answer_text: text(safeEnvelope.answer_text), answer_json: safeAnswer, ...reportMetadata, related_article_ids: finalArticles.map((article) => article.id) }).select('*').single();
+    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: text(safeEnvelope.user_query), answer_text: text(safeEnvelope.answer_text), answer_json: safeAnswer, related_article_ids: finalArticles.map((article) => article.id) }).select('*').single();
     if (saved.error) throw saved.error;
     report = saved.data;
   } catch (error) { report_error = error instanceof Error ? error.message : 'chat_reports insert failed'; }

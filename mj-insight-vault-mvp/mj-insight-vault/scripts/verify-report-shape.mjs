@@ -92,9 +92,9 @@ assert(/create view public.analysis_readiness_view/.test(schemaReconcile), 'Sche
 assert(/enable row level security/.test(schemaReconcile) && /revoke all on table/.test(schemaReconcile), 'Corpus-analysis tables must not remain publicly readable.');
 assert(/report_kind text not null default 'provisional'/.test(schema) && /is_formal_report boolean not null default false/.test(schema), 'Canonical schema must persist report verification metadata.');
 assert(/sanitize_report_json/.test(schemaReconcile) && /legacy_unverified/.test(schemaReconcile), 'Schema reconciliation must sanitize and classify legacy report rows.');
-assert(/report_kind: 'formal'/.test(no160) && /full_corpus_verified/.test(no160), 'Formal report saves must persist explicit verification metadata.');
-assert(/report_kind: 'provisional'/.test(chatCore) && /provisional_unverified/.test(chatCore), 'Legacy/focused report saves must remain explicitly provisional.');
-assert(/report_kind: 'followup'/.test(reportFollowupRoute) && /derived_followup/.test(reportFollowupRoute), 'Follow-up reports must not be mislabeled as formal reports.');
+assert(/sync_chat_report_metadata/.test(schemaReconcile) && /trg_sync_chat_report_metadata/.test(schemaReconcile), 'Database must derive report verification metadata from sanitized answer JSON.');
+assert(/chat_reports.*insert/.test(chatCore) && /answer_json: safeAnswer/.test(chatCore), 'Legacy/focused report saves must remain compatible with the pre-metadata schema.');
+assert(/report_chat: true/.test(reportFollowupRoute) && /related_article_ids: args.articleIds/.test(reportFollowupRoute), 'Follow-up reports must remain compatible with the pre-metadata schema.');
 assert(/security_invoker/.test(schemaReconcile) && /revoke all on public\.corpus_scan_gate_view/.test(schemaReconcile), 'Analysis views must not bypass RLS for public roles.');
 
 console.log('verify-report-shape: ok');

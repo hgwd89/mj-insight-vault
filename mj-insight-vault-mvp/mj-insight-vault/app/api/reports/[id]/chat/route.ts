@@ -114,11 +114,7 @@ async function saveFollowupReport(args: {
         followup_query: args.followupQuery,
         report_chat: true
       },
-      report_kind: 'followup',
-      generation_status: 'completed',
-      is_formal_report: false,
-      analysis_verification_status: 'derived_followup',
-      full_corpus_gate: typeof args.answer.full_corpus_gate === 'string' ? args.answer.full_corpus_gate : 'failed',
+
       related_article_ids: args.articleIds
     })
     .select('*')

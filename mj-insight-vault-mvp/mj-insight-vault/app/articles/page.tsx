@@ -311,7 +311,7 @@ export default function ArticlesPage() {
           {q && <span className="badge">{searchModeLabel(data?.search_mode)}</span>}
           <span className="badge">重複候補 {duplicateIds.size}</span>
           <span className="badge">日付不明 {articles.filter(isDateUnknown).length}</span>
-          <span className="badge">選択 {selectedIds.size}</span>
+          <span className="badge">選択 {selectedIds.size} / 表示中 {selectedVisibleCount}</span>
         </div>
       </div>
 

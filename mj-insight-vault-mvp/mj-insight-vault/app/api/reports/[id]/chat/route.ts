@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 
@@ -113,6 +114,7 @@ async function saveFollowupReport(args: {
         followup_query: args.followupQuery,
         report_chat: true
       },
+
       related_article_ids: args.articleIds
     })
     .select('*')
@@ -148,7 +150,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (reportError) throw reportError;
 
-    const articleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
+    const safeReport = sanitizeReportForDisplay(report);
+    const articleIds = Array.isArray(safeReport.related_article_ids) ? safeReport.related_article_ids : [];
     let articles: LinkedArticle[] = [];
 
     if (articleIds.length > 0) {
@@ -206,9 +209,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         content: JSON.stringify({
           saved_report: {
             report_id: report.id,
-            original_user_query: report.user_query,
-            answer_text: getReportAnswerText(report as Record<string, unknown>),
-            answer_json: report.answer_json || null
+            original_user_query: safeReport.user_query,
+            answer_text: getReportAnswerText(safeReport),
+            answer_json: safeReport.answer_json || null
           },
           followup_query: query,
           related_articles: articlePayload
@@ -226,15 +229,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const answer = JSON.parse(raw) as Record<string, unknown>;
     answer.model_used = model;
 
+    const safeAnswerEnvelope = sanitizeReportForDisplay({ user_query: '', answer_text: answer.answer_text, answer_json: answer });
+    const safeAnswer = safeAnswerEnvelope.answer_json && typeof safeAnswerEnvelope.answer_json === 'object' ? safeAnswerEnvelope.answer_json as Record<string, unknown> : answer;
     const followup = await saveFollowupReport({
       parentReportId: report.id,
-      originalQuery: report.user_query,
+      originalQuery: safeReport.user_query,
       followupQuery: query,
-      answer,
+      answer: safeAnswer,
       articleIds: articles.map((article) => article.id)
     });
 
-    return Response.json({ answer, followup_report: followup });
+    return Response.json({ answer: safeAnswer, followup_report: followup });
   } catch (error) {
     return jsonError(error);
   }

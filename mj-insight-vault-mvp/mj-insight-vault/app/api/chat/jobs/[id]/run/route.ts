@@ -3,6 +3,7 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { runChatAnalysis } from '@/lib/chatRouteFullCorpusGuard';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -34,9 +35,10 @@ async function persistReport(result: unknown) {
   if (!isRecord(result) || !isRecord(result.answer)) return;
   const reportId = reportIdFromResult(result);
   if (!reportId) return;
+  const safe = sanitizeReportForDisplay({ user_query: '', answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer), answer_json: result.answer });
   await supabaseAdmin.from('chat_reports').update({
-    answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
-    answer_json: result.answer
+    answer_text: text(safe.answer_text),
+    answer_json: safe.answer_json
   }).eq('id', reportId);
 }
 
@@ -77,7 +79,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
       await persistReport(result);
       const reportId = reportIdFromResult(result);
       const reportError = isRecord(result) ? text(result.report_error) : '';
-      if (!reportId) throw new Error(reportError || 'report was not saved');
+      if (!reportId) {
+        const answer = isRecord(result) && isRecord(result.answer) ? result.answer : {};
+        const gate = text(answer.full_corpus_gate);
+        const qualityBlocked = reportError === 'formal_report_quality_gate_failed';
+        const message = gate === 'failed'
+          ? '本文読解バッチ未完了のため、正式レポートは保存していません。/corpus-scansで対象runを完了してください。'
+          : qualityBlocked
+            ? '品質ゲート未通過のため、正式レポートは保存していません。出力の不足項目を修正して再実行してください。'
+            : reportError || 'report was not saved';
+        await updateJob(jobId, { status: 'failed', progress: 100, stage: qualityBlocked ? 'quality_gate' : 'blocked', result_json: result, report_id: null, error_message: message, finished_at: new Date().toISOString() });
+        const blocked = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
+        return Response.json({ job: blocked.data, result, blocked: true, error: message }, { status: gate === 'failed' || qualityBlocked ? 409 : 500 });
+      }
       await updateJob(jobId, { status: 'completed', progress: 100, stage: 'completed', result_json: result, report_id: reportId, error_message: reportError || null, finished_at: new Date().toISOString() });
       const completed = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
       return Response.json({ job: completed.data, result });

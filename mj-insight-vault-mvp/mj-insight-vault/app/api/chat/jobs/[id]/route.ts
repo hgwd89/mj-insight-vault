@@ -8,7 +8,7 @@ export const maxDuration = 60;
 const STALE_RUNNING_MS = 90 * 1000;
 
 function hasSavedReport(job: Record<string, unknown>) {
-  return Boolean(job.report_id || job.finished_at);
+  return Boolean(job.report_id);
 }
 
 function isStaleRunning(job: Record<string, unknown>) {

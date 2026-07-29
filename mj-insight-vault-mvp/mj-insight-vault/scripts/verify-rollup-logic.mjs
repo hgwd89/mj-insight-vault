@@ -28,6 +28,9 @@ assert(/PAGE_SIZE = 1000/.test(monthly) && /\.range\(from, from \+ PAGE_SIZE - 1
 assert(/markMonthlyRollupsStaleForArticleDates/.test(monthly), 'Rollup stale marker is missing.');
 assert(/\.neq\('status', 'running'\)/.test(monthly), 'Running rollups must not be forcibly marked stale.');
 assert(/RUNNING_LOCK_MS/.test(monthly) && /isFreshRunningRollup/.test(monthly), 'Fresh running rollups must be protected from duplicate generation.');
+assert(/synthesizeMonthlyRollup/.test(monthly) && /getOpenAI/.test(monthly), 'Monthly rollups must have an LLM synthesis path.');
+assert(/'provisional'/.test(monthly), 'Monthly rollup fallback must be explicitly provisional.');
+assert(/status === 'ready' \\|\\| status === 'provisional'/.test(monthly), 'Provisional rollups must retain generated_at for diagnostics.');
 
 assert(/stale_only/.test(rollupApi), 'stale_only rollup API mode is missing.');
 assert(/needs_only/.test(rollupApi), 'needs_only rollup API mode is missing.');

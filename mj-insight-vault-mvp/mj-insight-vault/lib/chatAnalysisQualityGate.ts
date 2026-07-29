@@ -211,10 +211,19 @@ function buildChecks(answer: JsonRecord, answerText: string) {
   const sourceCoverage = isRecord(answer.source_coverage) ? answer.source_coverage : {};
   const coverageComplete = Boolean(sourceCoverage.monthly_rollup_coverage_complete || answer.monthly_rollup_coverage_complete);
   const provisional = Boolean(sourceCoverage.analysis_is_provisional || answer.analysis_is_provisional);
-  const fallbackRollup = text(sourceCoverage.scan_model || answer.scan_model).includes('fallback') || text(answer.generation_warning).includes('fallback');
+  const fullCorpusGate = text(sourceCoverage.full_corpus_gate || answer.full_corpus_gate);
+  const scanModel = text(sourceCoverage.scan_model || answer.scan_model);
+  const generationWarning = text(answer.generation_warning);
+  const extractiveFallbackRollup = scanModel.includes('extractive_fallback')
+    || generationWarning.includes('extractive_fallback')
+    || generationWarning.includes('extractive_fallback_rollup');
+  const emergencyFallback = generationWarning.includes('emergency_fallback') || generationWarning.includes('OPENAI_API_KEY missing');
   return [
     { key: 'answer_text', passed: answerText.length > 120, note: '本文が十分に生成されているか' },
     { key: 'coverage', passed: isRecord(answer.coverage_diagnosis) || isRecord(answer.source_coverage), note: '取得・スキャン・最終投入の範囲が見えるか' },
+    { key: 'full_corpus_gate', passed: !fullCorpusGate || fullCorpusGate === 'passed', note: '正式な全件/カテゴリ分析ではfull_corpus_gateがpassedか' },
+    { key: 'no_emergency_fallback', passed: !emergencyFallback, note: 'OPENAI未設定や緊急fallbackを正式品質として扱っていないか' },
+    { key: 'no_extract_fallback_rollup', passed: !extractiveFallbackRollup, note: '抽出型fallback rollupを正式な分析入力として扱っていないか' },
     { key: 'coverage_complete_or_flagged', passed: coverageComplete || provisional, note: '全件カバレッジが完全、または暫定扱いが明示されているか' },
     { key: 'evidence_matrix', passed: evidenceCount >= 3 && evidenceLinkCount >= 3, note: '主要主張を支えるクリック可能な根拠マトリクスが十分に存在するか' },
     { key: 'refutation_audit', passed: refutationCount >= 1, note: '反証・別解釈・棄却条件が存在するか' },
@@ -223,7 +232,7 @@ function buildChecks(answer: JsonRecord, answerText: string) {
     { key: 'confidence_rubric', passed: asArray(answer.confidence_rubric).length >= 1, note: '主張ごとの信頼度と不確実性が明示されているか' },
     { key: 'article_links', passed: hasClickableArticleLink(answerText), note: '本文内にクリック可能な記事リンクがあるか' },
     { key: 'multiple_links', passed: linkCount >= 3, note: '本文内の根拠リンクが少なすぎないか' },
-    { key: 'fallback_awareness', passed: !fallbackRollup || answerText.includes('暫定') || answerText.includes('抽出型') || answerText.includes('限界'), note: 'fallback利用時に品質限界が明示されているか' }
+    { key: 'fallback_awareness', passed: !extractiveFallbackRollup || answerText.includes('暫定') || answerText.includes('抽出型') || answerText.includes('限界'), note: 'fallback利用時に品質限界が明示されているか' }
   ] as QualityCheck[];
 }
 

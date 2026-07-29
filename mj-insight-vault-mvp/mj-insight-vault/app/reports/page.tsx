@@ -14,20 +14,11 @@ type Report = {
   created_at: string;
 };
 
-const INTERNAL_PROMPT_MARKERS = [
-  '【レポート要件】',
-  '[レポート要件]',
-  'レポート要件',
-  '最重要:',
-  'answer_text は必須',
-  'coverage_diagnosis',
-  'source_coverage',
-  'explanatory_hypotheses',
-  'hypothesis_comparison',
-  'research_needs',
-  'evidence_matrix',
-  '必ず以下を出してください',
-  '根拠記事IDのない重要主張は禁止'
+const INTERNAL_PROMPT_DELIMITERS = [
+  '\n\n【レポート要件】',
+  '\r\n\r\n【レポート要件】',
+  '\n\n[レポート要件]',
+  '\r\n\r\n[レポート要件]'
 ];
 
 function formatTokyo(value: string) {
@@ -47,7 +38,7 @@ function formatTokyo(value: string) {
 
 function stripInternalPrompt(value: unknown) {
   let text = value === undefined || value === null ? '' : String(value);
-  const indexes = INTERNAL_PROMPT_MARKERS.map((marker) => text.indexOf(marker)).filter((index) => index >= 0);
+  const indexes = INTERNAL_PROMPT_DELIMITERS.map((marker) => text.indexOf(marker)).filter((index) => index >= 0);
   if (indexes.length) text = text.slice(0, Math.min(...indexes));
   return text
     .replace(/^\s*全記事を対象に、全データを広域スキャンしたうえで分析してください。[\s　]*/g, '')

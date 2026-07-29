@@ -38,6 +38,7 @@ function statusClass(status: string) {
   if (status === 'stale') return 'border-amber-200 bg-amber-50 text-amber-800';
   if (status === 'running') return 'border-blue-200 bg-blue-50 text-blue-700';
   if (status === 'failed') return 'border-red-200 bg-red-50 text-red-700';
+  if (status === 'provisional') return 'border-amber-200 bg-amber-50 text-amber-800';
   return 'border-zinc-200 bg-zinc-50 text-zinc-600';
 }
 
@@ -46,6 +47,7 @@ function statusLabel(status: string) {
   if (status === 'stale') return '要更新';
   if (status === 'running') return '生成中';
   if (status === 'failed') return '失敗';
+  if (status === 'provisional') return '暫定（Chat非使用）';
   return '未作成';
 }
 
@@ -82,6 +84,7 @@ export default function MonthlyRollupsPage() {
   const rollupByMonth = useMemo(() => new Map(rollups.map((rollup) => [rollup.month_key, rollup])), [rollups]);
   const staleCount = rollups.filter((rollup) => rollup.status === 'stale').length;
   const readyCount = rollups.filter((rollup) => rollup.status === 'ready').length;
+  const provisionalCount = rollups.filter((rollup) => rollup.status === 'provisional').length;
   const failedCount = rollups.filter((rollup) => rollup.status === 'failed').length;
   const runningCount = rollups.filter((rollup) => rollup.status === 'running').length;
   const missingCount = months.filter((month) => !rollupByMonth.has(month)).length;
@@ -176,6 +179,7 @@ export default function MonthlyRollupsPage() {
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
               <span className="badge">記事あり月 {months.length}</span>
               <span className="badge">使用可 {readyCount}</span>
+              <span className="badge">暫定 {provisionalCount}</span>
               <span className="badge">未作成 {missingCount}</span>
               <span className="badge">要更新 {staleCount}</span>
               <span className="badge">失敗 {failedCount}</span>
@@ -213,7 +217,7 @@ export default function MonthlyRollupsPage() {
                   {rollup?.rollup_model && <span className="badge">model: {rollup.rollup_model}</span>}
                   {rollup?.generated_at && <span className="badge">生成: {new Date(rollup.generated_at).toLocaleString('ja-JP')}</span>}
                 </div>
-                {rollup?.error_message && <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-700">{rollup.error_message}</p>}
+                {rollup?.error_message && <p className={'mt-3 rounded-xl p-3 text-sm leading-6 ' + (status === 'provisional' ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-700')}>{rollup.error_message}</p>}
                 {rollup?.summary_text ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{shortText(rollup.summary_text)}</p> : <p className="mt-3 text-sm text-zinc-500">まだ月別まとめは生成されていません。</p>}
                 {(themes.length > 0 || weakSignals.length > 0 || researchNeeds.length > 0) && (
                   <div className="mt-4 grid gap-3 md:grid-cols-3">

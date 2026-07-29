@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 type Run = {
@@ -49,7 +49,7 @@ export default function Page() {
   const [result, setResult] = useState('');
   const stopRef = useRef(false);
 
-  async function loadRuns() {
+  const loadRuns = useCallback(async () => {
     setBusy(true);
     try {
       const res = await fetch('/api/corpus-scans/priority', { headers: { 'x-app-password': password } });
@@ -57,7 +57,7 @@ export default function Page() {
       if (!res.ok) throw new Error(json.error || 'priority取得に失敗しました');
       const nextRuns = json.runs || [];
       setRuns(nextRuns);
-      if (!runId && nextRuns[0]?.run_id) setRunId(nextRuns[0].run_id);
+      setRunId((current) => current || nextRuns[0]?.run_id || '');
       setResult(JSON.stringify({ loaded_runs: nextRuns.length, first: nextRuns[0] || null }, null, 2));
       return nextRuns as Run[];
     } catch (error) {
@@ -66,7 +66,7 @@ export default function Page() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [password]);
 
   async function advanceOnce(targetRunId = runId, silent = false) {
     if (!targetRunId) throw new Error('run id がありません');
@@ -147,7 +147,7 @@ export default function Page() {
     stopRef.current = true;
   }
 
-  useEffect(() => { void loadRuns(); }, []);
+  useEffect(() => { void loadRuns(); }, [loadRuns]);
 
   return (
     <div className="space-y-4">

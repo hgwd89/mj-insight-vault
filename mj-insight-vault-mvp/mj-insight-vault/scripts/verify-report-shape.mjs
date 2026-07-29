@@ -15,8 +15,21 @@ const prompt = read('lib/reportPrompt.ts');
 const qualityGate = read('lib/chatAnalysisQualityGate.ts');
 const no160 = read('lib/chatRouteNo160.ts');
 const jobRun = read('app/api/chat/jobs/[id]/run/route.ts');
+const jobStatus = read('app/api/chat/jobs/[id]/route.ts');
 const reportPage = read('app/reports/[id]/page.tsx');
+const reportListPage = read('app/reports/page.tsx');
 const markdown = read('components/MarkdownArticleText.tsx');
+const chatPanel = read('components/ChatPanel.tsx');
+const fullCorpusGuard = read('lib/chatRouteFullCorpusGuard.ts');
+const monthlyRollups = read('lib/monthlyRollups.ts');
+const monthlyContext = read('lib/monthlyRollupContext.ts');
+const reportSafety = read('lib/reportSafety.ts');
+const reportsRoute = read('app/api/reports/route.ts');
+const reportDetailRoute = read('app/api/reports/[id]/route.ts');
+const reportFollowupRoute = read('app/api/reports/[id]/chat/route.ts');
+const chatCore = read('lib/chatRouteCore.ts');
+const schemaReconcile = read('supabase/migrations/20260729000000_reconcile_report_analysis_schema.sql');
+const schema = read('supabase/schema.sql');
 
 for (const key of [
   'answer_text',
@@ -54,7 +67,41 @@ assert(/filtered\.length >= max \? filtered : articles/.test(no160), 'Evidence n
 assert(/evidence_noise_guard/.test(no160), 'Report coverage metadata must expose the evidence noise guard.');
 
 assert(/MarkdownArticleText/.test(reportPage) && /articleLabel/.test(markdown), 'Report detail page must render article links readably.');
+assert(!/INTERNAL_PROMPT_MARKERS/.test(reportPage) && !/INTERNAL_PROMPT_MARKERS/.test(reportListPage), 'Report pages must use explicit prompt delimiters, not broad semantic markers.');
 assert(/internalArticleHref/.test(markdown), 'Markdown article text renderer must constrain article links to internal article routes.');
 assert(!/OCR照合メモ/.test(prompt), 'Report prompt must not ask reports to include OCR reference memo blocks.');
+assert(/report_requirements/.test(chatPanel), 'ChatPanel must send internal report requirements separately from query.');
+assert(/正式レポート未生成/.test(chatPanel) && /href="\/corpus-scans"/.test(chatPanel), 'ChatPanel must show a clear blocked-state path when full corpus reading is incomplete.');
+assert(!/query: buildReportQuery/.test(chatPanel), 'ChatPanel must not persist internal report requirements inside user query.');
+assert(!/full_corpus_gate: 'provisional'/.test(fullCorpusGuard), 'Full-corpus gate failure must not degrade into provisional report generation.');
+assert(!/縮退分析/.test(fullCorpusGuard), 'Full-corpus gate failure must not run degraded report analysis.');
+assert(/report: null/.test(fullCorpusGuard) && /full_corpus_gate_failed/.test(fullCorpusGuard), 'Full-corpus diagnostic must not be saved as a normal chat report.');
+assert(/extractive fallback is not valid as a formal monthly rollup/.test(monthlyRollups), 'Extractive monthly fallback must not be marked as formal ready context.');
+assert(/isExtractiveFallback/.test(monthlyContext), 'Monthly rollup context must exclude extractive fallback rows.');
+assert(/full_corpus_gate/.test(qualityGate), 'Quality gate must check full_corpus_gate for formal all/category reports.');
+assert(/no_emergency_fallback/.test(qualityGate), 'Quality gate must fail emergency fallback reports.');
+assert(/extractiveFallbackRollup/.test(qualityGate), 'Quality gate must distinguish extractive fallback rollups from normal fallback model generation.');
+assert(/return Boolean\(job\.report_id\)/.test(jobStatus), 'Chat job status must not recover finished failed jobs as completed without a report_id.');
+
+assert(/sanitizeReportText/.test(reportSafety) && /sanitizeJson/.test(reportSafety), 'Report safety boundary must sanitize text and recursively remove internal keys.');
+assert(/INTERNAL_PROMPT_DELIMITERS/.test(reportSafety), 'Report safety must use explicit prompt delimiters.');
+assert(!/const INTERNAL_MARKERS/.test(reportSafety), 'Report safety must not use broad semantic marker truncation.');
+assert(/\\n\\n【レポート要件】/.test(reportSafety), 'Report safety must recognize the appended requirements delimiter.');
+assert(!/evidence_matrix/.test(reportSafety), 'Report safety must preserve legitimate evidence_matrix user text.');
+assert(/sanitizeReportForDisplay/.test(reportsRoute) && /sanitizeReportForDisplay/.test(reportDetailRoute), 'Report list and detail APIs must sanitize persisted reports before returning them.');
+assert(/safeAnswerEnvelope/.test(reportFollowupRoute) && reportFollowupRoute.includes('return Response.json({ answer: safeAnswer'), 'Report follow-up API must sanitize both persisted and returned answers.');
+assert(/sanitizeReportForDisplay/.test(chatCore) && /answer_json: safeAnswer/.test(chatCore), 'Legacy report save path must pass through the same storage safety boundary.');
+assert(/formal_report_quality_gate_failed/.test(no160) && /answer_json: safeAnswer/.test(no160), 'Formal report save must stop on quality-gate failure and persist only sanitized output.');
+assert(/qualityBlocked/.test(jobRun) && /stage: qualityBlocked/.test(jobRun) && jobRun.includes('qualityBlocked ? 409'), 'Job runner must expose quality-gate blocks as a retryable blocked state.');
+assert(/drop trigger if exists trg_auto_complete_chat_job_when_report_saved/.test(schemaReconcile), 'Schema reconciliation must remove the hidden job auto-completion trigger.');
+assert(/create view public.analysis_readiness_view/.test(schemaReconcile), 'Schema reconciliation must define the readiness view used by analysis operations.');
+assert(/enable row level security/.test(schemaReconcile) && /revoke all on table/.test(schemaReconcile), 'Corpus-analysis tables must not remain publicly readable.');
+assert(/report_kind text not null default 'provisional'/.test(schema) && /is_formal_report boolean not null default false/.test(schema), 'Canonical schema must persist report verification metadata.');
+assert(/sanitize_report_json/.test(schemaReconcile) && /legacy_unverified/.test(schemaReconcile), 'Schema reconciliation must sanitize and classify legacy report rows.');
+assert(/sync_chat_report_metadata/.test(schemaReconcile) && /trg_sync_chat_report_metadata/.test(schemaReconcile), 'Database must derive report verification metadata from sanitized answer JSON.');
+assert(/chat_reports.*insert/.test(chatCore) && /answer_json: safeAnswer/.test(chatCore), 'Legacy/focused report saves must remain compatible with the pre-metadata schema.');
+assert(/report_chat: true/.test(reportFollowupRoute) && /related_article_ids: args.articleIds/.test(reportFollowupRoute), 'Follow-up reports must remain compatible with the pre-metadata schema.');
+assert(/security_invoker/.test(schemaReconcile) && /revoke all on public\.corpus_scan_gate_view/.test(schemaReconcile), 'Analysis views must not bypass RLS for public roles.');
+assert(/E'\\n\\n【レポート要件】/.test(schemaReconcile), 'SQL report sanitizer must use the same explicit delimiter.');
 
 console.log('verify-report-shape: ok');

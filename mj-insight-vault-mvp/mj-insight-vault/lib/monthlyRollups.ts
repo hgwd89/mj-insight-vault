@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 
 export type RollupArticle = {
   id: string;
@@ -256,8 +257,44 @@ export async function generateMonthlyRollup(monthKey: string) {
     return upsertMonthlyRollup(monthKey, 0, [], null, 'extractive_fallback', `${monthLabel(monthKey)} has no source articles.`, { month_key: monthKey, article_count: 0 }, [], [], 'ready', null);
   }
 
-  const fallback = buildFallbackRollup(monthKey, articles, 'Build recovery mode: monthly rollup is saved as extractive fallback.');
-  return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, 'extractive_fallback', fallback.summary, fallback.summaryJson, fallback.representative, fallback.evidence, 'ready', null);
+  let synthesisError = 'OPENAI_API_KEY is not configured';
+  if (getOpenAI()) {
+    try {
+      const synthesized = await synthesizeMonthlyRollup(monthKey, articles);
+      if (synthesized) {
+        return upsertMonthlyRollup(
+          monthKey,
+          articles.length,
+          articleIds,
+          latestDate,
+          synthesized.model,
+          synthesized.summary,
+          synthesized.summaryJson,
+          synthesized.representative,
+          synthesized.evidence,
+          'ready',
+          null
+        );
+      }
+    } catch (error) {
+      synthesisError = error instanceof Error ? error.message : 'monthly rollup LLM synthesis failed';
+    }
+  }
+
+  const fallback = buildFallbackRollup(monthKey, articles, 'LLM synthesis unavailable: ' + synthesisError);
+  return upsertMonthlyRollup(
+    monthKey,
+    articles.length,
+    articleIds,
+    latestDate,
+    'extractive_fallback',
+    fallback.summary,
+    fallback.summaryJson,
+    fallback.representative,
+    fallback.evidence,
+    'provisional',
+    'extractive fallback is not valid as a formal monthly rollup; ' + synthesisError
+  );
 }
 
 async function upsertMonthlyRollup(
@@ -287,11 +324,110 @@ async function upsertMonthlyRollup(
       representative_article_ids: representativeIds,
       evidence_article_ids: evidenceIds,
       error_message: errorMessage,
-      generated_at: status === 'ready' ? new Date().toISOString() : null,
+      generated_at: status === 'ready' || status === 'provisional' ? new Date().toISOString() : null,
       updated_at: new Date().toISOString()
     }, { onConflict: 'month_key' })
     .select('*')
     .single();
   if (error) throw error;
   return data as MonthlyRollupRow;
+}
+type RollupJson = Record<string, unknown>;
+
+const ROLLUP_ARTICLE_TEXT_LIMIT = 1600;
+const ROLLUP_MODEL = process.env.OPENAI_ROLLUP_MODEL || TEXT_MODEL;
+
+function rollupText(value: unknown) {
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function rollupList(value: unknown, max = 12) {
+  return Array.isArray(value) ? value.slice(0, max) : [];
+}
+
+function allowedArticleIds(value: unknown, allowed: Set<string>) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map(rollupText).filter((id) => allowed.has(id))));
+}
+
+async function synthesizeMonthlyRollup(monthKey: string, articles: RollupArticle[]) {
+  const openai = getOpenAI();
+  if (!openai) return null;
+
+  const articleIds = articles.map((article) => article.id);
+  const allowed = new Set(articleIds);
+  const payload = {
+    task: 'Read every supplied article and synthesize a monthly consumer-insight rollup. Do not infer causality from article coverage alone.',
+    month_key: monthKey,
+    article_count: articles.length,
+    required_output: {
+      summary_text: 'A concise synthesis grounded in the supplied article texts.',
+      major_themes: 'Array of observable themes with concrete wording.',
+      consumer_narrative: 'What consumer change or tension is visible, and what remains uncertain.',
+      weak_signals: 'Small or emerging signals, not generic trend labels.',
+      contradictions: 'Counter-readings or evidence that weakens simple conclusions.',
+      research_needs: 'Questions that require primary research.',
+      evidence_matrix: 'Evidence items with article_id and observed_fact.',
+      representative_article_ids: 'IDs from the supplied articles only.',
+      evidence_article_ids: 'IDs from the supplied articles only.'
+    },
+    articles: articles.map((article) => ({
+      article_id: article.id,
+      headline: article.headline || '',
+      article_date: article.article_date || article.created_at || '',
+      article_text: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, ROLLUP_ARTICLE_TEXT_LIMIT)
+    }))
+  };
+
+  const completion = await openai.chat.completions.create({
+    model: ROLLUP_MODEL,
+    response_format: { type: 'json_object' },
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a strict consumer-insight analyst. Read every supplied article text. Output only JSON. Separate observed facts, interpretation, contradictions, and research needs. Never invent article IDs or claim that an article proves causality.'
+      },
+      { role: 'user', content: JSON.stringify(payload) }
+    ]
+  });
+
+  const parsedText = completion.choices[0]?.message.content || '{}';
+  let parsed: RollupJson;
+  try {
+    parsed = JSON.parse(parsedText) as RollupJson;
+  } catch {
+    throw new Error('monthly rollup LLM returned invalid JSON');
+  }
+
+  const summary = rollupText(parsed.summary_text || parsed.summary || parsed.consumer_narrative);
+  if (!summary) throw new Error('monthly rollup LLM returned no summary_text');
+
+  const representative = allowedArticleIds(parsed.representative_article_ids, allowed);
+  const evidence = allowedArticleIds(parsed.evidence_article_ids, allowed);
+  const representativeIds = representative.length ? representative : articleIds.slice(0, 40);
+  const evidenceIds = evidence.length ? evidence : articleIds.slice(0, 80);
+
+  return {
+    model: ROLLUP_MODEL,
+    summary,
+    summaryJson: {
+      month_key: monthKey,
+      month_label: monthLabel(monthKey),
+      article_count: articles.length,
+      summary_text: summary,
+      major_themes: rollupList(parsed.major_themes),
+      consumer_narrative: rollupText(parsed.consumer_narrative) || summary,
+      weak_signals: rollupList(parsed.weak_signals),
+      contradictions: rollupList(parsed.contradictions || parsed.refutation_notes),
+      research_needs: rollupList(parsed.research_needs),
+      evidence_matrix: rollupList(parsed.evidence_matrix, 20),
+      representative_article_ids: representativeIds,
+      evidence_article_ids: evidenceIds,
+      source_article_ids: articleIds,
+      rollup_analysis_is_validated: true,
+      generation_method: 'llm'
+    },
+    representative: representativeIds,
+    evidence: evidenceIds
+  };
 }

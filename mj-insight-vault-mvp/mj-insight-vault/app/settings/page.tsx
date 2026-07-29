@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAppPassword, useClearAppPassword } from '@/components/PasswordGate';
 
 type DiagnosticCheck = {
@@ -22,7 +22,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  async function loadDiagnostics() {
+  const loadDiagnostics = useCallback(async () => {
     setLoading(true);
     setError('');
 
@@ -39,11 +39,11 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [password]);
 
   useEffect(() => {
     loadDiagnostics();
-  }, []);
+  }, [loadDiagnostics]);
 
   return (
     <div className="space-y-5">

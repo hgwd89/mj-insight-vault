@@ -9,6 +9,7 @@ import { runChatAnalysis as legacyRunChatAnalysis } from '@/lib/chatRouteCore';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 import { buildMonthlyRollupContext } from '@/lib/monthlyRollupContext';
 import { rankArticlesHybrid } from '@/lib/articleSearch';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 
 const ALL_WORDS = /全期間|全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
 const MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
@@ -28,6 +29,17 @@ type MonthlyContext = Awaited<ReturnType<typeof buildMonthlyRollupContext>>;
 type ChatResult = { report: unknown; report_error: string; related_articles: WideArticle[]; selectable_models: string[]; answer: Record<string, unknown> };
 
 function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
+
+function formalReportGateRequired(body: Record<string, unknown>) {
+  return body.full_corpus_gate === 'passed' && body.require_full_corpus !== false;
+}
+function stripReportInstruction(query: string) {
+  return query.split('\n\n【レポート要件】')[0].trim() || query.trim();
+}
+function reportRequirements(body: Record<string, unknown>) {
+  const value = text(body.report_requirements);
+  return value ? { report_requirements: value } : {};
+}
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 function wantsWide(body: Record<string, unknown>) { return text(body.target_scope || 'all') === 'all' || ALL_WORDS.test(text(body.query)); }
 function isBroadAllQuery(query: string) { return ALL_WORDS.test(query) || /全期間|全体|全件|全記事|全データ|すべて|全部/.test(query); }
@@ -429,7 +441,7 @@ async function runCriticCycle(
 }
 
 async function runWide(body: Record<string, unknown>, onProgress?: ProgressReporter) {
-  const query = text(body.query);
+  const query = stripReportInstruction(text(body.query));
   if (!query) throw new Error('query is required');
   const selectedModel = chooseModel(body.model);
   const openai = getOpenAI();
@@ -493,7 +505,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
     let primaryCompletion: ApiCompletion | undefined;
     try {
       await progress(onProgress, 68, monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中。遅い場合は自動で軽量生成に切り替えます`);
-      primaryCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, ...reasoningOptions(selectedModel), response_format: { type: 'json_object' }, max_completion_tokens: FINAL_MAX_TOKENS, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, compactInput) }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
+      primaryCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: selectedModel, ...reasoningOptions(selectedModel), response_format: { type: 'json_object' }, max_completion_tokens: FINAL_MAX_TOKENS, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ query, ...reportRequirements(body), coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, compactInput) }) }] }, { signal }), FINAL_TIMEOUT_MS, 'final report generation'), onProgress, { from: 68, to: 86, intervalMs: 10000, stage: monthlyUsed ? `${selectedModel}で月別まとめを統合中` : `${selectedModel}で最終レポートを生成中` });
       parsed = JSON.parse(primaryCompletion.choices[0]?.message.content || '{}') as Record<string, unknown>;
       if (!hasUsableReportJson(parsed)) throw unusableReportError('model', primaryCompletion);
       writerDiagnostics = { model: selectedModel, elapsed_ms: Date.now() - generationStartMs, prompt_tokens: primaryCompletion?.usage?.prompt_tokens ?? null, completion_tokens: primaryCompletion?.usage?.completion_tokens ?? null, total_tokens: primaryCompletion?.usage?.total_tokens ?? null, reasoning_tokens: primaryCompletion?.usage?.completion_tokens_details?.reasoning_tokens ?? null, finish_reason: primaryCompletion?.choices[0]?.finish_reason ?? null, article_count: finalArticles.length, rollup_input_chars: rollupInputChars, article_input_chars: articleInputChars, result: 'primary_success' };
@@ -506,7 +518,7 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
       try {
         await progress(onProgress, 78, `${fbModel}で軽量統合レポートを生成中`);
         const fallbackInput = buildArticleInput(finalArticles.slice(0, Math.min(18, finalArticles.length)), 360);
-        fallbackCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: fbModel, ...reasoningOptions(fbModel), response_format: { type: 'json_object' }, max_completion_tokens: FALLBACK_MAX_TOKENS, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON with report_title and answer_text. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count. Never return an empty object.${rollupEvidenceDiscipline(monthlyUsed)}` }, ...conversation, { role: 'user', content: JSON.stringify({ query, coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, fallbackInput) }) }] }, { signal }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
+        fallbackCompletion = await withProgressHeartbeat(withAbortTimeout((signal) => openai.chat.completions.create({ model: fbModel, ...reasoningOptions(fbModel), response_format: { type: 'json_object' }, max_completion_tokens: FALLBACK_MAX_TOKENS, messages: [{ role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\nReturn compact JSON with report_title and answer_text. Use monthly rollups as full-corpus context when present. Use article_link for evidence. Separate full-corpus coverage from evidence article count. Never return an empty object.${rollupEvidenceDiscipline(monthlyUsed)}` }, ...conversation, { role: 'user', content: JSON.stringify({ query, ...reportRequirements(body), coverage: base.source_coverage, coverage_diagnosis: base.coverage_diagnosis, primary_error: primaryMessage, monthly_rollup_context_used: monthlyUsed, analysis_instruction: provisionalInstruction, quality_instructions: qualityInstructions, ...evidencePayload(monthlyUsed, fallbackInput) }) }] }, { signal }), FALLBACK_TIMEOUT_MS, 'fallback report generation'), onProgress, { from: 78, to: 90, intervalMs: 10000, stage: `${fbModel}で軽量統合レポートを生成中` });
         parsed = JSON.parse(fallbackCompletion.choices[0]?.message.content || '{}') as Record<string, unknown>;
         if (!hasUsableReportJson(parsed)) throw unusableReportError('fallback model', fallbackCompletion);
         generationWarning = `fallback_model_used: ${fbModel}; ${generationWarning}`;
@@ -537,32 +549,57 @@ async function runWide(body: Record<string, unknown>, onProgress?: ProgressRepor
   }
 
   const answerText = typeof parsed.answer_text === 'string' ? parsed.answer_text : JSON.stringify(parsed);
-  const answer = { ...base, quality_instructions: qualityInstructions, ...parsed, answer_text: answerText, generation_warning: generationWarning, ...(criticResult !== null ? { critic_result: criticResult } : {}), writer_diagnostics: writerDiagnostics };
+  const answer = { ...base, ...parsed, answer_text: answerText, generation_warning: generationWarning, ...(criticResult !== null ? { critic_result: criticResult } : {}), writer_diagnostics: writerDiagnostics };
   const enhanced = enhanceChatAnalysisResult({ report: null, report_error: '', related_articles: responseArticles, selectable_models: models(), answer }) as ChatResult;
-  const enhancedAnswer = isRecord(enhanced.answer) ? enhanced.answer : answer;
+  const enhancedAnswer = (isRecord(enhanced.answer) ? enhanced.answer : answer) as Record<string, unknown>;
+  const safeEnvelope = sanitizeReportForDisplay({ user_query: query, answer_text: text(enhancedAnswer.answer_text), answer_json: enhancedAnswer });
+  const safeAnswer = isRecord(safeEnvelope.answer_json) ? safeEnvelope.answer_json : enhancedAnswer;
   let report = null;
   let report_error = '';
 
+  const qualityGate = isRecord(enhancedAnswer.quality_gate) ? enhancedAnswer.quality_gate : {};
+  const formalBlocked = formalReportGateRequired(body) && qualityGate.status !== 'passed';
+  if (formalBlocked) {
+    const failedChecks = Array.isArray(qualityGate.failed_checks) ? qualityGate.failed_checks.map(text).filter(Boolean) : [];
+    const blockedAnswer = {
+      ...safeAnswer,
+      report_kind: 'diagnostic',
+      generation_status: 'blocked',
+      is_formal_report: false,
+      next_action: `品質ゲート未通過のため保存していません。再実行前に不足項目を確認してください: ${failedChecks.join(', ') || 'quality_gate'}`,
+      answer_text: `${text(safeAnswer.answer_text)}\n\n## 13. 正式レポート保存停止\n品質ゲート未通過のため、この結果は正式レポートとして保存していません。`
+    };
+    await progress(onProgress, 100, '正式レポート品質ゲート未通過');
+    return { ...enhanced, report: null, report_error: 'formal_report_quality_gate_failed', answer: blockedAnswer };
+  }
+
+  const formalReport = formalReportGateRequired(body);
+  const reportMetadata = formalReport
+    ? { report_kind: 'formal', generation_status: 'completed', is_formal_report: true, analysis_verification_status: 'full_corpus_verified', full_corpus_gate: text(safeAnswer.full_corpus_gate) || 'passed' }
+    : { report_kind: 'provisional', generation_status: 'completed', is_formal_report: false, analysis_verification_status: 'provisional_unverified', full_corpus_gate: text(safeAnswer.full_corpus_gate) || 'failed' };
+
   await progress(onProgress, shouldRunCycle ? 97 : 94, '分析履歴を保存中');
   try {
-    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: text(enhancedAnswer.answer_text), answer_json: enhancedAnswer, related_article_ids: finalArticles.map((article) => article.id) }).select('*').single();
+    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: text(safeEnvelope.user_query), answer_text: text(safeEnvelope.answer_text), answer_json: safeAnswer, ...reportMetadata, related_article_ids: finalArticles.map((article) => article.id) }).select('*').single();
     if (saved.error) throw saved.error;
     report = saved.data;
   } catch (error) { report_error = error instanceof Error ? error.message : 'chat_reports insert failed'; }
 
   await progress(onProgress, 100, report_error ? 'レポート生成完了。履歴保存に警告あり' : 'レポート生成完了');
-  return { ...enhanced, report, report_error, answer: enhancedAnswer };
+  return { ...enhanced, report: report ? sanitizeReportForDisplay(report) : report, report_error, answer: safeAnswer };
 }
 
 async function persistEnhancedResult(result: unknown) {
   if (!isRecord(result) || !isRecord(result.answer) || !isRecord(result.report)) return;
   const reportId = text(result.report.id);
   if (!reportId) return;
-  await supabaseAdmin.from('chat_reports').update({ answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer), answer_json: result.answer }).eq('id', reportId);
+  const safe = sanitizeReportForDisplay({ user_query: '', answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer), answer_json: result.answer });
+  await supabaseAdmin.from('chat_reports').update({ answer_text: text(safe.answer_text), answer_json: safe.answer_json }).eq('id', reportId);
 }
 
 export async function runChatAnalysis(body: Record<string, unknown>, onProgress?: ProgressReporter) {
-  const raw = wantsWide(body) ? await runWide(body, onProgress) : await legacyRunChatAnalysis(body, onProgress);
+  const cleanBody = { ...body, query: stripReportInstruction(text(body.query)) };
+  const raw = wantsWide(cleanBody) ? await runWide(cleanBody, onProgress) : await legacyRunChatAnalysis(cleanBody, onProgress);
   const enhanced = enhanceChatAnalysisResult(raw);
   await persistEnhancedResult(enhanced);
   return enhanced;

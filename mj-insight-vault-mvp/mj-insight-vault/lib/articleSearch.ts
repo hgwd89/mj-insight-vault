@@ -193,7 +193,11 @@ export async function rankArticlesHybrid(rows: SearchableArticle[], query: strin
       if (scoreDiff !== 0) return scoreDiff;
       return String(b.article_date || b.created_at || '').localeCompare(String(a.article_date || a.created_at || ''));
     })
-    .map(({ __matched, ...article }) => article);
+    .map((article) => {
+      const cleaned = { ...article } as Partial<ScoredArticle>;
+      delete cleaned.__matched;
+      return cleaned as SearchableArticle;
+    });
 
   return { articles, mode: semantic.size ? 'hybrid_lexical_semantic' : 'ranked_lexical' };
 }

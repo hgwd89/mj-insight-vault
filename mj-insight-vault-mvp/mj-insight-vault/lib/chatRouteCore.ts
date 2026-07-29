@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
@@ -16,6 +17,7 @@ type AnalysisMode = 'serious_report' | 'quick_scan';
 type RetrievalMode = 'focused_retrieval' | 'wide_all_data_scan';
 type OpenAIClient = NonNullable<ReturnType<typeof getOpenAI>>;
 type ProgressUpdate = { progress: number; stage: string };
+function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
 type ProgressReporter = (update: ProgressUpdate) => void | Promise<void>;
 type ScanOutcome = {
   scan_enabled: boolean;
@@ -104,6 +106,16 @@ function uniq(rows: Article[]) {
 }
 function stringArray(v: unknown) {
   return Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean) : [];
+}
+
+function stripReportInstruction(query: string) {
+  return query.split('\n\n【レポート要件】')[0].trim() || query.trim();
+}
+
+function reportRequirements(body: Record<string, unknown>) {
+  const raw = body.report_requirements;
+  const value = raw === undefined || raw === null ? '' : String(raw).trim();
+  return value ? { report_requirements: value } : {};
 }
 async function reportProgress(onProgress: ProgressReporter | undefined, progress: number, stage: string) {
   if (!onProgress) return;
@@ -240,7 +252,7 @@ function basePayload(modelInfo: ReturnType<typeof resolveModel>, scope: Scope, t
     evidence: evidence(reportItems)
   };
 }
-async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, conversation: Turn[], retrievalMode: RetrievalMode, onProgress?: ProgressReporter) {
+async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof resolveModel>, scope: Scope, template: Template, conversation: Turn[], retrievalMode: RetrievalMode, requirements: Record<string, unknown>, onProgress?: ProgressReporter) {
   if (!items.length) {
     const emptyScan: ScanOutcome = { scan_enabled: false, scan_model: 'none', article_count_scanned: 0, article_count_for_report: 0, selected_article_ids: [], scan_summary: null, final_articles: [] };
     await reportProgress(onProgress, 70, '分析対象の記事がありません');
@@ -261,7 +273,7 @@ async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof
   const system = `${MJ_REPORT_SYSTEM_PROMPT}\n\n${qualityGuard(modelInfo.analysis_mode)}\nIf scan_enabled is true, use scan_summary to preserve article diversity and do not overfit to one cluster. Use article_link or [headline｜date](article_url) in answer_text whenever citing evidence. Return selected_lenses, analysis_process, quality_score, and shallow_summary_check in JSON.`;
   try {
     await reportProgress(onProgress, 68, `${modelInfo.model}で最終レポートを生成中`);
-    const completion = await openai.chat.completions.create({ model: modelInfo.model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, target_scope: scope, output_template: template, analysis_mode: modelInfo.analysis_mode, requested_model: modelInfo.requested_model, model_used: modelInfo.model, retrieval_mode: retrievalMode, scan_enabled: scan.scan_enabled, scan_model: scan.scan_model, article_count_scanned: scan.article_count_scanned, article_count_for_report: scan.article_count_for_report, scan_summary: scan.scan_summary, article_text_limit: limit, articles }, null, 2) }] });
+    const completion = await openai.chat.completions.create({ model: modelInfo.model, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...conversation, { role: 'user', content: JSON.stringify({ user_query: q, ...requirements, target_scope: scope, output_template: template, analysis_mode: modelInfo.analysis_mode, requested_model: modelInfo.requested_model, model_used: modelInfo.model, retrieval_mode: retrievalMode, scan_enabled: scan.scan_enabled, scan_model: scan.scan_model, article_count_scanned: scan.article_count_scanned, article_count_for_report: scan.article_count_for_report, scan_summary: scan.scan_summary, article_text_limit: limit, articles }, null, 2) }] });
     await reportProgress(onProgress, 88, 'レポート出力を整形中');
     const raw = completion.choices[0]?.message.content || '{}';
     const parsed = JSON.parse(raw);
@@ -276,27 +288,40 @@ async function analyze(q: string, items: Article[], modelInfo: ReturnType<typeof
 export async function runChatAnalysis(body: Record<string, unknown>, onProgress?: ProgressReporter) {
   const q = body.query;
   if (!q || typeof q !== 'string') throw new Error('query is required');
+  const cleanQuery = stripReportInstruction(q);
   await reportProgress(onProgress, 8, '分析リクエストを受付');
   const requested = normModel(body.model);
   const targetScope = normScope(body.target_scope);
   const outputTemplate = normTemplate(body.output_template);
-  const modelInfo = resolveModel(requested, q, outputTemplate);
+  const modelInfo = resolveModel(requested, cleanQuery, outputTemplate);
   await reportProgress(onProgress, 18, '関連記事を取得中');
-  const retrieval = await retrieve(q, targetScope);
+  const retrieval = await retrieve(cleanQuery, targetScope);
   await reportProgress(onProgress, 30, `${retrieval.articles.length}件の記事を取得`);
-  const answer = await analyze(q, retrieval.articles, modelInfo, targetScope, outputTemplate, turns(body.conversation), retrieval.retrieval_mode, onProgress);
+  const answer = await analyze(cleanQuery, retrieval.articles, modelInfo, targetScope, outputTemplate, turns(body.conversation), retrieval.retrieval_mode, reportRequirements(body), onProgress);
+  const safeEnvelope = sanitizeReportForDisplay({ user_query: cleanQuery, answer_text: answer.answer_text, answer_json: answer, related_article_ids: retrieval.articles.map((a) => a.id) });
+  const safeAnswer = safeEnvelope.answer_json && typeof safeEnvelope.answer_json === 'object' ? safeEnvelope.answer_json as Record<string, unknown> : answer;
   let report = null;
   let report_error = '';
   await reportProgress(onProgress, 94, '分析履歴を保存中');
   try {
-    const { data, error } = await supabaseAdmin.from('chat_reports').insert({ user_query: q, answer_text: answer.answer_text, answer_json: answer, related_article_ids: retrieval.articles.map((a) => a.id) }).select('*').single();
+    const { data, error } = await supabaseAdmin.from('chat_reports').insert({
+      user_query: text(safeEnvelope.user_query),
+      answer_text: text(safeEnvelope.answer_text),
+      answer_json: safeAnswer,
+      report_kind: 'provisional',
+      generation_status: 'completed',
+      is_formal_report: false,
+      analysis_verification_status: 'provisional_unverified',
+      full_corpus_gate: text(safeAnswer.full_corpus_gate) || 'failed',
+      related_article_ids: retrieval.articles.map((a) => a.id)
+    }).select('*').single();
     if (error) throw error;
     report = data;
   } catch (error) {
     report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
   }
   await reportProgress(onProgress, 100, report_error ? 'レポート生成完了。履歴保存に警告あり' : 'レポート生成完了');
-  return { report, report_error, related_articles: retrieval.articles, selectable_models: selectableModels(), answer };
+  return { report: report ? sanitizeReportForDisplay(report) : report, report_error, related_articles: retrieval.articles, selectable_models: selectableModels(), answer: safeAnswer };
 }
 
 export async function POST(req: NextRequest) {

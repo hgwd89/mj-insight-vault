@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 function mergeAnswerJson(current: unknown, patch: Record<string, unknown>) {
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
 
     return Response.json({
-      report,
+      report: sanitizeReportForDisplay(report),
       related_articles,
       related_articles_meta: {
         total_related_ids: allArticleIds.length,
@@ -101,7 +102,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     if (error) throw error;
 
-    return Response.json({ report });
+    return Response.json({ report: sanitizeReportForDisplay(report) });
   } catch (error) {
     return jsonError(error);
   }
@@ -135,7 +136,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
     if (error) throw error;
 
-    return Response.json({ report });
+    return Response.json({ report: sanitizeReportForDisplay(report) });
   } catch (error) {
     return jsonError(error);
   }

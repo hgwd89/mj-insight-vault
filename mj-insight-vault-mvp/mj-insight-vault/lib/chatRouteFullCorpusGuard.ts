@@ -121,6 +121,9 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
   const scopeLabel = scope.scopeType === 'category' ? `カテゴリ「${scope.categoryName || scope.scopeQuery}」` : '全件';
   const answer = {
     report_title: `${scopeLabel}本文読解未完了`,
+    report_kind: 'diagnostic',
+    generation_status: 'blocked',
+    is_formal_report: false,
     target_scope: scope.scopeType,
     category_id: scope.scopeType === 'category' ? scope.scopeQuery : '',
     model_used: text(body.model || ''),
@@ -162,16 +165,7 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
       scope.scopeType === 'category' ? `カテゴリ ${scope.scopeQuery} のrunを /api/corpus-scans/progress で完了させてください。` : '/api/corpus-scans/progress で全体runを完了させてください。'
     ].join('\n')
   };
-  let report = null;
-  let report_error = '';
-  try {
-    const saved = await supabaseAdmin.from('chat_reports').insert({ user_query: query, answer_text: answer.answer_text, answer_json: answer, related_article_ids: [] }).select('*').single();
-    if (saved.error) throw saved.error;
-    report = saved.data;
-  } catch (error) {
-    report_error = error instanceof Error ? error.message : 'chat_reports insert failed';
-  }
-  return { report, report_error, related_articles: [], selectable_models: [], answer };
+  return { report: null, report_error: 'full_corpus_gate_failed', related_articles: [], selectable_models: [], answer };
 }
 
 async function persistAugmentedResult(result: JsonRecord) {
@@ -195,25 +189,6 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
   const context = await getFullCorpusContext(scope.scopeType, scope.scopeQuery) as CorpusContext;
   const clusterContext = await conceptClusterContext();
   if (!passed(context)) {
-    if (scope.scopeType === 'all') {
-      // Degraded route: gate failed but monthly rollups + all articles are available.
-      // Route to runWide so users get provisional analysis instead of a blank diagnostic.
-      // Cost: AI call fires on every request in degraded mode (accepted; see PR description).
-      // Category-scope stays on diagnostic — separate PR post-Step C resolveScope fix.
-      await onProgress?.({ progress: 20, stage: '本文読解バッチ未完了 — 月別rollupで縮退分析を実行中' });
-      const run = isRecord(context.run) ? context.run : {};
-      const conversation = Array.isArray(body.conversation) ? body.conversation : [];
-      const provisionalBody = { ...body, conversation: [...conversation, ...clusterContext.messages], full_corpus_gate: 'provisional' };
-      const result = await runBaseChatAnalysis(provisionalBody, onProgress) as JsonRecord;
-      if (isRecord(result.answer)) {
-        result.answer.full_corpus_gate = 'provisional';
-        result.answer.analysis_layer_2_clusters_used = clusterContext.count > 0;
-        result.answer.analysis_layer_2_cluster_count = clusterContext.count;
-        result.answer.full_corpus_gate_note = `本文読解バッチ未完了（${num(run, 'completed_batches')}/${num(run, 'total_batches')} 完了）のため、月別rollup+全記事による縮退分析を実施しました。`;
-      }
-      await persistAugmentedResult(result);
-      return result;
-    }
     const result = await diagnostic(query, body, context, scope);
     await onProgress?.({ progress: 100, stage: '本文読解未完了' });
     return result;

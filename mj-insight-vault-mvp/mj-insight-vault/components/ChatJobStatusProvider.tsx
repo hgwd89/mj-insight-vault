@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v2';
@@ -123,7 +123,7 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
   const [run, setRun] = useState<ChatRunState | null>(null);
   const resumingJobIdsRef = useRef<Set<string>>(new Set());
 
-  async function resumeQueuedJob(current: ChatRunState) {
+  const resumeQueuedJob = useCallback(async (current: ChatRunState) => {
     if (pathname === '/chat') return;
     if (!current.job_id || current.status !== 'queued') return;
     if (resumingJobIdsRef.current.has(current.job_id)) return;
@@ -158,9 +158,9 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
     } finally {
       resumingJobIdsRef.current.delete(current.job_id);
     }
-  }
+  }, [password, pathname]);
 
-  async function refresh(current = run) {
+  const refresh = useCallback(async (current: ChatRunState | null = run) => {
     if (!current?.job_id) return;
     try {
       const response = await fetch(`/api/chat/jobs/${current.job_id}`, {
@@ -175,7 +175,7 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
     } catch {
       // best-effort
     }
-  }
+  }, [password, resumeQueuedJob, run]);
 
   useEffect(() => {
     const stored = readChatRunState();
@@ -204,13 +204,13 @@ export function ChatJobStatusProvider({ children }: { children: React.ReactNode 
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [password, pathname]);
+  }, [refresh, resumeQueuedJob]);
 
   useEffect(() => {
     if (!run?.job_id || (run.status !== 'queued' && run.status !== 'running')) return;
     const timer = window.setInterval(() => void refresh(readChatRunState() || run), 3000);
     return () => window.clearInterval(timer);
-  }, [run?.job_id, run?.status, password]);
+  }, [refresh, run]);
 
   function close() {
     writeChatRunState(null);

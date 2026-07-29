@@ -257,7 +257,19 @@ export async function generateMonthlyRollup(monthKey: string) {
   }
 
   const fallback = buildFallbackRollup(monthKey, articles, 'Build recovery mode: monthly rollup is saved as extractive fallback.');
-  return upsertMonthlyRollup(monthKey, articles.length, articleIds, latestDate, 'extractive_fallback', fallback.summary, fallback.summaryJson, fallback.representative, fallback.evidence, 'ready', null);
+  return upsertMonthlyRollup(
+    monthKey,
+    articles.length,
+    articleIds,
+    latestDate,
+    'extractive_fallback',
+    fallback.summary,
+    fallback.summaryJson,
+    fallback.representative,
+    fallback.evidence,
+    'failed',
+    'extractive fallback is not valid as a formal monthly rollup; regenerate with LLM synthesis before using reports'
+  );
 }
 
 async function upsertMonthlyRollup(

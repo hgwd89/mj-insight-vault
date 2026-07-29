@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 function isHidden(report: { answer_json?: unknown }) {
@@ -22,7 +23,9 @@ export async function GET(req: NextRequest) {
       .range(offset, offset + limit - 1);
 
     if (error) throw error;
-    const visible = (data || []).filter((report) => !isHidden(report));
+    const visible = (data || [])
+      .filter((report) => !isHidden(report))
+      .map((report) => sanitizeReportForDisplay(report));
     return Response.json({ reports: visible, meta: { limit, offset, returned: visible.length, total_estimate: count || 0 } });
   } catch (error) {
     return jsonError(error);

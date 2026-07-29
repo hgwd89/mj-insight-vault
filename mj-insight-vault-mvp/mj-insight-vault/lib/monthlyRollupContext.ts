@@ -9,6 +9,7 @@ type MonthlyRollup = {
   representative_article_ids: string[] | null;
   evidence_article_ids: string[] | null;
   status: string;
+  rollup_model: string;
   generated_at: string | null;
 };
 
@@ -34,11 +35,18 @@ function extractBullets(json: Record<string, unknown> | null, key: string, max =
   }).filter(Boolean);
 }
 
+function isExtractiveFallback(row: MonthlyRollup) {
+  const json = row.summary_json || {};
+  return row.rollup_model === 'extractive_fallback'
+    || text(json.generation_warning) === 'extractive_fallback_rollup'
+    || text(row.summary_text).includes('extractive fallback');
+}
+
 export async function buildMonthlyRollupContext() {
   const [{ data, error }, articleMonths, articleMonthCounts] = await Promise.all([
     supabaseAdmin
       .from('monthly_rollups')
-      .select('month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, generated_at')
+      .select('month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, rollup_model, generated_at')
       .order('month_key', { ascending: true }),
     listArticleMonths(),
     listArticleMonthCounts()
@@ -46,7 +54,8 @@ export async function buildMonthlyRollupContext() {
 
   if (error) throw error;
   const rows = (data || []) as MonthlyRollup[];
-  const readyRows = rows.filter((row) => row.status === 'ready');
+  const fallbackMonths = rows.filter(isExtractiveFallback).map((row) => row.month_key);
+  const readyRows = rows.filter((row) => row.status === 'ready' && !isExtractiveFallback(row));
   const byMonth = new Map(rows.map((row) => [row.month_key, row]));
   const readyMonths = readyRows.map((row) => row.month_key);
   const staleMonths = rows.filter((row) => row.status === 'stale').map((row) => row.month_key);
@@ -75,6 +84,7 @@ export async function buildMonthlyRollupContext() {
     failed_months: failedMonths,
     running_months: runningMonths,
     missing_months: missingMonths,
+    fallback_months: fallbackMonths,
     article_months: articleMonths,
     article_month_count: articleMonths.length,
     total_article_count: totalArticleCount,

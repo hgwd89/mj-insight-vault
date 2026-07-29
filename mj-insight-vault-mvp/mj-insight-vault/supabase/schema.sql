@@ -80,6 +80,11 @@ create table if not exists chat_reports (
   answer_text text,
   answer_json jsonb,
   related_article_ids uuid[] not null default '{}',
+  report_kind text not null default 'provisional',
+  generation_status text not null default 'completed',
+  is_formal_report boolean not null default false,
+  analysis_verification_status text not null default 'provisional_unverified',
+  full_corpus_gate text not null default 'failed',
   created_at timestamptz not null default now()
 );
 

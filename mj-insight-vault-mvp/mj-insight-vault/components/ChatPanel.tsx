@@ -132,6 +132,8 @@ type CoverageDiagnosis = {
   date_unknown_count?: number;
   coverage_note?: string;
   caveats?: string[];
+  full_corpus_gate?: string;
+  gate_reason?: string;
 };
 
 type QualityRubric = {
@@ -305,8 +307,8 @@ function evidenceExcerpt(text?: string | null) {
   return compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
 }
 
-function buildReportQuery(userQuery: string) {
-  return `${userQuery}\n\n【レポート要件】\n目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n\n最重要: answer_text は必須です。空欄にしないでください。answer_text には、少なくとも「結論」「生活者動向のナラティブ」「説明仮説（WHY3段階）」「調査が必要そうな論点」「根拠と限界」を本文として書いてください。\n空のオブジェクト、空の見出し、値が入っていない配列要素は禁止です。値を埋められない項目は出力しないでください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。theme, why_research_needed, hypothesis_to_test, evidence_article_ids は必ず埋める。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。claim, article_id, evidence_excerpt, strength, limitation, research_need は必ず埋める。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`;
+function buildReportRequirements() {
+  return `目的は、MJ記事群からリサーチのネタを発見することです。商品開発・販促・チャネルなどの実行アクション提案は不要です。\n\n最重要: answer_text は必須です。空欄にしないでください。answer_text には、少なくとも「結論」「生活者動向のナラティブ」「説明仮説（WHY3段階）」「調査が必要そうな論点」「根拠と限界」を本文として書いてください。\n空のオブジェクト、空の見出し、値が入っていない配列要素は禁止です。値を埋められない項目は出力しないでください。\n\n必ず以下を出してください。\n1. カバレッジ診断: 対象記事数、直接該当/周辺該当、日付不明、記事群の偏り、言える範囲。JSONでは coverage_diagnosis または source_coverage。\n2. 説明仮説（インサイト）: なぜその生活者行動が起きているのか。WHYを必ず3回重ねる。WHY1=表層行動の理由、WHY2=背後心理・制約、WHY3=価値観・社会背景。JSONでは explanatory_hypotheses と why_chain。\n3. 説明仮説の複数案比較: 1つの現象に対して複数の読みを並べ、どれが現時点で有力か、どれは調査で確認すべきかを分ける。JSONでは hypothesis_comparison。\n4. 調査が必要そうな論点ランキング: なぜ調査が必要か、未解明な点、検証仮説、記事からの兆し、根拠記事ID、優先度、確信度、可能ならスコア。JSONでは research_needs。theme, why_research_needed, hypothesis_to_test, evidence_article_ids は必ず埋める。\n5. 根拠マトリクス: 主張、根拠記事、該当抜粋、根拠強度、限界、調査が必要な理由を表で出す。JSONでは evidence_matrix。claim, article_id, evidence_excerpt, strength, limitation, research_need は必ず埋める。\n6. 反証・別解釈: この読みが外れる可能性、棄却条件、追加で必要なデータ。\n7. 品質ルーブリック: 根拠強度、仮説の深さ、調査余地、無理な接続の少なさ、発見性を自己評価。JSONでは quality_rubric または quality_score。\n\n重要: 記事にないことを断定しないでください。弱い推論は「仮説」「未検証」「調査が必要」と明記してください。根拠記事IDのない重要主張は禁止です。`;
 }
 
 function scoreValue(value: unknown) {
@@ -353,7 +355,8 @@ export function ChatPanel() {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-app-password': password },
         body: JSON.stringify({
-          query: buildReportQuery(trimmed),
+          query: trimmed,
+          report_requirements: buildReportRequirements(),
           model,
           target_scope: targetScope,
           output_template: outputTemplate,
@@ -362,7 +365,7 @@ export function ChatPanel() {
       });
 
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Chat failed');
+      if (!res.ok && !json.answer) throw new Error(json.error || 'Chat failed');
 
       const nextAnswer = json.answer as ChatAnswer;
       const answerText = getAnswerText(nextAnswer);
@@ -424,6 +427,10 @@ export function ChatPanel() {
   const coverage = answer?.coverage_diagnosis || answer?.source_coverage;
   const quality = answer?.quality_rubric || answer?.quality_score;
   const answerText = answer ? getAnswerText(answer) : '';
+  const fullCorpusGate = answer ? str(answer.full_corpus_gate || coverage?.full_corpus_gate) : '';
+  const generationStatus = answer ? str(answer.generation_status) : '';
+  const isBlockedReport = fullCorpusGate === 'failed' || generationStatus === 'blocked' || answer?.is_formal_report === false;
+  const nextAction = answer ? str(answer.next_action) : '';
 
   return (
     <div className="space-y-5">
@@ -485,7 +492,14 @@ export function ChatPanel() {
       {answer && (
         <div className="card space-y-5 p-5">
           <section>
-            <h2 className="font-bold">回答</h2>
+            <h2 className="font-bold">{isBlockedReport ? '正式レポート未生成' : '回答'}</h2>
+            {isBlockedReport && (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
+                <p className="font-bold">本文読解バッチが完了していないため、正式レポートとして保存していません。</p>
+                <p className="mt-1">{nextAction || '/corpus-scans で対象runを完了してから、同じ指示で再分析してください。'}</p>
+                <Link className="btn mt-3 bg-white" href="/corpus-scans">本文読解バッチを確認</Link>
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap gap-2 text-xs">
               {answer.target_scope && <span className="badge">scope: {answer.target_scope}</span>}
               {answer.output_template && <span className="badge">template: {answer.output_template}</span>}

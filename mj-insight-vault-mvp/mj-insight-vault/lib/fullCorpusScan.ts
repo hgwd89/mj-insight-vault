@@ -30,6 +30,8 @@ type ScanBatch = {
   article_count: number;
   status: string;
   model: string;
+  updated_at?: string | null;
+  started_at?: string | null;
 };
 
 async function updateScanRow(
@@ -39,6 +41,27 @@ async function updateScanRow(
 ) {
   const { error } = await supabaseAdmin.from(table).update(patch).eq('id', id);
   if (error) throw error;
+}
+
+async function claimScanBatch(batch: ScanBatch, staleRunning = false) {
+  let query = supabaseAdmin
+    .from('full_corpus_scan_batches')
+    .update({
+      status: 'running',
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      error_message: null
+    })
+    .eq('id', batch.id)
+    .eq('status', batch.status);
+
+  if (staleRunning && batch.updated_at) {
+    query = query.eq('updated_at', batch.updated_at);
+  }
+
+  const { data, error } = await query.select('id').maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
 }
 
 function text(value: unknown) {
@@ -420,22 +443,28 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
     error_message: null
   });
 
-  const { data: batches, error: batchError } = await supabaseAdmin
+  const requestedBatches = Math.max(1, Math.min(10, Math.round(maxBatches)));
+  const { data: allBatches, error: batchError } = await supabaseAdmin
     .from('full_corpus_scan_batches')
     .select('*')
     .eq('run_id', id)
-    .in('status', ['queued', 'failed', 'needs_review'])
-    .order('batch_index', { ascending: true })
-    .limit(Math.max(1, Math.min(10, Math.round(maxBatches))));
+    .order('batch_index', { ascending: true });
   if (batchError) throw batchError;
 
-  for (const batch of (batches || []) as ScanBatch[]) {
-    await updateScanRow('full_corpus_scan_batches', batch.id, {
-      status: 'running',
-      started_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      error_message: null
-    });
+  // A crashed request can leave a batch in "running". Reclaim only leases
+  // older than the maximum API execution window, and claim every batch
+  // atomically so concurrent clicks cannot double-charge the model.
+  const staleBefore = Date.now() - 10 * 60 * 1000;
+  const eligible = ((allBatches || []) as ScanBatch[]).filter((batch) => {
+    if (['queued', 'failed', 'needs_review'].includes(batch.status)) return true;
+    if (batch.status !== 'running') return false;
+    const touchedAt = Date.parse(text(batch.updated_at || batch.started_at || ''));
+    return Number.isFinite(touchedAt) && touchedAt < staleBefore;
+  }).slice(0, requestedBatches);
+
+  for (const batch of eligible) {
+    const reclaimed = await claimScanBatch(batch, batch.status === 'running');
+    if (!reclaimed) continue;
 
     try {
       const articles = await loadArticlesByIds(batch.article_ids);

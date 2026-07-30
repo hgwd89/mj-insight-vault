@@ -32,6 +32,15 @@ type ScanBatch = {
   model: string;
 };
 
+async function updateScanRow(
+  table: 'full_corpus_scan_runs' | 'full_corpus_scan_batches',
+  id: string,
+  patch: Record<string, unknown>
+) {
+  const { error } = await supabaseAdmin.from(table).update(patch).eq('id', id);
+  if (error) throw error;
+}
+
 function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
@@ -404,10 +413,12 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
 
   if (run.status === 'completed') return getFullCorpusScanRun(id);
 
-  await supabaseAdmin
-    .from('full_corpus_scan_runs')
-    .update({ status: 'running', started_at: run.started_at || new Date().toISOString(), updated_at: new Date().toISOString(), error_message: null })
-    .eq('id', id);
+  await updateScanRow('full_corpus_scan_runs', id, {
+    status: 'running',
+    started_at: run.started_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    error_message: null
+  });
 
   const { data: batches, error: batchError } = await supabaseAdmin
     .from('full_corpus_scan_batches')
@@ -419,10 +430,12 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
   if (batchError) throw batchError;
 
   for (const batch of (batches || []) as ScanBatch[]) {
-    await supabaseAdmin
-      .from('full_corpus_scan_batches')
-      .update({ status: 'running', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), error_message: null })
-      .eq('id', batch.id);
+    await updateScanRow('full_corpus_scan_batches', batch.id, {
+      status: 'running',
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      error_message: null
+    });
 
     try {
       const articles = await loadArticlesByIds(batch.article_ids);
@@ -430,27 +443,27 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
       const validation = validateBatchSummary(summary, batch.article_ids);
       const evidenceIds = evidenceIdsFromSummary(summary, batch.article_ids);
       const status = validation.passed ? 'completed' : 'needs_review';
-      await supabaseAdmin
-        .from('full_corpus_scan_batches')
-        .update({
-          status,
-          summary_json: { ...summary, validation },
-          evidence_article_ids: evidenceIds,
-          finished_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          error_message: validation.passed ? null : validation.failures.join('; ')
-        })
-        .eq('id', batch.id);
+      await updateScanRow('full_corpus_scan_batches', batch.id, {
+        status,
+        summary_json: { ...summary, validation },
+        evidence_article_ids: evidenceIds,
+        finished_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        error_message: validation.passed ? null : validation.failures.join('; ')
+      });
     } catch (error) {
-      await supabaseAdmin
-        .from('full_corpus_scan_batches')
-        .update({
+      const message = error instanceof Error ? error.message : 'batch failed';
+      try {
+        await updateScanRow('full_corpus_scan_batches', batch.id, {
           status: 'failed',
-          error_message: error instanceof Error ? error.message : 'batch failed',
+          error_message: message,
           finished_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
-        })
-        .eq('id', batch.id);
+        });
+      } catch (persistError) {
+        const persistMessage = persistError instanceof Error ? persistError.message : 'failure state update failed';
+        throw new Error(message + '; could not persist batch failure state: ' + persistMessage);
+      }
     }
   }
 
@@ -461,22 +474,19 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
   const nextStatus = done ? 'completed' : failed ? 'needs_review' : 'running';
   const fullCorpusGate = done && latest.run.analyzed_article_count === latest.run.ocr_ready_article_count ? 'passed' : 'failed';
 
-  await supabaseAdmin
-    .from('full_corpus_scan_runs')
-    .update({
-      status: nextStatus,
-      finished_at: done ? new Date().toISOString() : null,
-      updated_at: new Date().toISOString(),
-      coverage_json: {
-        ...(latest.run.coverage_json || {}),
-        completed_batches: latest.run.completed_batches,
-        failed_batches: latest.run.failed_batches,
-        needs_review_batches: needsReview,
-        analyzed_article_count: latest.run.analyzed_article_count,
-        full_corpus_gate: fullCorpusGate
-      }
-    })
-    .eq('id', id);
+  await updateScanRow('full_corpus_scan_runs', id, {
+    status: nextStatus,
+    finished_at: done ? new Date().toISOString() : null,
+    updated_at: new Date().toISOString(),
+    coverage_json: {
+      ...(latest.run.coverage_json || {}),
+      completed_batches: latest.run.completed_batches,
+      failed_batches: latest.run.failed_batches,
+      needs_review_batches: needsReview,
+      analyzed_article_count: latest.run.analyzed_article_count,
+      full_corpus_gate: fullCorpusGate
+    }
+  });
 
   return getFullCorpusScanRun(id);
 }

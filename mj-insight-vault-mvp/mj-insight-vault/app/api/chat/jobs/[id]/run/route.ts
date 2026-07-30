@@ -24,11 +24,12 @@ function reportIdFromResult(result: unknown) {
 }
 
 async function updateJob(id: string, patch: JsonRecord) {
-  await supabaseAdmin.from('chat_jobs').update({
+  const { error } = await supabaseAdmin.from('chat_jobs').update({
     ...patch,
     heartbeat_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   }).eq('id', id);
+  if (error) throw error;
 }
 
 async function persistReport(result: unknown) {
@@ -36,10 +37,11 @@ async function persistReport(result: unknown) {
   const reportId = reportIdFromResult(result);
   if (!reportId) return;
   const safe = sanitizeReportForDisplay({ user_query: '', answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer), answer_json: result.answer });
-  await supabaseAdmin.from('chat_reports').update({
+  const { error } = await supabaseAdmin.from('chat_reports').update({
     answer_text: text(safe.answer_text),
     answer_json: safe.answer_json
   }).eq('id', reportId);
+  if (error) throw error;
 }
 
 function progressValue(value: unknown, fallback: number) {

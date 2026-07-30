@@ -11,7 +11,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const id = String(body.id || '');
     if (!id) return Response.json({ error: 'id is required' }, { status: 400 });
-    const batchLimit = Math.max(1, Math.min(10, Math.round(Number(body.batch_limit || 2))));
+    const requestedLimit = Number(body.batch_limit);
+    const batchLimit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(10, Math.round(requestedLimit)))
+      : 2;
     return Response.json(await advanceCorpusScan(id, batchLimit));
   } catch (error) {
     return jsonError(error);

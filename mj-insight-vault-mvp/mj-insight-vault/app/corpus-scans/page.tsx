@@ -96,6 +96,42 @@ export default function Page() {
     }
   }
 
+  async function rebuildRun() {
+    const selected = runs.find((run) => run.run_id === runId);
+    if (!selected) return;
+    setBusy(true);
+    setResult('現在の母集団でrunを再構築中...');
+    try {
+      const res = await fetch('/api/corpus-scans', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-app-password': password
+        },
+        body: JSON.stringify({
+          scope_type: selected.scope_type,
+          scope_query: selected.scope_query,
+          model: 'gpt-4o-mini',
+          batch_size: 30
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'run再構築に失敗しました');
+      const freshRuns = await loadRuns();
+      if (json.run?.id) setRunId(json.run.id);
+      setResult(JSON.stringify({
+        rebuilt_run_id: json.run?.id || null,
+        current_article_count: json.run?.active_article_count || null,
+        total_batches: json.run?.total_batches || null,
+        available_runs: freshRuns.length
+      }, null, 2));
+    } catch (error) {
+      setResult(error instanceof Error ? error.message : 'rebuild failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runOnce() {
     setBusy(true);
     try {
@@ -154,12 +190,13 @@ export default function Page() {
       <div className="card p-5">
         <h1 className="text-xl font-black">Corpus Scan Runner</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          DBの優先順位viewからrunを動的取得します。stale runは実行しません。まず batch_limit=1 で検証し、問題なければ自動実行してください。
+          DBの優先順位viewからrunを動的取得します。記事件数が変わったrunは実行せず、現在の母集団で再構築してから実行します。まず batch_limit=1 で検証し、問題なければ自動実行してください。
         </p>
       </div>
       <div className="card p-5 space-y-3">
         <div className="flex flex-wrap gap-2">
           <button className="btn" type="button" onClick={loadRuns} disabled={busy}>run一覧更新</button>
+          <button className="btn" type="button" onClick={rebuildRun} disabled={busy || !runId}>現在の母集団でrunを再構築</button>
           <button className="btn" type="button" onClick={runOnce} disabled={busy || !runId}>選択runを1回実行</button>
           <button className="btn btn-primary" type="button" onClick={autoRun} disabled={busy || autoRunning || !runId}>選択runを自動実行</button>
           <button className="btn" type="button" onClick={stopAutoRun} disabled={!autoRunning}>停止</button>

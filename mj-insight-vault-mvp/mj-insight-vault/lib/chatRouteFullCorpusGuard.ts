@@ -172,13 +172,14 @@ async function persistAugmentedResult(result: JsonRecord) {
   if (!isRecord(result.answer) || !isRecord(result.report)) return;
   const reportId = text(result.report.id);
   if (!reportId) return;
-  await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from('chat_reports')
     .update({
       answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
       answer_json: result.answer
     })
     .eq('id', reportId);
+  if (error) throw error;
 }
 
 export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressReporter) {

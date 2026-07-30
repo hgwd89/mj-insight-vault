@@ -429,7 +429,7 @@ select
   (select count(*)::integer from public.chat_reports) as report_count,
   (select count(*)::integer from public.chat_reports where is_formal_report = true and analysis_verification_status = 'full_corpus_verified' and full_corpus_gate = 'passed') as full_corpus_verified_report_count,
   case when ac.ocr_ready_article_count = ac.profiled_article_count then 'ready_for_scan_execution' else 'ocr_or_profile_incomplete' end as readiness_status
-from article_counts ac cross join profile_counts;
+from article_counts ac cross join profile_counts pc;
 do $$
 begin
   if current_setting('server_version_num')::integer >= 150000 then

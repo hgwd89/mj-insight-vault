@@ -84,6 +84,19 @@ async function claimJob(id: string) {
   return isRecord(row) ? row : null;
 }
 
+async function findSavedFormalReport(jobId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('chat_reports')
+    .select('id, answer_text, answer_json, created_at, is_formal_report, analysis_verification_status, full_corpus_gate')
+    .eq('source_job_id', jobId)
+    .eq('is_formal_report', true)
+    .eq('analysis_verification_status', 'verified')
+    .eq('full_corpus_gate', 'passed')
+    .maybeSingle();
+  if (error) throw error;
+  return isRecord(data) ? data : null;
+}
+
 async function updateClaimedJob(id: string, leaseToken: string, patch: JsonRecord, releaseLease = false) {
   const now = new Date();
   const payload: JsonRecord = {
@@ -106,7 +119,7 @@ async function updateClaimedJob(id: string, leaseToken: string, patch: JsonRecor
   return data as JsonRecord;
 }
 
-async function persistReport(result: unknown) {
+async function persistReport(result: unknown, sourceJobId: string) {
   if (!isRecord(result) || !isRecord(result.answer)) return;
   const reportId = reportIdFromResult(result);
   if (!reportId) return;
@@ -117,7 +130,8 @@ async function persistReport(result: unknown) {
   });
   const { error } = await supabaseAdmin.from('chat_reports').update({
     answer_text: text(safe.answer_text),
-    answer_json: safe.answer_json
+    answer_json: safe.answer_json,
+    source_job_id: sourceJobId
   }).eq('id', reportId);
   if (error) throw error;
 }
@@ -203,6 +217,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
     });
 
     try {
+      const savedReport = await findSavedFormalReport(jobId);
+      if (savedReport) {
+        const completed = await updateClaimedJob(jobId, leaseToken, {
+          status: 'completed',
+          progress: 100,
+          stage: '保存済み正式レポートを復旧',
+          result_json: { recovered_report: savedReport },
+          report_id: text(savedReport.id),
+          error_message: null,
+          attempt_count: 0,
+          finished_at: new Date().toISOString(),
+          next_retry_at: null
+        }, true);
+        return Response.json({ job: completed, report: savedReport, completed_recovered: true });
+      }
+
       const request = isRecord(claimed.request_json) ? { ...claimed.request_json, source_job_id: jobId } : { source_job_id: jobId };
       const preparation = await prepareReportCorpus(request, 1);
       const preparationResult = { pipeline: pipelineSnapshot(preparation) };
@@ -254,7 +284,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
         await updateClaimedJob(jobId, leaseToken, { status: 'running', progress: next, stage });
       });
       const result = enhanceChatAnalysisResult(raw);
-      await persistReport(result);
+      await persistReport(result, jobId);
       const reportId = reportIdFromResult(result);
       const reportError = isRecord(result) ? text(result.report_error) : '';
 

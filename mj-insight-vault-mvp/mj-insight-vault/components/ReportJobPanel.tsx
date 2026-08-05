@@ -43,6 +43,7 @@ answer_textを必須とし、結論、生活者動向のナラティブ、WHY3�
 重要主張には根拠記事IDと記事リンクを付け、事実・推論・仮説・未検証を分離してください。記事にないことを断定せず、弱い推論は調査が必要と明記してください。`;
 
 type ScopeMode = 'all' | 'category';
+type CategoryId = typeof categories[number]['value'];
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -59,7 +60,7 @@ export function ReportJobPanel() {
   const [query, setQuery] = useState('');
   const [model, setModel] = useState('gpt-5-mini');
   const [scopeMode, setScopeMode] = useState<ScopeMode>('all');
-  const [categoryId, setCategoryId] = useState(categories[0].value);
+  const [categoryId, setCategoryId] = useState<CategoryId>(categories[0].value);
   const [outputTemplate, setOutputTemplate] = useState('auto');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -152,7 +153,7 @@ export function ReportJobPanel() {
         {scopeMode === 'category' && (
           <label className="block">
             <span className="text-sm font-bold text-zinc-700">カテゴリ</span>
-            <select className="input mt-2" value={categoryId} onChange={(event) => setCategoryId(event.target.value as typeof categoryId)} disabled={busy}>
+            <select className="input mt-2" value={categoryId} onChange={(event) => setCategoryId(event.target.value as CategoryId)} disabled={busy}>
               {categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
             </select>
           </label>

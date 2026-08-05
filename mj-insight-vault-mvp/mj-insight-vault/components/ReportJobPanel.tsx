@@ -4,8 +4,9 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
-const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v2';
+const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v3';
 const CHAT_RUN_EVENT = 'mj-chat-run-state';
+const PIPELINE_VERSION = 'report_pipeline_v3';
 
 const models = [
   { value: 'gpt-5-mini', label: 'gpt-5-mini｜標準' },
@@ -54,6 +55,35 @@ function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
 
+function jobRunState(job: JsonRecord, fallback: {
+  query: string;
+  model: string;
+  target_scope: ScopeMode;
+  output_template: string;
+}) {
+  const request = isRecord(job.request_json) ? job.request_json : {};
+  const createdAt = text(job.created_at);
+  const createdMs = createdAt ? Date.parse(createdAt) : Date.now();
+  return {
+    status: text(job.status) === 'running' ? 'running' : 'queued',
+    query: text(job.user_query || request.query) || fallback.query,
+    model: text(request.model) || fallback.model,
+    target_scope: text(request.target_scope) || fallback.target_scope,
+    output_template: text(request.output_template) || fallback.output_template,
+    started_at: Number.isNaN(createdMs) ? Date.now() : createdMs,
+    updated_at: Date.now(),
+    progress: Number(job.progress || 3),
+    stage: text(job.stage) || 'ジョブを作成しました',
+    job_id: text(job.id),
+    next_retry_at: text(job.next_retry_at) || undefined
+  };
+}
+
+function saveRun(run: ReturnType<typeof jobRunState>) {
+  window.localStorage.setItem(CHAT_RUN_STORAGE_KEY, JSON.stringify(run));
+  window.dispatchEvent(new CustomEvent(CHAT_RUN_EVENT, { detail: run }));
+}
+
 export function ReportJobPanel() {
   const password = useAppPassword();
   const router = useRouter();
@@ -85,35 +115,35 @@ export function ReportJobPanel() {
           category_id: scopeMode === 'category' ? categoryId : undefined,
           output_template: outputTemplate,
           report_requirements: REPORT_REQUIREMENTS,
-          require_full_corpus: true
+          require_full_corpus: true,
+          pipeline_version: PIPELINE_VERSION
         })
       });
       const json = await response.json().catch(() => ({}));
       const job = isRecord(json) && isRecord(json.job) ? json.job : {};
       const jobId = text(job.id);
+
+      if (response.status === 409 && jobId) {
+        saveRun(jobRunState(job, {
+          query: trimmed,
+          model,
+          target_scope: scopeMode,
+          output_template: outputTemplate
+        }));
+        router.push('/reports');
+        return;
+      }
+
       if (!response.ok || !jobId) {
         throw new Error(text(isRecord(json) ? json.error : '') || response.statusText || 'ジョブ作成に失敗しました');
       }
 
-      const now = Date.now();
-      const run = {
-        status: 'queued',
+      saveRun(jobRunState(job, {
         query: trimmed,
         model,
         target_scope: scopeMode,
-        output_template: outputTemplate,
-        started_at: now,
-        updated_at: now,
-        progress: Number(job.progress || 3),
-        stage: text(job.stage) || 'ジョブを作成しました',
-        job_id: jobId
-      };
-      window.sessionStorage.setItem(CHAT_RUN_STORAGE_KEY, JSON.stringify(run));
-      window.dispatchEvent(new CustomEvent(CHAT_RUN_EVENT, { detail: run }));
-
-      // The global job provider resumes queued work outside /chat. Moving to
-      // the report list also keeps the progress panel visible while each
-      // bounded scan step runs.
+        output_template: outputTemplate
+      }));
       router.push('/reports');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'ジョブ作成に失敗しました');
@@ -181,7 +211,7 @@ export function ReportJobPanel() {
         <button className="btn btn-primary" type="button" onClick={submit} disabled={busy || !query.trim()}>
           {busy ? 'ジョブを作成中' : 'レポート生成を開始'}
         </button>
-        <p className="text-xs leading-5 text-zinc-500">処理状態はDBに保存されます。通信が切れても、次回表示時に未完了ジョブを再開します。</p>
+        <p className="text-xs leading-5 text-zinc-500">処理状態はDBとこのブラウザに保存されます。タブやブラウザを閉じても、次回表示時に未完了ジョブを再開します。</p>
       </div>
     </div>
   );

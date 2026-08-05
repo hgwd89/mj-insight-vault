@@ -1,10 +1,18 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NextRequest } from 'next/server';
+
+function sameSecret(provided: string, expected: string) {
+  const providedBuffer = Buffer.from(provided, 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+  return timingSafeEqual(providedBuffer, expectedBuffer);
+}
 
 export function requireAppPassword(req: NextRequest) {
   const expected = process.env.APP_PASSWORD;
   if (!expected) throw new Error('APP_PASSWORD is not configured.');
   const provided = req.headers.get('x-app-password') || '';
-  if (provided !== expected) {
+  if (provided.length > 1024 || !sameSecret(provided, expected)) {
     const err = new Error('Unauthorized');
     (err as Error & { status?: number }).status = 401;
     throw err;

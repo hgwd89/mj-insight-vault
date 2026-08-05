@@ -168,16 +168,18 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
   return { report: null, report_error: 'full_corpus_gate_failed', related_articles: [], selectable_models: [], answer };
 }
 
-async function persistAugmentedResult(result: JsonRecord) {
+async function persistAugmentedResult(result: JsonRecord, sourceJobId = '') {
   if (!isRecord(result.answer) || !isRecord(result.report)) return;
   const reportId = text(result.report.id);
   if (!reportId) return;
+  const patch: JsonRecord = {
+    answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
+    answer_json: result.answer
+  };
+  if (sourceJobId) patch.source_job_id = sourceJobId;
   const { error } = await supabaseAdmin
     .from('chat_reports')
-    .update({
-      answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
-      answer_json: result.answer
-    })
+    .update(patch)
     .eq('id', reportId);
   if (error) throw error;
 }
@@ -215,6 +217,6 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     result.answer.analysis_layer_2_cluster_count = clusterContext.count;
     result.answer.source_coverage = { ...(isRecord(result.answer.source_coverage) ? result.answer.source_coverage : {}), scope_type: scope.scopeType, scope_query: scope.scopeQuery, full_corpus_gate: 'passed', full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'), analysis_layer_2_clusters_used: clusterContext.count > 0, analysis_layer_2_cluster_count: clusterContext.count };
   }
-  await persistAugmentedResult(result);
+  await persistAugmentedResult(result, text(body.source_job_id));
   return result;
 }

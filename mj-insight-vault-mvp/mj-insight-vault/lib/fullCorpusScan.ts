@@ -340,12 +340,12 @@ async function findRunByFingerprint(scopeType: string, scopeQuery: string, finge
     .select('*')
     .eq('scope_type', scopeType)
     .eq('corpus_fingerprint', fingerprint)
-    .in('status', ['queued', 'running', 'completed'])
+    .in('status', ['queued', 'running', 'completed']);
+  query = scopeQuery ? query.eq('scope_query', scopeQuery) : query.is('scope_query', null);
+  const { data, error } = await query
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  query = scopeQuery ? query.eq('scope_query', scopeQuery) : query.is('scope_query', null);
-  const { data, error } = await query;
   if (error) throw error;
   return isRecord(data) ? data : null;
 }
@@ -370,32 +370,30 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
   const existing = await findRunByFingerprint(scopeType, scopeQuery, fingerprint);
   if (existing) return getFullCorpusScanRun(text(existing.id));
 
-  const insertPayload = {
-    scope_type: scopeType,
-    scope_query: scopeQuery || null,
-    status: batches.length ? 'queued' : 'failed',
-    model,
-    batch_size: batchSize,
-    active_article_count: scoped.length,
-    ocr_ready_article_count: ocrReady.length,
-    total_batches: batches.length,
-    corpus_fingerprint: fingerprint,
-    coverage_json: {
-      active_article_count: scoped.length,
-      ocr_ready_article_count: ocrReady.length,
-      missing_ocr_count: scoped.length - ocrReady.length,
-      batch_size: batchSize,
-      total_batches: batches.length,
-      prompt_version: FULL_CORPUS_PROMPT_VERSION,
-      corpus_fingerprint: fingerprint,
-      full_corpus_gate: batches.length && scoped.length === ocrReady.length ? 'pending' : 'failed'
-    },
-    error_message: batches.length ? null : 'No OCR-ready articles matched this scan scope.'
-  };
-
   const inserted = await supabaseAdmin
     .from('full_corpus_scan_runs')
-    .insert(insertPayload)
+    .insert({
+      scope_type: scopeType,
+      scope_query: scopeQuery || null,
+      status: batches.length ? 'queued' : 'failed',
+      model,
+      batch_size: batchSize,
+      active_article_count: scoped.length,
+      ocr_ready_article_count: ocrReady.length,
+      total_batches: batches.length,
+      corpus_fingerprint: fingerprint,
+      coverage_json: {
+        active_article_count: scoped.length,
+        ocr_ready_article_count: ocrReady.length,
+        missing_ocr_count: scoped.length - ocrReady.length,
+        batch_size: batchSize,
+        total_batches: batches.length,
+        prompt_version: FULL_CORPUS_PROMPT_VERSION,
+        corpus_fingerprint: fingerprint,
+        full_corpus_gate: batches.length && scoped.length === ocrReady.length ? 'pending' : 'failed'
+      },
+      error_message: batches.length ? null : 'No OCR-ready articles matched this scan scope.'
+    })
     .select('*')
     .single();
 
@@ -454,15 +452,12 @@ export async function getLatestFullCorpusScanRun(scopeType = 'all', scopeQuery =
   let query = supabaseAdmin
     .from('full_corpus_scan_runs')
     .select('*')
-    .eq('scope_type', scopeType)
+    .eq('scope_type', scopeType);
+  if (scopeQuery) query = query.eq('scope_query', scopeQuery);
+  const { data, error } = await query
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-
-  if (scopeQuery) query = query.eq('scope_query', scopeQuery);
-  else if (scopeType === 'category') query = query.eq('scope_query', '');
-
-  const { data, error } = await query;
   if (error) throw error;
   return data as ScanRun | null;
 }
@@ -556,7 +551,12 @@ function retryableBatch(batch: ScanBatch) {
 
 function terminalBatch(batch: ScanBatch) {
   const attempts = num(batch.attempt_count);
-  if (batch.status === 'failed') return attempts >= MAX_SCAN_TRANSIENT_ATTEMPTS || batch.last_error_class === 'configuration' || batch.last_error_class === 'data_integrity' || batch.last_error_class === 'provider_terminal';
+  if (batch.status === 'failed') {
+    return attempts >= MAX_SCAN_TRANSIENT_ATTEMPTS
+      || batch.last_error_class === 'configuration'
+      || batch.last_error_class === 'data_integrity'
+      || batch.last_error_class === 'provider_terminal';
+  }
   if (batch.status === 'needs_review') return attempts >= MAX_SCAN_VALIDATION_ATTEMPTS;
   return false;
 }

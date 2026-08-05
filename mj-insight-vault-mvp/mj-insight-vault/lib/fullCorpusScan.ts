@@ -440,7 +440,7 @@ export async function getFullCorpusScanRun(id: string) {
 
   const { data: batches, error: batchError } = await supabaseAdmin
     .from('full_corpus_scan_batches')
-    .select('id, run_id, batch_index, article_count, status, model, attempt_count, next_retry_at, last_error_class, error_message, created_at, updated_at, started_at, finished_at')
+    .select('id, run_id, batch_index, article_ids, article_count, status, model, attempt_count, next_retry_at, last_error_class, error_message, created_at, updated_at, started_at, finished_at')
     .eq('run_id', id)
     .order('batch_index', { ascending: true });
   if (batchError) throw batchError;

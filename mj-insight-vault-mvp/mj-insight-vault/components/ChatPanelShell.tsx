@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { ChatPanel } from '@/components/ChatPanel';
+import { ReportJobPanel } from '@/components/ReportJobPanel';
 import { useAppPassword } from '@/components/PasswordGate';
 
 type LatestReport = {
@@ -95,7 +95,7 @@ export function ChatPanelShell() {
           </div>
         </div>
       )}
-      <ChatPanel />
+      <ReportJobPanel />
     </div>
   );
 }

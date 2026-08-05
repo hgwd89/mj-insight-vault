@@ -10,8 +10,9 @@
     "test:structure": "node scripts/verify-article-structure.mjs",
     "test:rollup": "node scripts/verify-rollup-logic.mjs",
     "test:report": "node scripts/verify-report-shape.mjs",
+    "test:report-pipeline": "node scripts/verify-report-pipeline.mjs",
     "test:upload": "node scripts/verify-upload-constants.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:upload"
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.3.3",

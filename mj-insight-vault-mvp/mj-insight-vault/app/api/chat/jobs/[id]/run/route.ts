@@ -123,7 +123,7 @@ async function persistReport(result: unknown) {
 }
 
 function progressValue(value: unknown, fallback: number) {
-  return Math.max(1, Math.min(99, Math.round(Number(value) || fallback));
+  return Math.max(1, Math.min(99, Math.round(Number(value) || fallback)));
 }
 
 function pipelineSnapshot(preparation: ReportPreparation) {

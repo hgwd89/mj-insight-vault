@@ -10,7 +10,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 const JOB_LEASE_SECONDS = 360;
-const MAX_JOB_ATTEMPTS = 4;
+const MAX_CONSECUTIVE_TRANSIENT_FAILURES = 4;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -59,8 +59,8 @@ function retryableError(error: unknown) {
     || message.includes('network');
 }
 
-function retryDelaySeconds(attemptCount: number) {
-  return Math.min(300, 20 * Math.pow(2, Math.max(0, attemptCount - 1)));
+function retryDelaySeconds(failureCount: number) {
+  return Math.min(300, 20 * Math.pow(2, Math.max(0, failureCount - 1)));
 }
 
 function reportIdFromResult(result: unknown) {
@@ -177,6 +177,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
           status: 'completed',
           progress: 100,
           stage: 'completed',
+          attempt_count: 0,
           finished_at: current.finished_at || new Date().toISOString(),
           lease_token: null,
           lease_expires_at: null,
@@ -190,7 +191,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
 
     const leaseToken = text(claimed.lease_token);
     if (!leaseToken) throw new Error('claim_chat_job returned no lease token');
-    const attemptCount = Math.max(1, number(claimed.attempt_count));
+    const consecutiveFailureCount = Math.max(0, number(claimed.attempt_count));
     let lastProgress = progressValue(claimed.progress, 6);
 
     await updateClaimedJob(jobId, leaseToken, {
@@ -230,8 +231,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
           result_json: preparationResult,
           report_id: null,
           error_message: null,
+          attempt_count: 0,
           finished_at: null,
-          next_retry_at: null
+          next_retry_at: preparation.context.next_retry_at || null
         }, true);
         return Response.json({ job: queued, pipeline: preparationResult.pipeline, pending: true }, { status: 202 });
       }
@@ -242,7 +244,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
         progress: lastProgress,
         stage: preparation.stage,
         result_json: preparationResult,
-        error_message: null
+        error_message: null,
+        attempt_count: 0
       });
 
       const raw = await runChatAnalysis(request, async ({ progress, stage }) => {
@@ -284,6 +287,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
         result_json: result,
         report_id: reportId,
         error_message: reportError || null,
+        attempt_count: 0,
         finished_at: new Date().toISOString(),
         next_retry_at: null
       }, true);
@@ -295,13 +299,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
       }
 
       const message = errorMessage(error);
-      if (retryableError(error) && attemptCount < MAX_JOB_ATTEMPTS) {
-        const delaySeconds = retryDelaySeconds(attemptCount);
+      const nextFailureCount = consecutiveFailureCount + 1;
+      if (retryableError(error) && nextFailureCount <= MAX_CONSECUTIVE_TRANSIENT_FAILURES) {
+        const delaySeconds = retryDelaySeconds(nextFailureCount);
         const queued = await updateClaimedJob(jobId, leaseToken, {
           status: 'queued',
           progress: Math.max(5, Math.min(96, lastProgress)),
           stage: `一時エラーのため${delaySeconds}秒後に再試行します`,
           error_message: message,
+          attempt_count: nextFailureCount,
           finished_at: null,
           next_retry_at: new Date(Date.now() + delaySeconds * 1000).toISOString()
         }, true);
@@ -313,6 +319,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
         progress: 100,
         stage: 'failed',
         error_message: message,
+        attempt_count: nextFailureCount,
         finished_at: new Date().toISOString(),
         next_retry_at: null
       }, true);

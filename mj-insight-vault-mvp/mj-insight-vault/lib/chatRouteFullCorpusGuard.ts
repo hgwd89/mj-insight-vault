@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { fetchAllWideArticles } from '@/lib/wideArticleRetrieval';
-import { getFullCorpusContext } from '@/lib/fullCorpusScan';
+import { getBoundedFullCorpusContext } from '@/lib/reportPipeline';
 import { getConceptClusters } from '@/lib/conceptClusters';
 import { runChatAnalysis as runBaseChatAnalysis } from '@/lib/chatRouteNo160';
 
@@ -162,7 +162,7 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
       `- 要レビューBatch: ${num(run, 'needs_review_batches')}`,
       '',
       '## 3. 必要な対応',
-      scope.scopeType === 'category' ? `カテゴリ ${scope.scopeQuery} のrunを /api/corpus-scans/progress で完了させてください。` : '/api/corpus-scans/progress で全体runを完了させてください。'
+      '永続レポートジョブから実行すると、本文読解runの作成・再構築・再開を自動で行います。'
     ].join('\n')
   };
   return { report: null, report_error: 'full_corpus_gate_failed', related_articles: [], selectable_models: [], answer };
@@ -187,7 +187,7 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
   const scope = await resolveScope(body);
   if (!shouldGuard(body, scope)) return runBaseChatAnalysis(body, onProgress);
   await onProgress?.({ progress: 12, stage: scope.scopeType === 'category' ? 'カテゴリ本文読解ゲートを確認中' : '全件本文読解ゲートを確認中' });
-  const context = await getFullCorpusContext(scope.scopeType, scope.scopeQuery) as CorpusContext;
+  const context = await getBoundedFullCorpusContext(scope.scopeType, scope.scopeQuery) as CorpusContext;
   const clusterContext = await conceptClusterContext();
   if (!passed(context)) {
     const result = await diagnostic(query, body, context, scope);

@@ -15,6 +15,10 @@ function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 function stripReportInstruction(query: string) {
   return query.split('\n\n【レポート要件】')[0].trim() || query.trim();
 }
@@ -51,6 +55,14 @@ async function latestActiveJob() {
   return data;
 }
 
+function activeJobResponse(job: unknown) {
+  return Response.json({
+    error: '未完了のレポートジョブがあります。完了または停止を確認してから新しいジョブを開始してください。',
+    job,
+    active_job_exists: true
+  }, { status: 409 });
+}
+
 export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
@@ -75,16 +87,10 @@ export async function POST(req: NextRequest) {
     }
 
     const active = await latestActiveJob();
-    if (active) {
-      return Response.json({
-        error: '未完了のレポートジョブがあります。完了または停止を確認してから新しいジョブを開始してください。',
-        job: active,
-        active_job_exists: true
-      }, { status: 409 });
-    }
+    if (active) return activeJobResponse(active);
 
     const now = new Date().toISOString();
-    const { data, error } = await supabaseAdmin.from('chat_jobs').insert({
+    const inserted = await supabaseAdmin.from('chat_jobs').insert({
       status: 'queued',
       progress: 3,
       stage: 'ジョブを作成しました',
@@ -93,15 +99,27 @@ export async function POST(req: NextRequest) {
       result_json: null,
       report_id: null,
       error_message: null,
+      attempt_count: 0,
       started_at: null,
       finished_at: null,
       heartbeat_at: now,
       next_retry_at: null
     }).select('*').single();
 
-    if (error) throw error;
-    return Response.json({ job: data });
+    if (inserted.error) {
+      if (inserted.error.code === '23505') {
+        const raced = await latestActiveJob();
+        if (raced) return activeJobResponse(raced);
+      }
+      throw inserted.error;
+    }
+    return Response.json({ job: inserted.data });
   } catch (error) {
+    const record = isRecord(error) ? error : {};
+    if (text(record.code) === '23505') {
+      const active = await latestActiveJob().catch(() => null);
+      if (active) return activeJobResponse(active);
+    }
     return jsonError(error);
   }
 }

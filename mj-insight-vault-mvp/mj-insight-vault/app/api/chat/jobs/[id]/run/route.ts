@@ -9,7 +9,17 @@ import { prepareReportCorpus, type ReportPreparation } from '@/lib/reportPipelin
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+const JOB_LEASE_SECONDS = 360;
+const MAX_JOB_ATTEMPTS = 4;
+
 type JsonRecord = Record<string, unknown>;
+
+class LeaseLostError extends Error {
+  constructor() {
+    super('report job lease lost');
+    this.name = 'LeaseLostError';
+  }
+}
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -24,18 +34,76 @@ function number(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function errorRecord(error: unknown) {
+  return isRecord(error) ? error : {};
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error && error.message) return error.message;
+  const record = errorRecord(error);
+  return text(record.message || record.error || 'chat job failed');
+}
+
+function retryableError(error: unknown) {
+  const record = errorRecord(error);
+  const status = number(record.status || record.statusCode);
+  const code = text(record.code).toLowerCase();
+  const message = errorMessage(error).toLowerCase();
+  if ([408, 409, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+  if (['etimedout', 'econnreset', 'econnrefused', 'enotfound'].includes(code)) return true;
+  return message.includes('rate limit')
+    || message.includes('timed out')
+    || message.includes('timeout')
+    || message.includes('temporarily unavailable')
+    || message.includes('fetch failed')
+    || message.includes('network');
+}
+
+function retryDelaySeconds(attemptCount: number) {
+  return Math.min(300, 20 * Math.pow(2, Math.max(0, attemptCount - 1)));
+}
+
 function reportIdFromResult(result: unknown) {
   if (!isRecord(result) || !isRecord(result.report)) return '';
   return text(result.report.id);
 }
 
-async function updateJob(id: string, patch: JsonRecord) {
-  const { error } = await supabaseAdmin.from('chat_jobs').update({
-    ...patch,
-    heartbeat_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
-  }).eq('id', id);
+async function loadJob(id: string) {
+  const loaded = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();
+  if (loaded.error) throw loaded.error;
+  return loaded.data as JsonRecord;
+}
+
+async function claimJob(id: string) {
+  const { data, error } = await supabaseAdmin.rpc('claim_chat_job', {
+    p_job_id: id,
+    p_lease_seconds: JOB_LEASE_SECONDS
+  });
   if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return isRecord(row) ? row : null;
+}
+
+async function updateClaimedJob(id: string, leaseToken: string, patch: JsonRecord, releaseLease = false) {
+  const now = new Date();
+  const payload: JsonRecord = {
+    ...patch,
+    heartbeat_at: now.toISOString(),
+    updated_at: now.toISOString(),
+    lease_expires_at: releaseLease ? null : new Date(now.getTime() + JOB_LEASE_SECONDS * 1000).toISOString()
+  };
+  if (releaseLease) payload.lease_token = null;
+
+  const { data, error } = await supabaseAdmin
+    .from('chat_jobs')
+    .update(payload)
+    .eq('id', id)
+    .eq('lease_token', leaseToken)
+    .select('*')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new LeaseLostError();
+  return data as JsonRecord;
 }
 
 async function persistReport(result: unknown) {
@@ -55,7 +123,7 @@ async function persistReport(result: unknown) {
 }
 
 function progressValue(value: unknown, fallback: number) {
-  return Math.max(1, Math.min(99, Math.round(Number(value) || fallback)));
+  return Math.max(1, Math.min(99, Math.round(Number(value) || fallback));
 }
 
 function pipelineSnapshot(preparation: ReportPreparation) {
@@ -73,7 +141,9 @@ function pipelineSnapshot(preparation: ReportPreparation) {
       full_corpus_gate: text(preparation.context.full_corpus_gate),
       gate_reason: text(preparation.context.gate_reason),
       current_article_count: number(preparation.context.current_article_count),
-      current_article_count_diff: number(preparation.context.current_article_count_diff)
+      current_article_count_diff: number(preparation.context.current_article_count_diff),
+      retryable_batches: number(preparation.context.retryable_batches),
+      terminal_batches: number(preparation.context.terminal_batches)
     },
     run: {
       id: text(run.id),
@@ -98,70 +168,76 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
     const jobId = String(params.id || '');
     if (!jobId) return Response.json({ error: 'job id is required' }, { status: 400 });
 
-    const loaded = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
-    if (loaded.error) throw loaded.error;
-    const job = loaded.data as JsonRecord;
-    if (!job) return Response.json({ error: 'job not found' }, { status: 404 });
-
-    if (job.status === 'completed') return Response.json({ job });
-    if (job.report_id) {
-      const completed = await supabaseAdmin.from('chat_jobs').update({
-        status: 'completed',
-        progress: 100,
-        stage: 'completed',
-        finished_at: job.finished_at || new Date().toISOString()
-      }).eq('id', jobId).select('*').single();
-      if (completed.error) throw completed.error;
-      return Response.json({ job: completed.data, completed_recovered: true });
+    const claimed = await claimJob(jobId);
+    if (!claimed) {
+      const current = await loadJob(jobId);
+      if (current.status === 'completed') return Response.json({ job: current });
+      if (current.report_id) {
+        const completed = await supabaseAdmin.from('chat_jobs').update({
+          status: 'completed',
+          progress: 100,
+          stage: 'completed',
+          finished_at: current.finished_at || new Date().toISOString(),
+          lease_token: null,
+          lease_expires_at: null,
+          next_retry_at: null
+        }).eq('id', jobId).select('*').single();
+        if (completed.error) throw completed.error;
+        return Response.json({ job: completed.data, completed_recovered: true });
+      }
+      return Response.json({ job: current, already_claimed_or_delayed: true }, { status: 202 });
     }
 
-    let lastProgress = progressValue(job.progress, 6);
-    await updateJob(jobId, {
+    const leaseToken = text(claimed.lease_token);
+    if (!leaseToken) throw new Error('claim_chat_job returned no lease token');
+    const attemptCount = Math.max(1, number(claimed.attempt_count));
+    let lastProgress = progressValue(claimed.progress, 6);
+
+    await updateClaimedJob(jobId, leaseToken, {
       status: 'running',
       progress: lastProgress,
       stage: 'レポート前処理を開始',
       error_message: null,
-      started_at: job.started_at || new Date().toISOString(),
       finished_at: null
     });
 
     try {
-      const request = isRecord(job.request_json) ? { ...job.request_json } : {};
+      const request = isRecord(claimed.request_json) ? { ...claimed.request_json, source_job_id: jobId } : { source_job_id: jobId };
       const preparation = await prepareReportCorpus(request, 1);
       const preparationResult = { pipeline: pipelineSnapshot(preparation) };
 
       if (preparation.terminal) {
         const message = preparation.error || '本文読解の準備に失敗しました';
-        await updateJob(jobId, {
+        const failed = await updateClaimedJob(jobId, leaseToken, {
           status: 'failed',
           progress: 100,
           stage: preparation.stage,
           result_json: preparationResult,
           report_id: null,
           error_message: message,
-          finished_at: new Date().toISOString()
-        });
-        const failed = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
-        return Response.json({ job: failed.data, pipeline: preparationResult.pipeline, error: message }, { status: 422 });
+          finished_at: new Date().toISOString(),
+          next_retry_at: null
+        }, true);
+        return Response.json({ job: failed, pipeline: preparationResult.pipeline, error: message }, { status: 422 });
       }
 
       if (!preparation.ready) {
         lastProgress = Math.max(lastProgress, progressValue(preparation.progress, lastProgress));
-        await updateJob(jobId, {
+        const queued = await updateClaimedJob(jobId, leaseToken, {
           status: 'queued',
           progress: lastProgress,
           stage: preparation.stage,
           result_json: preparationResult,
           report_id: null,
           error_message: null,
-          finished_at: null
-        });
-        const queued = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
-        return Response.json({ job: queued.data, pipeline: preparationResult.pipeline, pending: true }, { status: 202 });
+          finished_at: null,
+          next_retry_at: null
+        }, true);
+        return Response.json({ job: queued, pipeline: preparationResult.pipeline, pending: true }, { status: 202 });
       }
 
       lastProgress = Math.max(lastProgress, progressValue(preparation.progress, 64));
-      await updateJob(jobId, {
+      await updateClaimedJob(jobId, leaseToken, {
         status: 'running',
         progress: lastProgress,
         stage: preparation.stage,
@@ -172,7 +248,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
       const raw = await runChatAnalysis(request, async ({ progress, stage }) => {
         const next = Math.max(lastProgress, progressValue(progress, lastProgress));
         lastProgress = next;
-        await updateJob(jobId, { status: 'running', progress: next, stage });
+        await updateClaimedJob(jobId, leaseToken, { status: 'running', progress: next, stage });
       });
       const result = enhanceChatAnalysisResult(raw);
       await persistReport(result);
@@ -188,40 +264,59 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
           : qualityBlocked
             ? '品質ゲート未通過のため、正式レポートは保存していません。出力の不足項目を修正して再実行してください。'
             : reportError || 'report was not saved';
-        await updateJob(jobId, {
+        const blocked = await updateClaimedJob(jobId, leaseToken, {
           status: 'failed',
           progress: 100,
           stage: qualityBlocked ? 'quality_gate' : 'blocked',
           result_json: result,
           report_id: null,
           error_message: message,
-          finished_at: new Date().toISOString()
-        });
-        const blocked = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
-        return Response.json({ job: blocked.data, result, blocked: true, error: message }, { status: gate === 'failed' || qualityBlocked ? 409 : 500 });
+          finished_at: new Date().toISOString(),
+          next_retry_at: null
+        }, true);
+        return Response.json({ job: blocked, result, blocked: true, error: message }, { status: gate === 'failed' || qualityBlocked ? 409 : 500 });
       }
 
-      await updateJob(jobId, {
+      const completed = await updateClaimedJob(jobId, leaseToken, {
         status: 'completed',
         progress: 100,
         stage: 'completed',
         result_json: result,
         report_id: reportId,
         error_message: reportError || null,
-        finished_at: new Date().toISOString()
-      });
-      const completed = await supabaseAdmin.from('chat_jobs').select('*').eq('id', jobId).single();
-      return Response.json({ job: completed.data, result });
+        finished_at: new Date().toISOString(),
+        next_retry_at: null
+      }, true);
+      return Response.json({ job: completed, result });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'chat job failed';
-      await updateJob(jobId, {
+      if (error instanceof LeaseLostError) {
+        const current = await loadJob(jobId);
+        return Response.json({ job: current, error: error.message }, { status: 409 });
+      }
+
+      const message = errorMessage(error);
+      if (retryableError(error) && attemptCount < MAX_JOB_ATTEMPTS) {
+        const delaySeconds = retryDelaySeconds(attemptCount);
+        const queued = await updateClaimedJob(jobId, leaseToken, {
+          status: 'queued',
+          progress: Math.max(5, Math.min(96, lastProgress)),
+          stage: `一時エラーのため${delaySeconds}秒後に再試行します`,
+          error_message: message,
+          finished_at: null,
+          next_retry_at: new Date(Date.now() + delaySeconds * 1000).toISOString()
+        }, true);
+        return Response.json({ job: queued, retry_scheduled: true, retry_after_seconds: delaySeconds }, { status: 202 });
+      }
+
+      const failed = await updateClaimedJob(jobId, leaseToken, {
         status: 'failed',
         progress: 100,
         stage: 'failed',
         error_message: message,
-        finished_at: new Date().toISOString()
-      });
-      return Response.json({ error: message }, { status: 500 });
+        finished_at: new Date().toISOString(),
+        next_retry_at: null
+      }, true);
+      return Response.json({ job: failed, error: message }, { status: 500 });
     }
   } catch (error) {
     return jsonError(error);

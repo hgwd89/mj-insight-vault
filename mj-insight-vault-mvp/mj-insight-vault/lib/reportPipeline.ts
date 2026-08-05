@@ -198,25 +198,25 @@ function buildBoundedDigests(batches: JsonRecord[]) {
   return { digests, usedChars, detailedBatches };
 }
 
-function scopeQueryBuilder(scope: ReportScope, activeOnly: boolean) {
+async function queryRun(scope: ReportScope, activeOnly: boolean) {
   let query = supabaseAdmin
     .from('full_corpus_scan_runs')
     .select('*')
-    .eq('scope_type', scope.scopeType)
+    .eq('scope_type', scope.scopeType);
+  if (scope.scopeType === 'category') query = query.eq('scope_query', scope.scopeQuery);
+  if (activeOnly) query = query.in('status', ACTIVE_RUN_STATUSES);
+  return query
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (scope.scopeType === 'category') query = query.eq('scope_query', scope.scopeQuery);
-  if (activeOnly) query = query.in('status', ACTIVE_RUN_STATUSES);
-  return query;
 }
 
 async function latestRun(scope: ReportScope) {
-  const active = await scopeQueryBuilder(scope, true);
+  const active = await queryRun(scope, true);
   if (active.error) throw active.error;
   if (isRecord(active.data)) return active.data;
 
-  const fallback = await scopeQueryBuilder(scope, false);
+  const fallback = await queryRun(scope, false);
   if (fallback.error) throw fallback.error;
   return isRecord(fallback.data) ? fallback.data : null;
 }

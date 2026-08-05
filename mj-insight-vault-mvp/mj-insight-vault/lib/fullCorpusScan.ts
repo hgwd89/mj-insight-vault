@@ -1,8 +1,18 @@
+import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getOpenAI } from '@/lib/openai';
 import { fetchAllWideArticles, type WideArticle } from '@/lib/wideArticleRetrieval';
 
 type JsonRecord = Record<string, unknown>;
+
+export const FULL_CORPUS_PROMPT_VERSION = 'full_corpus_batch_v1';
+export const MAX_SCAN_TRANSIENT_ATTEMPTS = 4;
+export const MAX_SCAN_VALIDATION_ATTEMPTS = 2;
+
+const DEFAULT_SCAN_TIMEOUT_MS = 180_000;
+const MIN_SCAN_TIMEOUT_MS = 30_000;
+const MAX_SCAN_TIMEOUT_MS = 240_000;
+const STALE_BATCH_MS = 10 * 60 * 1000;
 
 type ScanRun = {
   id: string;
@@ -20,6 +30,8 @@ type ScanRun = {
   analyzed_article_count: number;
   coverage_json: JsonRecord;
   error_message: string | null;
+  corpus_fingerprint?: string | null;
+  started_at?: string | null;
 };
 
 type ScanBatch = {
@@ -30,9 +42,111 @@ type ScanBatch = {
   article_count: number;
   status: string;
   model: string;
+  attempt_count?: number;
+  next_retry_at?: string | null;
+  last_error_class?: string | null;
   updated_at?: string | null;
   started_at?: string | null;
 };
+
+type ClassifiedError = {
+  message: string;
+  retryable: boolean;
+  errorClass: string;
+};
+
+function text(value: unknown) {
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function num(value: unknown) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function configuredScanTimeoutMs() {
+  const parsed = Number(process.env.OPENAI_SCAN_TIMEOUT_MS || DEFAULT_SCAN_TIMEOUT_MS);
+  if (!Number.isFinite(parsed)) return DEFAULT_SCAN_TIMEOUT_MS;
+  return Math.max(MIN_SCAN_TIMEOUT_MS, Math.min(MAX_SCAN_TIMEOUT_MS, Math.round(parsed)));
+}
+
+function withAbortTimeout<T>(factory: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
+  const controller = new AbortController();
+  let settled = false;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
+      reject(new Error(`full corpus batch timed out after ${ms}ms`));
+    }, ms);
+
+    factory(controller.signal)
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+function errorRecord(error: unknown) {
+  return isRecord(error) ? error : {};
+}
+
+function classifyError(error: unknown): ClassifiedError {
+  const record = errorRecord(error);
+  const message = error instanceof Error && error.message
+    ? error.message
+    : text(record.message || record.error || 'batch failed');
+  const lower = message.toLowerCase();
+  const status = num(record.status || record.statusCode);
+  const code = text(record.code).toLowerCase();
+
+  if (lower.includes('openai_api_key is not configured')) {
+    return { message, retryable: false, errorClass: 'configuration' };
+  }
+  if (lower.includes('article payload mismatch') || lower.includes('no articles loaded')) {
+    return { message, retryable: false, errorClass: 'data_integrity' };
+  }
+  if ([408, 409, 425, 429, 500, 502, 503, 504].includes(status)) {
+    return { message, retryable: true, errorClass: status === 429 ? 'rate_limit' : 'provider_transient' };
+  }
+  if (['etimedout', 'econnreset', 'econnrefused', 'enotfound'].includes(code)) {
+    return { message, retryable: true, errorClass: 'network' };
+  }
+  if (
+    lower.includes('rate limit')
+    || lower.includes('timed out')
+    || lower.includes('timeout')
+    || lower.includes('temporarily unavailable')
+    || lower.includes('fetch failed')
+    || lower.includes('network')
+    || lower.includes('connection reset')
+  ) {
+    return { message, retryable: true, errorClass: lower.includes('rate limit') ? 'rate_limit' : 'network' };
+  }
+  return { message, retryable: false, errorClass: 'provider_terminal' };
+}
+
+function retryDelaySeconds(attemptCount: number) {
+  return Math.min(300, 20 * Math.pow(2, Math.max(0, attemptCount - 1)));
+}
+
+function validationRetryDelaySeconds(attemptCount: number) {
+  return Math.min(60, 10 * Math.max(1, attemptCount));
+}
 
 async function updateScanRow(
   table: 'full_corpus_scan_runs' | 'full_corpus_scan_batches',
@@ -43,33 +157,15 @@ async function updateScanRow(
   if (error) throw error;
 }
 
-async function claimScanBatch(batch: ScanBatch, staleRunning = false) {
-  let query = supabaseAdmin
-    .from('full_corpus_scan_batches')
-    .update({
-      status: 'running',
-      started_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      error_message: null
-    })
-    .eq('id', batch.id)
-    .eq('status', batch.status);
-
-  if (staleRunning && batch.updated_at) {
-    query = query.eq('updated_at', batch.updated_at);
-  }
-
-  const { data, error } = await query.select('id').maybeSingle();
+async function claimScanBatch(batch: ScanBatch) {
+  const { data, error } = await supabaseAdmin.rpc('claim_full_corpus_scan_batch', {
+    p_batch_id: batch.id,
+    p_expected_status: batch.status,
+    p_expected_updated_at: batch.status === 'running' ? batch.updated_at || null : null
+  });
   if (error) throw error;
-  return Boolean(data);
-}
-
-function text(value: unknown) {
-  return value === undefined || value === null ? '' : String(value).trim();
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+  const row = Array.isArray(data) ? data[0] : data;
+  return isRecord(row) ? row as unknown as ScanBatch : null;
 }
 
 function safeJson(value: string): JsonRecord {
@@ -134,38 +230,6 @@ async function fetchScopedArticles(scopeType: string, scopeQuery: string) {
   return all.filter((article) => matchesScope(article, scopeType, scopeQuery));
 }
 
-function fallbackBatchSummary(articles: WideArticle[], reason: string) {
-  const evidence = articles.slice(0, 10).map((article) => ({
-    article_id: article.id,
-    headline: article.headline || '無題の記事',
-    article_date: article.article_date || '日付不明',
-    observed_fact: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 220),
-    limitation: 'fallback extractive summary; not a model-based interpretation'
-  }));
-
-  return {
-    scan_type: 'full_corpus_batch',
-    prompt_version: 'full_corpus_batch_v1',
-    analysis_is_validated: false,
-    fallback_used: true,
-    fallback_reason: reason,
-    article_count: articles.length,
-    read_article_ids: articles.map((article) => article.id),
-    consumer_narratives: [],
-    behavior_signals: [],
-    constraints: [],
-    contradictions: [],
-    category_signals: [],
-    weak_signals: [],
-    research_needs: [{
-      question: 'このバッチは抽出的fallbackのため、生活者ナラティブの解釈を再読解する必要がある。',
-      why_it_matters: '本文を意味読解していないため。',
-      priority: 'high'
-    }],
-    evidence
-  };
-}
-
 async function loadArticlesByIds(ids: string[]) {
   if (!ids.length) return [] as WideArticle[];
   const { data, error } = await supabaseAdmin
@@ -210,7 +274,8 @@ function validateBatchSummary(summary: JsonRecord, articleIds: string[]) {
 
 async function analyzeBatch(articles: WideArticle[], model: string, scopeType: string, scopeQuery: string) {
   const openai = getOpenAI();
-  if (!openai) return fallbackBatchSummary(articles, 'OPENAI_API_KEY is not configured');
+  if (!openai) throw new Error('OPENAI_API_KEY is not configured');
+  if (!articles.length) throw new Error('no articles loaded for corpus batch');
 
   const payload = {
     task: 'Read every article text in this batch and extract consumer narratives and insight seeds. Do not summarize only headlines. Do not overclaim. Separate fact, inference, contradiction, and research need.',
@@ -232,25 +297,57 @@ async function analyzeBatch(articles: WideArticle[], model: string, scopeType: s
     articles: articles.map(compactArticle)
   };
 
-  try {
-    const completion = await openai.chat.completions.create({
+  const completion = await withAbortTimeout(
+    (signal) => openai.chat.completions.create({
       model,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: 'You are a strict consumer-insight analyst. Read all supplied article texts. Output only JSON. Never claim full-corpus coverage beyond this batch. If a batch contains weak evidence, still record observed facts and what cannot be said.' },
         { role: 'user', content: JSON.stringify(payload) }
       ]
-    });
-    const parsed = safeJson(completion.choices[0]?.message.content || '{}');
-    parsed.scan_type = 'full_corpus_batch';
-    parsed.prompt_version = 'full_corpus_batch_v1';
-    parsed.model_used = model;
-    parsed.article_count = articles.length;
-    parsed.read_article_ids = Array.isArray(parsed.read_article_ids) ? parsed.read_article_ids : articles.map((article) => article.id);
-    return parsed;
-  } catch (error) {
-    return fallbackBatchSummary(articles, error instanceof Error ? error.message : 'batch analysis failed');
-  }
+    }, { signal }),
+    configuredScanTimeoutMs()
+  );
+  const parsed = safeJson(completion.choices[0]?.message.content || '{}');
+  parsed.scan_type = 'full_corpus_batch';
+  parsed.prompt_version = FULL_CORPUS_PROMPT_VERSION;
+  parsed.model_used = model;
+  parsed.article_count = articles.length;
+  return parsed;
+}
+
+function corpusFingerprint(input: {
+  scopeType: string;
+  scopeQuery: string;
+  model: string;
+  batchSize: number;
+  articleIds: string[];
+}) {
+  const canonical = JSON.stringify({
+    scope_type: input.scopeType,
+    scope_query: input.scopeQuery,
+    model: input.model,
+    batch_size: input.batchSize,
+    prompt_version: FULL_CORPUS_PROMPT_VERSION,
+    article_ids: [...input.articleIds].sort()
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+async function findRunByFingerprint(scopeType: string, scopeQuery: string, fingerprint: string) {
+  let query = supabaseAdmin
+    .from('full_corpus_scan_runs')
+    .select('*')
+    .eq('scope_type', scopeType)
+    .eq('corpus_fingerprint', fingerprint)
+    .in('status', ['queued', 'running', 'completed'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  query = scopeQuery ? query.eq('scope_query', scopeQuery) : query.is('scope_query', null);
+  const { data, error } = await query;
+  if (error) throw error;
+  return isRecord(data) ? data : null;
 }
 
 export async function createFullCorpusScanRun(input: { scope_type?: string; scope_query?: string; model?: string; batch_size?: number }) {
@@ -262,44 +359,74 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
   const scoped = await fetchScopedArticles(scopeType, scopeQuery);
   const ocrReady = scoped.filter((article) => text(article.ocr_text));
   const batches = chunk(ocrReady, batchSize);
+  const fingerprint = corpusFingerprint({
+    scopeType,
+    scopeQuery,
+    model,
+    batchSize,
+    articleIds: ocrReady.map((article) => article.id)
+  });
 
-  const { data: run, error } = await supabaseAdmin
-    .from('full_corpus_scan_runs')
-    .insert({
-      scope_type: scopeType,
-      scope_query: scopeQuery || null,
-      status: batches.length ? 'queued' : 'failed',
-      model,
-      batch_size: batchSize,
+  const existing = await findRunByFingerprint(scopeType, scopeQuery, fingerprint);
+  if (existing) return getFullCorpusScanRun(text(existing.id));
+
+  const insertPayload = {
+    scope_type: scopeType,
+    scope_query: scopeQuery || null,
+    status: batches.length ? 'queued' : 'failed',
+    model,
+    batch_size: batchSize,
+    active_article_count: scoped.length,
+    ocr_ready_article_count: ocrReady.length,
+    total_batches: batches.length,
+    corpus_fingerprint: fingerprint,
+    coverage_json: {
       active_article_count: scoped.length,
       ocr_ready_article_count: ocrReady.length,
+      missing_ocr_count: scoped.length - ocrReady.length,
+      batch_size: batchSize,
       total_batches: batches.length,
-      coverage_json: {
-        active_article_count: scoped.length,
-        ocr_ready_article_count: ocrReady.length,
-        missing_ocr_count: scoped.length - ocrReady.length,
-        batch_size: batchSize,
-        total_batches: batches.length,
-        full_corpus_gate: batches.length && scoped.length === ocrReady.length ? 'pending' : 'failed'
-      },
-      error_message: batches.length ? null : 'No OCR-ready articles matched this scan scope.'
-    })
+      prompt_version: FULL_CORPUS_PROMPT_VERSION,
+      corpus_fingerprint: fingerprint,
+      full_corpus_gate: batches.length && scoped.length === ocrReady.length ? 'pending' : 'failed'
+    },
+    error_message: batches.length ? null : 'No OCR-ready articles matched this scan scope.'
+  };
+
+  const inserted = await supabaseAdmin
+    .from('full_corpus_scan_runs')
+    .insert(insertPayload)
     .select('*')
     .single();
-  if (error) throw error;
 
+  if (inserted.error) {
+    if (inserted.error.code === '23505') {
+      const raced = await findRunByFingerprint(scopeType, scopeQuery, fingerprint);
+      if (raced) return getFullCorpusScanRun(text(raced.id));
+    }
+    throw inserted.error;
+  }
+
+  const run = inserted.data;
   const batchRows = batches.map((articles, index) => ({
     run_id: run.id,
     batch_index: index + 1,
     article_ids: articles.map((article) => article.id),
     article_count: articles.length,
     status: 'queued',
-    model
+    model,
+    prompt_version: FULL_CORPUS_PROMPT_VERSION,
+    attempt_count: 0,
+    next_retry_at: null,
+    last_error_class: null
   }));
 
   if (batchRows.length) {
     const { error: batchError } = await supabaseAdmin.from('full_corpus_scan_batches').insert(batchRows);
-    if (batchError) throw batchError;
+    if (batchError) {
+      await supabaseAdmin.from('full_corpus_scan_runs').delete().eq('id', run.id);
+      throw batchError;
+    }
   }
 
   return getFullCorpusScanRun(run.id);
@@ -315,7 +442,7 @@ export async function getFullCorpusScanRun(id: string) {
 
   const { data: batches, error: batchError } = await supabaseAdmin
     .from('full_corpus_scan_batches')
-    .select('id, run_id, batch_index, article_count, status, model, error_message, created_at, updated_at, started_at, finished_at')
+    .select('id, run_id, batch_index, article_count, status, model, attempt_count, next_retry_at, last_error_class, error_message, created_at, updated_at, started_at, finished_at')
     .eq('run_id', id)
     .order('batch_index', { ascending: true });
   if (batchError) throw batchError;
@@ -332,14 +459,8 @@ export async function getLatestFullCorpusScanRun(scopeType = 'all', scopeQuery =
     .limit(1)
     .maybeSingle();
 
-  if (scopeQuery) query = supabaseAdmin
-    .from('full_corpus_scan_runs')
-    .select('*')
-    .eq('scope_type', scopeType)
-    .eq('scope_query', scopeQuery)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  if (scopeQuery) query = query.eq('scope_query', scopeQuery);
+  else if (scopeType === 'category') query = query.eq('scope_query', '');
 
   const { data, error } = await query;
   if (error) throw error;
@@ -366,11 +487,12 @@ export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
   const run = await getLatestFullCorpusScanRun(scopeType, scopeQuery);
   if (!run) return { run: null, context_text: '', full_corpus_gate: 'failed', reason: 'no_full_corpus_scan_run' };
 
-  const { data: gateData } = await supabaseAdmin
+  const { data: gateData, error: gateError } = await supabaseAdmin
     .from('corpus_scan_gate_view')
     .select('full_corpus_gate, gate_reason, current_article_count, current_article_count_diff')
     .eq('id', run.id)
     .maybeSingle();
+  if (gateError) throw gateError;
 
   const { data: batches, error } = await supabaseAdmin
     .from('full_corpus_scan_batches')
@@ -381,7 +503,6 @@ export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
 
   const completed = (batches || []).filter((batch) => batch.status === 'completed');
   const gate = text(gateData?.full_corpus_gate) || 'failed';
-
   const context = completed.map((batch) => ({
     batch_index: batch.batch_index,
     article_count: batch.article_count,
@@ -416,12 +537,37 @@ export async function getFullCorpusContext(scopeType = 'all', scopeQuery = '') {
   };
 }
 
+function retryDue(batch: ScanBatch) {
+  const value = text(batch.next_retry_at);
+  if (!value) return true;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) || parsed <= Date.now();
+}
+
+function retryableBatch(batch: ScanBatch) {
+  const attempts = num(batch.attempt_count);
+  if (batch.status === 'queued') return retryDue(batch);
+  if (batch.status === 'failed') return attempts < MAX_SCAN_TRANSIENT_ATTEMPTS && retryDue(batch);
+  if (batch.status === 'needs_review') return attempts < MAX_SCAN_VALIDATION_ATTEMPTS && retryDue(batch);
+  if (batch.status !== 'running') return false;
+  const touchedAt = Date.parse(text(batch.updated_at || batch.started_at || ''));
+  return Number.isFinite(touchedAt) && touchedAt < Date.now() - STALE_BATCH_MS;
+}
+
+function terminalBatch(batch: ScanBatch) {
+  const attempts = num(batch.attempt_count);
+  if (batch.status === 'failed') return attempts >= MAX_SCAN_TRANSIENT_ATTEMPTS || batch.last_error_class === 'configuration' || batch.last_error_class === 'data_integrity' || batch.last_error_class === 'provider_terminal';
+  if (batch.status === 'needs_review') return attempts >= MAX_SCAN_VALIDATION_ATTEMPTS;
+  return false;
+}
+
 export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
-  const { data: gateData } = await supabaseAdmin
+  const { data: gateData, error: gateError } = await supabaseAdmin
     .from('corpus_scan_gate_view')
     .select('gate_reason, current_article_count_diff')
     .eq('id', id)
     .maybeSingle();
+  if (gateError) throw gateError;
   if (gateData?.gate_reason === 'run_stale_article_count_mismatch') {
     throw new Error(`run is stale; rebuild required. current_article_count_diff=${gateData.current_article_count_diff}`);
   }
@@ -433,7 +579,6 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
     .single();
   if (error) throw error;
   if (!run) throw new Error('full corpus scan run not found');
-
   if (run.status === 'completed') return getFullCorpusScanRun(id);
 
   await updateScanRow('full_corpus_scan_runs', id, {
@@ -451,68 +596,108 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
     .order('batch_index', { ascending: true });
   if (batchError) throw batchError;
 
-  // A crashed request can leave a batch in "running". Reclaim only leases
-  // older than the maximum API execution window, and claim every batch
-  // atomically so concurrent clicks cannot double-charge the model.
-  const staleBefore = Date.now() - 10 * 60 * 1000;
-  const eligible = ((allBatches || []) as ScanBatch[]).filter((batch) => {
-    if (['queued', 'failed', 'needs_review'].includes(batch.status)) return true;
-    if (batch.status !== 'running') return false;
-    const touchedAt = Date.parse(text(batch.updated_at || batch.started_at || ''));
-    return Number.isFinite(touchedAt) && touchedAt < staleBefore;
-  }).slice(0, requestedBatches);
+  const eligible = ((allBatches || []) as ScanBatch[])
+    .filter(retryableBatch)
+    .slice(0, requestedBatches);
 
-  for (const batch of eligible) {
-    const reclaimed = await claimScanBatch(batch, batch.status === 'running');
-    if (!reclaimed) continue;
+  for (const candidate of eligible) {
+    const batch = await claimScanBatch(candidate);
+    if (!batch) continue;
+    const attemptCount = Math.max(1, num(batch.attempt_count));
 
     try {
       const articles = await loadArticlesByIds(batch.article_ids);
+      if (articles.length !== batch.article_ids.length) {
+        throw new Error(`article payload mismatch: expected ${batch.article_ids.length}, loaded ${articles.length}`);
+      }
       const summary = await analyzeBatch(articles, batch.model || run.model, run.scope_type, run.scope_query || '');
       const validation = validateBatchSummary(summary, batch.article_ids);
       const evidenceIds = evidenceIdsFromSummary(summary, batch.article_ids);
-      const status = validation.passed ? 'completed' : 'needs_review';
-      await updateScanRow('full_corpus_scan_batches', batch.id, {
-        status,
-        summary_json: { ...summary, validation },
-        evidence_article_ids: evidenceIds,
-        finished_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        error_message: validation.passed ? null : validation.failures.join('; ')
-      });
+
+      if (validation.passed) {
+        await updateScanRow('full_corpus_scan_batches', batch.id, {
+          status: 'completed',
+          summary_json: { ...summary, validation },
+          evidence_article_ids: evidenceIds,
+          finished_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          next_retry_at: null,
+          last_error_class: null,
+          error_message: null
+        });
+      } else if (attemptCount < MAX_SCAN_VALIDATION_ATTEMPTS) {
+        const delaySeconds = validationRetryDelaySeconds(attemptCount);
+        await updateScanRow('full_corpus_scan_batches', batch.id, {
+          status: 'queued',
+          summary_json: { ...summary, validation },
+          evidence_article_ids: evidenceIds,
+          finished_at: null,
+          updated_at: new Date().toISOString(),
+          next_retry_at: new Date(Date.now() + delaySeconds * 1000).toISOString(),
+          last_error_class: 'validation',
+          error_message: validation.failures.join('; ')
+        });
+      } else {
+        await updateScanRow('full_corpus_scan_batches', batch.id, {
+          status: 'needs_review',
+          summary_json: { ...summary, validation },
+          evidence_article_ids: evidenceIds,
+          finished_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          next_retry_at: null,
+          last_error_class: 'validation',
+          error_message: validation.failures.join('; ')
+        });
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'batch failed';
-      try {
+      const classified = classifyError(error);
+      if (classified.retryable && attemptCount < MAX_SCAN_TRANSIENT_ATTEMPTS) {
+        const delaySeconds = retryDelaySeconds(attemptCount);
+        await updateScanRow('full_corpus_scan_batches', batch.id, {
+          status: 'queued',
+          error_message: classified.message,
+          last_error_class: classified.errorClass,
+          next_retry_at: new Date(Date.now() + delaySeconds * 1000).toISOString(),
+          finished_at: null,
+          updated_at: new Date().toISOString()
+        });
+      } else {
         await updateScanRow('full_corpus_scan_batches', batch.id, {
           status: 'failed',
-          error_message: message,
+          error_message: classified.message,
+          last_error_class: classified.errorClass,
+          next_retry_at: null,
           finished_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         });
-      } catch (persistError) {
-        const persistMessage = persistError instanceof Error ? persistError.message : 'failure state update failed';
-        throw new Error(message + '; could not persist batch failure state: ' + persistMessage);
       }
     }
   }
 
   const latest = await getFullCorpusScanRun(id);
-  const needsReview = Number(latest.run.needs_review_batches || 0);
-  const done = latest.run.completed_batches === latest.run.total_batches && latest.run.total_batches > 0 && needsReview === 0;
-  const failed = latest.run.failed_batches > 0 || needsReview > 0;
-  const nextStatus = done ? 'completed' : failed ? 'needs_review' : 'running';
+  const batches = latest.batches as ScanBatch[];
+  const terminalCount = batches.filter(terminalBatch).length;
+  const retryableCount = batches.filter(retryableBatch).length;
+  const done = latest.run.completed_batches === latest.run.total_batches
+    && latest.run.total_batches > 0
+    && latest.run.failed_batches === 0
+    && Number(latest.run.needs_review_batches || 0) === 0;
+  const nextStatus = done ? 'completed' : terminalCount > 0 ? 'needs_review' : 'running';
   const fullCorpusGate = done && latest.run.analyzed_article_count === latest.run.ocr_ready_article_count ? 'passed' : 'failed';
 
   await updateScanRow('full_corpus_scan_runs', id, {
     status: nextStatus,
     finished_at: done ? new Date().toISOString() : null,
     updated_at: new Date().toISOString(),
+    error_message: terminalCount > 0 ? `${terminalCount} terminal batch(es) require intervention` : null,
     coverage_json: {
       ...(latest.run.coverage_json || {}),
       completed_batches: latest.run.completed_batches,
       failed_batches: latest.run.failed_batches,
-      needs_review_batches: needsReview,
+      needs_review_batches: Number(latest.run.needs_review_batches || 0),
       analyzed_article_count: latest.run.analyzed_article_count,
+      retryable_batches: retryableCount,
+      terminal_batches: terminalCount,
       full_corpus_gate: fullCorpusGate
     }
   });

@@ -47,6 +47,10 @@ assertIncludes(runner, ".eq('lease_token', leaseToken)", 'all worker writes must
 assertIncludes(runner, 'MAX_CONSECUTIVE_TRANSIENT_FAILURES', 'only consecutive transient failures may stop a long scan');
 assertIncludes(runner, 'attempt_count: 0', 'successful scan progress must reset transient failure count');
 assertIncludes(runner, 'preparation.context.next_retry_at || null', 'job execution must honor scan retry delays');
+assertIncludes(runner, 'findSavedFormalReport', 'saved verified reports must be recovered before model execution');
+assertIncludes(runner, ".eq('source_job_id', jobId)", 'report recovery must be scoped to the exact job');
+assertIncludes(runner, 'completed_recovered: true', 'saved report recovery must complete the job');
+assertIncludes(runner, 'source_job_id: sourceJobId', 'report persistence must attach the source job');
 assertIncludes(runner, 'retryableError', 'transient job failures must be classified');
 assertIncludes(runner, 'retry_scheduled', 'transient job failures must be retried');
 assertIncludes(runner, "status: 'queued'", 'incomplete scan work must return to the queue');
@@ -79,6 +83,7 @@ assertExcludes(scan, 'fallbackBatchSummary', 'provider failures must not be save
 
 const guard = read('lib/chatRouteFullCorpusGuard.ts');
 assertIncludes(guard, 'getBoundedFullCorpusContext', 'formal report generation must use bounded corpus context');
+assertIncludes(guard, 'patch.source_job_id = sourceJobId', 'formal reports must be linked to their source jobs');
 assertExcludes(guard, "from '@/lib/fullCorpusScan'", 'formal report generation must not inject every raw batch summary');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');
@@ -94,5 +99,9 @@ const attemptFixMigration = read('supabase/migrations/20260805093000_fix_report_
 assertIncludes(attemptFixMigration, 'chat_jobs_single_active_v3_uidx', 'database must prevent concurrent active v3 report jobs');
 assertIncludes(attemptFixMigration, 'create or replace function public.claim_chat_job', 'attempt fix must replace the claim function');
 assertExcludes(attemptFixMigration, 'attempt_count = j.attempt_count + 1', 'normal scan progress must not consume the transient failure budget');
+
+const reportLinkMigration = read('supabase/migrations/20260805094500_link_reports_to_jobs.sql');
+assertIncludes(reportLinkMigration, 'source_job_id uuid', 'reports must store the source job id');
+assertIncludes(reportLinkMigration, 'chat_reports_source_job_id_uidx', 'one job must map to at most one report');
 
 console.log('Report pipeline hardening regression checks passed.');

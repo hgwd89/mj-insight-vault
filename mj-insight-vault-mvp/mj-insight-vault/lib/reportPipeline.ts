@@ -1,5 +1,10 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { createFullCorpusScanRun, runFullCorpusScanBatches } from '@/lib/fullCorpusScan';
+import {
+  createFullCorpusScanRun,
+  runFullCorpusScanBatches,
+  MAX_SCAN_TRANSIENT_ATTEMPTS,
+  MAX_SCAN_VALIDATION_ATTEMPTS
+} from '@/lib/fullCorpusScan';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -17,6 +22,10 @@ export type BoundedCorpusContext = {
   current_article_count?: number;
   current_article_count_diff?: number;
   completed_batches?: number;
+  retryable_batches?: number;
+  due_retryable_batches?: number;
+  terminal_batches?: number;
+  next_retry_at?: string;
   batches?: JsonRecord[];
 };
 
@@ -34,6 +43,7 @@ export type ReportPreparation = {
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
 const MAX_CONTEXT_CHARS = 90_000;
+const ACTIVE_RUN_STATUSES = ['queued', 'running', 'completed'];
 const DETAIL_KEYS = [
   'article_id',
   'evidence_article_ids',
@@ -188,7 +198,7 @@ function buildBoundedDigests(batches: JsonRecord[]) {
   return { digests, usedChars, detailedBatches };
 }
 
-async function latestRun(scope: ReportScope) {
+function scopeQueryBuilder(scope: ReportScope, activeOnly: boolean) {
   let query = supabaseAdmin
     .from('full_corpus_scan_runs')
     .select('*')
@@ -196,21 +206,61 @@ async function latestRun(scope: ReportScope) {
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (scope.scopeType === 'category') query = query.eq('scope_query', scope.scopeQuery);
+  if (activeOnly) query = query.in('status', ACTIVE_RUN_STATUSES);
+  return query;
+}
 
-  if (scope.scopeType === 'category') {
-    query = supabaseAdmin
-      .from('full_corpus_scan_runs')
-      .select('*')
-      .eq('scope_type', 'category')
-      .eq('scope_query', scope.scopeQuery)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+async function latestRun(scope: ReportScope) {
+  const active = await scopeQueryBuilder(scope, true);
+  if (active.error) throw active.error;
+  if (isRecord(active.data)) return active.data;
+
+  const fallback = await scopeQueryBuilder(scope, false);
+  if (fallback.error) throw fallback.error;
+  return isRecord(fallback.data) ? fallback.data : null;
+}
+
+function retryDue(batch: JsonRecord) {
+  const value = text(batch.next_retry_at);
+  if (!value) return true;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) || parsed <= Date.now();
+}
+
+function retryableBatch(batch: JsonRecord) {
+  const status = text(batch.status);
+  const attempts = num(batch.attempt_count);
+  if (status === 'queued') return true;
+  if (status === 'failed') {
+    const errorClass = text(batch.last_error_class);
+    if (['configuration', 'data_integrity', 'provider_terminal'].includes(errorClass)) return false;
+    return attempts < MAX_SCAN_TRANSIENT_ATTEMPTS;
   }
+  if (status === 'needs_review') return attempts < MAX_SCAN_VALIDATION_ATTEMPTS;
+  if (status === 'running') return true;
+  return false;
+}
 
-  const { data, error } = await query;
-  if (error) throw error;
-  return isRecord(data) ? data : null;
+function terminalBatch(batch: JsonRecord) {
+  const status = text(batch.status);
+  const attempts = num(batch.attempt_count);
+  const errorClass = text(batch.last_error_class);
+  if (status === 'failed') {
+    return attempts >= MAX_SCAN_TRANSIENT_ATTEMPTS
+      || ['configuration', 'data_integrity', 'provider_terminal'].includes(errorClass);
+  }
+  return status === 'needs_review' && attempts >= MAX_SCAN_VALIDATION_ATTEMPTS;
+}
+
+function earliestRetryAt(batches: JsonRecord[]) {
+  const times = batches
+    .map((batch) => text(batch.next_retry_at))
+    .filter(Boolean)
+    .map((value) => ({ value, time: Date.parse(value) }))
+    .filter((item) => !Number.isNaN(item.time) && item.time > Date.now())
+    .sort((a, b) => a.time - b.time);
+  return times[0]?.value || '';
 }
 
 export async function getBoundedFullCorpusContext(
@@ -228,6 +278,9 @@ export async function getBoundedFullCorpusContext(
       current_article_count: 0,
       current_article_count_diff: 0,
       completed_batches: 0,
+      retryable_batches: 0,
+      due_retryable_batches: 0,
+      terminal_batches: 0,
       batches: []
     };
   }
@@ -239,15 +292,19 @@ export async function getBoundedFullCorpusContext(
     .maybeSingle();
   if (gateError) throw gateError;
 
-  const { data: batches, error: batchError } = await supabaseAdmin
+  const { data: batchRows, error: batchError } = await supabaseAdmin
     .from('full_corpus_scan_batches')
-    .select('batch_index, article_count, status, summary_json')
+    .select('batch_index, article_count, status, summary_json, attempt_count, next_retry_at, last_error_class, error_message, updated_at, started_at')
     .eq('run_id', text(run.id))
-    .eq('status', 'completed')
     .order('batch_index', { ascending: true });
   if (batchError) throw batchError;
 
-  const completed = (batches || []).filter(isRecord);
+  const allBatches = (batchRows || []).filter(isRecord);
+  const completed = allBatches.filter((batch) => text(batch.status) === 'completed');
+  const retryable = allBatches.filter(retryableBatch);
+  const dueRetryable = retryable.filter(retryDue);
+  const terminal = allBatches.filter(terminalBatch);
+  const nextRetryAt = earliestRetryAt(retryable);
   const bounded = buildBoundedDigests(completed);
   const gate = text(gateData?.full_corpus_gate) || 'failed';
   const gateReason = text(gateData?.gate_reason) || 'unknown';
@@ -269,6 +326,10 @@ export async function getBoundedFullCorpusContext(
     completed_batches: num(run.completed_batches),
     failed_batches: num(run.failed_batches),
     needs_review_batches: num(run.needs_review_batches),
+    retryable_batches: retryable.length,
+    due_retryable_batches: dueRetryable.length,
+    terminal_batches: terminal.length,
+    next_retry_at: nextRetryAt || null,
     prompt_budget: {
       max_detail_chars: MAX_CONTEXT_CHARS,
       used_detail_chars: bounded.usedChars,
@@ -280,8 +341,12 @@ export async function getBoundedFullCorpusContext(
 
   return {
     run,
-    batches: completed,
+    batches: allBatches,
     completed_batches: completed.length,
+    retryable_batches: retryable.length,
+    due_retryable_batches: dueRetryable.length,
+    terminal_batches: terminal.length,
+    next_retry_at: nextRetryAt || undefined,
     full_corpus_gate: gate,
     gate_reason: gateReason,
     current_article_count: currentArticleCount,
@@ -305,6 +370,10 @@ function scanStage(context: BoundedCorpusContext, scope: ReportScope, rebuilt = 
     ? `カテゴリ「${scope.categoryName || scope.scopeQuery}」`
     : '全件';
   const prefix = rebuilt ? '最新記事でscanを再構築。' : '';
+  if (context.next_retry_at && num(context.due_retryable_batches) === 0) {
+    const retryAt = new Date(context.next_retry_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `${prefix}${label}本文読解 ${completed}/${total}バッチ。一時障害の再試行待ち（${retryAt}以降）`;
+  }
   return `${prefix}${label}本文読解 ${completed}/${total}バッチ`;
 }
 
@@ -322,16 +391,30 @@ function passed(context: BoundedCorpusContext) {
 
 function terminalProblem(context: BoundedCorpusContext) {
   const run = isRecord(context.run) ? context.run : {};
-  if (num(run.failed_batches) > 0) {
-    return `本文読解バッチに失敗があります。run_id=${text(run.id)} failed_batches=${num(run.failed_batches)}`;
-  }
-  if (num(run.needs_review_batches) > 0) {
-    return `本文読解結果が検証条件を満たしていません。run_id=${text(run.id)} needs_review_batches=${num(run.needs_review_batches)}`;
-  }
   if (num(run.total_batches) === 0) {
     return `本文読解対象がありません。run_id=${text(run.id) || 'none'}`;
   }
+  if (num(context.terminal_batches) > 0) {
+    return `再試行上限を超えた本文読解バッチがあります。run_id=${text(run.id)} terminal_batches=${num(context.terminal_batches)}`;
+  }
   return '';
+}
+
+function scanSettings() {
+  return {
+    model: process.env.OPENAI_SCAN_MODEL || 'gpt-4o-mini',
+    batchSize: Math.max(10, Math.min(40, Math.round(Number(process.env.OPENAI_SCAN_BATCH_SIZE || 30))))
+  };
+}
+
+async function createCurrentRun(scope: ReportScope) {
+  const settings = scanSettings();
+  return createFullCorpusScanRun({
+    scope_type: scope.scopeType,
+    scope_query: scope.scopeQuery,
+    model: settings.model,
+    batch_size: settings.batchSize
+  });
 }
 
 export async function prepareReportCorpus(
@@ -367,14 +450,9 @@ export async function prepareReportCorpus(
 
   let createdNewRun = false;
   const stale = context.gate_reason === 'run_stale_article_count_mismatch';
-  if (!context.run || stale) {
-    const batchSize = Math.max(10, Math.min(40, Math.round(Number(process.env.OPENAI_SCAN_BATCH_SIZE || 30))));
-    await createFullCorpusScanRun({
-      scope_type: scope.scopeType,
-      scope_query: scope.scopeQuery,
-      model: process.env.OPENAI_SCAN_MODEL || 'gpt-4o-mini',
-      batch_size: batchSize
-    });
+  const terminalExistingRun = num(context.terminal_batches) > 0;
+  if (!context.run || stale || terminalExistingRun) {
+    await createCurrentRun(scope);
     createdNewRun = true;
     context = await getBoundedFullCorpusContext(scope.scopeType, scope.scopeQuery);
   }
@@ -388,7 +466,7 @@ export async function prepareReportCorpus(
       scope,
       context,
       progress: 100,
-      stage: '本文読解の検証に失敗',
+      stage: '本文読解の再試行上限超過',
       error: beforeProblem,
       created_new_run: createdNewRun
     };
@@ -400,12 +478,7 @@ export async function prepareReportCorpus(
   } catch (error) {
     const message = error instanceof Error ? error.message : '本文読解バッチの実行に失敗しました';
     if (message.includes('run is stale; rebuild required')) {
-      await createFullCorpusScanRun({
-        scope_type: scope.scopeType,
-        scope_query: scope.scopeQuery,
-        model: process.env.OPENAI_SCAN_MODEL || 'gpt-4o-mini',
-        batch_size: Math.max(10, Math.min(40, Math.round(Number(process.env.OPENAI_SCAN_BATCH_SIZE || 30))))
-      });
+      await createCurrentRun(scope);
       context = await getBoundedFullCorpusContext(scope.scopeType, scope.scopeQuery);
       return {
         required: true,
@@ -425,7 +498,7 @@ export async function prepareReportCorpus(
       scope,
       context,
       progress: 100,
-      stage: '本文読解バッチ実行エラー',
+      stage: '本文読解パイプライン実行エラー',
       error: message,
       created_new_run: createdNewRun
     };
@@ -441,20 +514,21 @@ export async function prepareReportCorpus(
       scope,
       context,
       progress: 100,
-      stage: '本文読解の検証に失敗',
+      stage: '本文読解の再試行上限超過',
       error: afterProblem,
       created_new_run: createdNewRun
     };
   }
 
+  const ready = passed(context);
   return {
     required: true,
-    ready: passed(context),
+    ready,
     terminal: false,
     scope,
     context,
-    progress: passed(context) ? 64 : scanProgress(context),
-    stage: passed(context)
+    progress: ready ? 64 : scanProgress(context),
+    stage: ready
       ? '本文読解完了。レポート生成へ移行'
       : scanStage(context, scope, createdNewRun),
     created_new_run: createdNewRun

@@ -5,7 +5,10 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const STALE_RUNNING_MS = 90 * 1000;
+// A report step can legitimately spend up to five minutes in one OpenAI call.
+// Recover only after that execution window has elapsed; a shorter timeout can
+// start a second step while the first request is still active.
+const STALE_RUNNING_MS = 6 * 60 * 1000;
 
 function hasSavedReport(job: Record<string, unknown>) {
   return Boolean(job.report_id);
@@ -50,7 +53,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id?:
       const { data: queued, error: updateError } = await supabaseAdmin.from('chat_jobs').update({
         status: 'queued',
         stage: '通信が中断された可能性があります。再開待ちです',
-        progress: Math.max(5, Math.min(25, Number(data.progress || 5))),
+        progress: Math.max(5, Math.min(62, Number(data.progress || 5))),
         heartbeat_at: new Date().toISOString()
       }).eq('id', String(id)).select('*').single();
       if (updateError) throw updateError;

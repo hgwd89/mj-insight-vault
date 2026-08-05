@@ -5,7 +5,7 @@ import { fetchAllWideArticles, type WideArticle } from '@/lib/wideArticleRetriev
 
 type JsonRecord = Record<string, unknown>;
 
-export const FULL_CORPUS_PROMPT_VERSION = 'full_corpus_batch_v1';
+export const FULL_CORPUS_PROMPT_VERSION = 'full_corpus_batch_v2';
 export const MAX_SCAN_TRANSIENT_ATTEMPTS = 4;
 export const MAX_SCAN_VALIDATION_ATTEMPTS = 2;
 
@@ -211,7 +211,7 @@ function compactArticle(article: WideArticle, index: number) {
     article_id: article.id,
     headline: article.headline || '無題の記事',
     article_date: article.article_date || '日付不明',
-    text: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 6000)
+    text: (article.ocr_text || '').replace(/\s+/g, ' ').slice(0, 4000)
   };
 }
 
@@ -242,12 +242,13 @@ async function loadArticlesByIds(ids: string[]) {
 }
 
 function evidenceIdsFromSummary(summary: JsonRecord, fallbackIds: string[]) {
+  const allowedIds = new Set(fallbackIds);
   const ids = new Set<string>();
   const evidence = Array.isArray(summary.evidence) ? summary.evidence : [];
   for (const item of evidence) {
     if (isRecord(item)) {
       const id = text(item.article_id || item.id);
-      if (id) ids.add(id);
+      if (allowedIds.has(id)) ids.add(id);
     }
   }
   for (const id of fallbackIds.slice(0, 10)) ids.add(id);

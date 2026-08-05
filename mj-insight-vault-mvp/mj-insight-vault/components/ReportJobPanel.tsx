@@ -88,7 +88,7 @@ export function ReportJobPanel() {
   const password = useAppPassword();
   const router = useRouter();
   const [query, setQuery] = useState('');
-  const [model, setModel] = useState('gpt-5-mini');
+  const [model, setModel] = useState('gpt-4o-mini');
   const [scopeMode, setScopeMode] = useState<ScopeMode>('all');
   const [categoryId, setCategoryId] = useState<CategoryId>(categories[0].value);
   const [outputTemplate, setOutputTemplate] = useState('auto');

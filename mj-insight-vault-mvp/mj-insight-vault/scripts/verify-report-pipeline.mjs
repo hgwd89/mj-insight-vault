@@ -27,7 +27,7 @@ assertIncludes(panel, 'mj-chat-active-run-v3', 'report UI must use the hardened 
 assertIncludes(panel, 'window.localStorage.setItem', 'report UI must survive browser and tab closure');
 assertIncludes(panel, 'response.status === 409', 'report UI must recover an existing active job');
 assertIncludes(panel, "router.push('/reports')", 'report UI must hand off execution to the report list');
-assertIncludes(panel, "useState('gpt-5-mini')", 'report UI must not default to the most expensive model');
+assertIncludes(panel, "useState('gpt-4o-mini')", 'report UI must default to the low-cost model');
 
 const shell = read('components/ChatPanelShell.tsx');
 assertIncludes(shell, 'ReportJobPanel', 'chat page must use the persistent report panel');
@@ -80,6 +80,9 @@ assertIncludes(scan, 'MAX_SCAN_VALIDATION_ATTEMPTS', 'validation retries must be
 assertIncludes(scan, 'OPENAI_SCAN_TIMEOUT_MS', 'scan model calls must have a timeout');
 assertIncludes(scan, 'next_retry_at', 'scan retries must be delayed');
 assertExcludes(scan, 'fallbackBatchSummary', 'provider failures must not be saved as fake analysis results');
+assertIncludes(scan, 'allowedIds.has(id)', 'model-supplied evidence IDs must be restricted to the current batch');
+assertIncludes(scan, "full_corpus_batch_v2", 'prompt version must invalidate unsafe prior runs');
+assertIncludes(scan, '.slice(0, 4000)', 'scan article input must use the low-cost text budget');
 
 const guard = read('lib/chatRouteFullCorpusGuard.ts');
 assertIncludes(guard, 'getBoundedFullCorpusContext', 'formal report generation must use bounded corpus context');

@@ -200,7 +200,7 @@ function ensureRawFields(answer: Json, evidenceLookup: Evidence[], run: Json, sc
   return answer;
 }
 
-async function directWriter(body: Json, context: Context, scope: Scope, onProgress?: Progress) {
+async function directWriter(body: Json, context: Context, scope: Scope, onProgress?: Progress): Promise<Json> {
   const openai = getOpenAI();
   if (!openai) throw new Error('OPENAI_API_KEY missing');
   const run = record(context.run) ? context.run : {};
@@ -263,7 +263,7 @@ function formalGatePassed(answer: Json) {
     && text(raw.status) === 'passed';
 }
 
-function finalize(result: Json, context: Context, scope: Scope) {
+function finalize(result: Json, context: Context, scope: Scope): Json {
   if (!record(result.answer)) return result;
   const run = record(context.run) ? context.run : {};
   const answer: Json = { ...result.answer };
@@ -280,7 +280,7 @@ function finalize(result: Json, context: Context, scope: Scope) {
   return finalized;
 }
 
-async function persist(result: Json, body: Json) {
+async function persist(result: Json, body: Json): Promise<Json> {
   if (!record(result.answer) || !formalGatePassed(result.answer)) return result;
   const sourceJobId = text(body.source_job_id);
   const safe = sanitizeReportForDisplay({ user_query: text(body.query), answer_text: text(result.answer.answer_text), answer_json: result.answer });
@@ -292,7 +292,7 @@ async function persist(result: Json, body: Json) {
   return { ...result, report: data, report_error: null };
 }
 
-function diagnostic(body: Json, context: Context, scope: Scope, reason: string) {
+function diagnostic(body: Json, context: Context, scope: Scope, reason: string): Json {
   const run = record(context.run) ? context.run : {};
   const answer = {
     report_title: '全件分析整合性未達', report_kind: 'diagnostic', generation_status: 'blocked', is_formal_report: false,
@@ -304,9 +304,9 @@ function diagnostic(body: Json, context: Context, scope: Scope, reason: string) 
   return { report: null, report_error: reason, related_articles: [], selectable_models: [], answer };
 }
 
-export async function runChatAnalysis(body: Json, onProgress?: Progress) {
+export async function runChatAnalysis(body: Json, onProgress?: Progress): Promise<Json> {
   const scope = await resolveScope(body);
-  if (!shouldGuard(body, scope)) return runBaseChatAnalysis(body, onProgress);
+  if (!shouldGuard(body, scope)) return await runBaseChatAnalysis(body, onProgress) as Json;
   await reportProgress(onProgress, 12, '全件本文読解整合性を確認中');
   const context = await getIntegrityCheckedFullCorpusContext(scope.type, scope.query);
   if (!contextPassed(context)) return diagnostic(body, context, scope, 'full_corpus_integrity_gate_failed');

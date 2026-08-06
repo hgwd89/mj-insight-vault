@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { fetchAllWideArticles } from '@/lib/wideArticleRetrieval';
-import { getBoundedFullCorpusContext } from '@/lib/reportPipeline';
+import { getIntegrityCheckedFullCorpusContext, type FullCorpusIntegrityContext } from '@/lib/fullCorpusIntegrity';
 import { getConceptClusters } from '@/lib/conceptClusters';
 import { runChatAnalysis as runBaseChatAnalysis } from '@/lib/chatRouteNo160';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
@@ -10,7 +10,7 @@ const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべ�
 const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type JsonRecord = Record<string, unknown>;
-type CorpusContext = { run?: JsonRecord | null; context_text?: string; full_corpus_gate?: string };
+type CorpusContext = FullCorpusIntegrityContext;
 type Scope = { scopeType: 'all' | 'category'; scopeQuery: string; categoryName?: string };
 type ContextMessage = { role: 'user'; content: string };
 type ConceptClusterContext = { messages: ContextMessage[]; count: number };
@@ -56,6 +56,13 @@ function passed(context: CorpusContext) {
   const run = isRecord(context.run) ? context.run : null;
   if (!run) return false;
   return context.full_corpus_gate === 'passed'
+    && context.full_corpus_integrity_gate === 'passed'
+    && context.integrity_failures.length === 0
+    && Boolean(text(context.context_text))
+    && context.prompt_version === 'full_corpus_batch_v2'
+    && context.omitted_batches === 0
+    && context.represented_batches === num(run, 'total_batches')
+    && context.represented_article_count === num(run, 'analyzed_article_count')
     && text(run.status) === 'completed'
     && num(run, 'total_batches') > 0
     && num(run, 'completed_batches') === num(run, 'total_batches')
@@ -68,20 +75,32 @@ function passed(context: CorpusContext) {
 function corpusMessage(context: CorpusContext, scope: Scope) {
   const contextText = text(context.context_text);
   if (!contextText) return [];
+  const rules = [
+    'この入力は全バッチを均等に圧縮した最終統合用コンテキストです。先頭バッチだけを優先しないでください。',
+    '各バッチの観察、反証、調査課題を横断し、頻度と反例を区別してください。',
+    '企業施策を生活者需要の証明へ変換しないでください。'
+  ];
   if (scope.scopeType === 'category') {
     return [{ role: 'user', content: [
       `【CATEGORY_FULL_CORPUS_BATCH_ANALYSIS_PRIMARY:${scope.scopeQuery}】`,
-      'このカテゴリ本文読解結果を一次入力にしてください。代表記事検索や月別rollupより優先してください。',
-      'カテゴリ外の記事は、比較・反証目的以外では主要根拠に使わないでください。',
+      ...rules,
+      'カテゴリ外の記事は比較・反証目的以外では主要根拠に使わないでください。',
       contextText
     ].join('\n') }];
   }
-  return [{ role: 'user', content: ['【FULL_CORPUS_BATCH_ANALYSIS_PRIMARY】', contextText].join('\n') }];
+  return [{ role: 'user', content: ['【FULL_CORPUS_BATCH_ANALYSIS_PRIMARY】', ...rules, contextText].join('\n') }];
 }
 
-async function conceptClusterContext(): Promise<ConceptClusterContext> {
+async function conceptClusterContext(run: JsonRecord): Promise<ConceptClusterContext> {
   try {
-    const clusters = await getConceptClusters();
+    const fingerprint = text(run.corpus_fingerprint);
+    const clusters = (await getConceptClusters()).filter((cluster) => {
+      const params = isRecord(cluster.generation_params) ? cluster.generation_params : {};
+      return params.integrity_verified === true
+        && text(params.corpus_fingerprint) === fingerprint
+        && text(params.labeling) !== 'temporary_no_llm'
+        && params.manual_labeling !== true;
+    });
     if (!clusters.length) return { messages: [], count: 0 };
     const clusterLines = clusters.slice(0, 20).map((cluster, index) => {
       const members = (cluster.member_summaries || []).slice(0, 3).map((member) => {
@@ -101,8 +120,8 @@ async function conceptClusterContext(): Promise<ConceptClusterContext> {
         role: 'user',
         content: [
           '【ANALYSIS_LAYER_2_CONCEPT_CLUSTERS】',
-          '以下は evidence_matrix と article_embeddings から生成した横断クラスタです。月別rollupとは別の第2分析レイヤーとして、全体傾向の整理・反証・コンセプト候補抽出に使ってください。',
-          'ただし、クラスタは中間解釈レイヤーです。最終的な根拠引用は記事リンク・記事ID・月別rollupで確認してください。',
+          '以下は現在の全件runと同一fingerprintで検証された横断クラスタです。',
+          'クラスタは中間解釈レイヤーであり、最終根拠は記事IDで確認してください。',
           `cluster_count: ${clusters.length}`,
           clusterLines
         ].join('\n')
@@ -122,15 +141,17 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
   const allArticles = await fetchAllWideArticles();
   const run = isRecord(context.run) ? context.run : {};
   const scopeLabel = scope.scopeType === 'category' ? `カテゴリ「${scope.categoryName || scope.scopeQuery}」` : '全件';
+  const failures = context.integrity_failures.slice(0, 20);
   const answer = {
-    report_title: `${scopeLabel}本文読解未完了`,
+    report_title: `${scopeLabel}分析整合性未達`,
     report_kind: 'diagnostic',
     generation_status: 'blocked',
     is_formal_report: false,
     target_scope: scope.scopeType,
     category_id: scope.scopeType === 'category' ? scope.scopeQuery : '',
     model_used: text(body.model || ''),
-    full_corpus_gate: 'failed',
+    full_corpus_gate: context.full_corpus_gate,
+    full_corpus_integrity_gate: context.full_corpus_integrity_gate,
     analysis_is_provisional: true,
     related_article_count: allArticles.length,
     article_count_scanned: allArticles.length,
@@ -139,7 +160,13 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
       scanned_article_count: allArticles.length,
       scope_type: scope.scopeType,
       scope_query: scope.scopeQuery,
-      full_corpus_gate: 'failed',
+      full_corpus_gate: context.full_corpus_gate,
+      full_corpus_integrity_gate: context.full_corpus_integrity_gate,
+      integrity_failures: failures,
+      full_corpus_prompt_version: context.prompt_version,
+      final_context_all_batches_represented: context.omitted_batches === 0,
+      final_context_represented_batches: context.represented_batches,
+      final_context_represented_article_count: context.represented_article_count,
       full_corpus_run_id: text(run.id),
       full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'),
       full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'),
@@ -148,27 +175,28 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
       full_corpus_failed_batches: num(run, 'failed_batches'),
       full_corpus_needs_review_batches: num(run, 'needs_review_batches')
     },
-    quality_gate: { status: 'failed', failed_checks: ['full_corpus_gate'] },
+    quality_gate: { status: 'failed', failed_checks: ['full_corpus_integrity_gate', ...failures] },
     answer_text: [
       '## 1. 結論',
-      `${scopeLabel}の本文読解が未完了のため、正式分析レポートは生成していません。`,
+      `${scopeLabel}の件数ゲートまたは内容整合性ゲートが未達のため、正式分析レポートは生成していません。`,
       '',
       '## 2. 状態',
       `- 指示: ${query}`,
-      `- scope: ${scope.scopeType}`,
-      `- category_id: ${scope.scopeQuery || '-'}`,
       `- scan_run_id: ${text(run.id) || '未作成'}`,
-      `- OCR済み記事数: ${num(run, 'ocr_ready_article_count') || '未確認'}`,
-      `- 本文読解済み記事数: ${num(run, 'analyzed_article_count')}`,
-      `- 完了バッチ: ${num(run, 'completed_batches')} / ${num(run, 'total_batches')}`,
-      `- 失敗バッチ: ${num(run, 'failed_batches')}`,
-      `- 要レビューBatch: ${num(run, 'needs_review_batches')}`,
+      `- count gate: ${context.full_corpus_gate}`,
+      `- integrity gate: ${context.full_corpus_integrity_gate}`,
+      `- prompt version: ${context.prompt_version}`,
+      `- 最終統合で表現されたバッチ: ${context.represented_batches} / ${num(run, 'total_batches')}`,
+      `- 最終統合で表現された記事レコード: ${context.represented_article_count} / ${num(run, 'analyzed_article_count')}`,
       '',
-      '## 3. 必要な対応',
-      '永続レポートジョブから実行すると、本文読解runの作成・再構築・再開を自動で行います。'
+      '## 3. 整合性エラー',
+      ...(failures.length ? failures.map((failure) => `- ${failure}`) : ['- count gate未達']),
+      '',
+      '## 4. 必要な対応',
+      '正式母集団をarticle型に限定し、full_corpus_batch_v2で全バッチを再構築してください。'
     ].join('\n')
   };
-  return { report: null, report_error: 'full_corpus_gate_failed', related_articles: [], selectable_models: [], answer };
+  return { report: null, report_error: 'full_corpus_integrity_gate_failed', related_articles: [], selectable_models: [], answer };
 }
 
 function removeStaleFormalStop(value: unknown) {
@@ -187,7 +215,12 @@ function clearPriorGate(answer: JsonRecord) {
 
 function formalGatePassed(answer: JsonRecord) {
   const rawGate = isRecord(answer.raw_quality_gate) ? answer.raw_quality_gate : {};
+  const source = isRecord(answer.source_coverage) ? answer.source_coverage : {};
   return text(answer.full_corpus_gate) === 'passed'
+    && text(answer.full_corpus_integrity_gate || source.full_corpus_integrity_gate) === 'passed'
+    && text(answer.full_corpus_prompt_version || source.full_corpus_prompt_version) === 'full_corpus_batch_v2'
+    && (answer.final_context_all_batches_represented ?? source.final_context_all_batches_represented) === true
+    && Number(answer.final_context_omitted_batches ?? source.final_context_omitted_batches ?? 0) === 0
     && answer.analysis_is_provisional !== true
     && text(rawGate.version) === 'formal_gate_v2'
     && text(rawGate.validation_mode) === 'raw_before_enrichment'
@@ -200,10 +233,19 @@ function finalizePassedResult(result: JsonRecord, context: CorpusContext, scope:
   const answer: JsonRecord = { ...result.answer };
   const sourceCoverage = isRecord(answer.source_coverage) ? { ...answer.source_coverage } : {};
   const coverageDiagnosis = isRecord(answer.coverage_diagnosis) ? { ...answer.coverage_diagnosis } : {};
+  const integrity = {
+    full_corpus_integrity_gate: context.full_corpus_integrity_gate,
+    full_corpus_prompt_version: context.prompt_version,
+    final_context_all_batches_represented: context.omitted_batches === 0,
+    final_context_represented_batches: context.represented_batches,
+    final_context_represented_article_count: context.represented_article_count,
+    final_context_omitted_batches: context.omitted_batches
+  };
 
   clearPriorGate(answer);
   answer.answer_text = removeStaleFormalStop(answer.answer_text);
   answer.full_corpus_gate = 'passed';
+  Object.assign(answer, integrity);
   answer.analysis_is_provisional = false;
   answer.target_scope = scope.scopeType;
   answer.category_id = scope.scopeQuery;
@@ -212,6 +254,7 @@ function finalizePassedResult(result: JsonRecord, context: CorpusContext, scope:
   answer.analysis_layer_2_cluster_count = clusterCount;
   answer.source_coverage = {
     ...sourceCoverage,
+    ...integrity,
     scope_type: scope.scopeType,
     scope_query: scope.scopeQuery,
     full_corpus_gate: 'passed',
@@ -224,6 +267,7 @@ function finalizePassedResult(result: JsonRecord, context: CorpusContext, scope:
   };
   answer.coverage_diagnosis = {
     ...coverageDiagnosis,
+    ...integrity,
     full_corpus_gate: 'passed',
     analysis_is_provisional: false,
     full_corpus_run_id: text(run.id)
@@ -295,12 +339,13 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
   const query = text(body.query);
   const scope = await resolveScope(body);
   if (!shouldGuard(body, scope)) return runBaseChatAnalysis(body, onProgress);
-  await onProgress?.({ progress: 12, stage: scope.scopeType === 'category' ? 'カテゴリ本文読解ゲートを確認中' : '全件本文読解ゲートを確認中' });
-  const context = await getBoundedFullCorpusContext(scope.scopeType, scope.scopeQuery) as CorpusContext;
-  const clusterContext = await conceptClusterContext();
+  await onProgress?.({ progress: 12, stage: scope.scopeType === 'category' ? 'カテゴリ本文読解整合性を確認中' : '全件本文読解整合性を確認中' });
+  const context = await getIntegrityCheckedFullCorpusContext(scope.scopeType, scope.scopeQuery);
+  const run = isRecord(context.run) ? context.run : {};
+  const clusterContext = passed(context) ? await conceptClusterContext(run) : { messages: [], count: 0 };
   if (!passed(context)) {
     const result = await diagnostic(query, body, context, scope);
-    await onProgress?.({ progress: 100, stage: '本文読解未完了' });
+    await onProgress?.({ progress: 100, stage: '全件分析整合性未達' });
     return result;
   }
   const conversation = Array.isArray(body.conversation) ? body.conversation : [];
@@ -311,7 +356,10 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     category_id: scope.scopeQuery,
     analysis_scope_type: scope.scopeType,
     conversation: [...conversation, ...corpusMessage(context, scope), ...clusterContext.messages],
-    full_corpus_gate: 'passed'
+    full_corpus_gate: 'passed',
+    full_corpus_integrity_gate: 'passed',
+    full_corpus_prompt_version: context.prompt_version,
+    final_context_all_batches_represented: true
   };
   const baseResult = await runBaseChatAnalysis(routedBody, onProgress) as JsonRecord;
   const finalized = finalizePassedResult(baseResult, context, scope, clusterContext.count);

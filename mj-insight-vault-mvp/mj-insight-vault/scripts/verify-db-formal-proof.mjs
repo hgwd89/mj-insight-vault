@@ -5,6 +5,7 @@ const root = process.cwd();
 const sql = fs.readFileSync(path.join(root, 'supabase/migrations/20260806142000_recompute_formal_proof_in_database.sql'), 'utf8');
 const noSignal = fs.readFileSync(path.join(root, 'supabase/migrations/20260806144500_normalize_no_signal_scan_proof.sql'), 'utf8');
 const dedupe = fs.readFileSync(path.join(root, 'supabase/migrations/20260806152000_deduplicate_formal_corpus.sql'), 'utf8');
+const categoryGate = fs.readFileSync(path.join(root, 'supabase/migrations/20260806154500_block_incomplete_category_reports.sql'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -43,5 +44,14 @@ for (const table of ['article_embeddings', 'article_profiles', 'article_category
 assert(/articles_active_date_normalized_headline_uidx/.test(dedupe), 'Future duplicate article inserts must be rejected by a unique partial index.');
 assert(/article_duplicate_audit_v1/.test(dedupe), 'Duplicate decisions must remain queryable for audit.');
 assert(/update public\.monthly_rollups/.test(dedupe) && /status = 'stale'/.test(dedupe), 'Duplicate removal must invalidate affected rollups.');
+
+assert(/category_classification_gate_v1/.test(categoryGate), 'Category formal reports need a classification coverage gate.');
+assert(/unprofiled_article_count/.test(categoryGate), 'Category gate must count missing article profiles.');
+assert(/uncategorized_article_count/.test(categoryGate), 'Category gate must count missing category memberships.');
+assert(/invalid_membership_count/.test(categoryGate), 'Category gate must reject inactive or missing categories.');
+assert(/category_classification_/.test(categoryGate) && /corpus_scan_gate_view/.test(categoryGate), 'Category coverage must fail the shared corpus gate before generation.');
+assert(/formal_category_classification_incomplete/.test(categoryGate), 'Database must reject a category report when global classification is incomplete.');
+assert(/formal_category_id_invalid/.test(categoryGate), 'Database must reject inactive or unknown category IDs.');
+assert(/trg_00_enforce_category_report_classification_v1/.test(categoryGate), 'Category proof must be enforced before report metadata synchronization.');
 
 console.log('verify-db-formal-proof: ok');

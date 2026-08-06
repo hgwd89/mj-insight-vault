@@ -4,6 +4,7 @@ import path from 'node:path';
 const root = process.cwd();
 const sql = fs.readFileSync(path.join(root, 'supabase/migrations/20260806142000_recompute_formal_proof_in_database.sql'), 'utf8');
 const noSignal = fs.readFileSync(path.join(root, 'supabase/migrations/20260806144500_normalize_no_signal_scan_proof.sql'), 'utf8');
+const dedupe = fs.readFileSync(path.join(root, 'supabase/migrations/20260806152000_deduplicate_formal_corpus.sql'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -30,5 +31,17 @@ assert(/\{no_signal_detected\}/.test(noSignal), 'No-signal batches must use the 
 assert(/no_signal_batch/.test(noSignal), 'Legacy no-signal metadata must remain readable.');
 assert(/lower\(coalesce\(new\.summary_json/.test(noSignal), 'Boolean parsing must fail closed without unsafe casts.');
 assert(/jsonb_array_length\(case when jsonb_typeof/.test(noSignal), 'JSON arrays must be type-checked before length validation.');
+
+assert(/normalize_article_headline_v1/.test(dedupe), 'Formal duplicates need a shared deterministic identity function.');
+assert(/duplicate_of_article_id/.test(dedupe) && /exclusion_reason/.test(dedupe), 'Duplicate rows must remain auditable.');
+assert(/text_length desc, c\.has_profile desc, c\.has_embedding desc/.test(dedupe), 'Canonical article selection must be deterministic and quality-biased.');
+assert(/status = 'excluded'/.test(dedupe), 'Duplicate rows must be excluded, not physically deleted.');
+assert(/cleanup_hidden_article_derivatives/.test(dedupe), 'Hidden articles must not retain search or classification derivatives.');
+for (const table of ['article_embeddings', 'article_profiles', 'article_category_memberships', 'article_tags']) {
+  assert(dedupe.includes(`delete from public.${table}`), `Hidden article cleanup must include ${table}.`);
+}
+assert(/articles_active_date_normalized_headline_uidx/.test(dedupe), 'Future duplicate article inserts must be rejected by a unique partial index.');
+assert(/article_duplicate_audit_v1/.test(dedupe), 'Duplicate decisions must remain queryable for audit.');
+assert(/update public\.monthly_rollups/.test(dedupe) && /status = 'stale'/.test(dedupe), 'Duplicate removal must invalidate affected rollups.');
 
 console.log('verify-db-formal-proof: ok');

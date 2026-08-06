@@ -46,4 +46,6 @@ jobs:
                   mj-insight-vault-mvp/mj-insight-vault/lib/chatAnalysisQualityGate.ts
           git diff --cached --quiet && exit 1
           git commit -m 'reject malformed direct-writer evidence and retry'
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:main

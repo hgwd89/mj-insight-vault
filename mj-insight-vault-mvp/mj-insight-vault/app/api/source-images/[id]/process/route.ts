@@ -4,7 +4,11 @@ import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
 import { runDocumentOcr } from '@/lib/vision';
 import { segmentArticlesFromImage } from '@/lib/articleSegmentation';
 import { normalizeOcrText } from '@/lib/text';
-import { commitSourceImageArticles, enrichCommittedArticles } from '@/lib/sourceImageArticleCommit';
+import {
+  commitSourceImageArticles,
+  enrichCommittedArticles,
+  persistCommittedArticleProvenance
+} from '@/lib/sourceImageArticleCommit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -139,6 +143,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         replaceExisting: false
       });
 
+      const provenance = await persistCommittedArticleProvenance({
+        articles: committed.created_articles,
+        candidates,
+        sourceOcrText: ocrText
+      });
+
       await updateImage(id, {
         ocr_status: 'done',
         ocr_text_raw: ocrText,
@@ -161,6 +171,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         retired_article_ids: committed.retired_article_ids,
         stale_rollup_months: affectedMonths,
         stale_rollup_updated: affectedMonths.length,
+        provenance,
         enrichment,
         atomic_commit: true
       });

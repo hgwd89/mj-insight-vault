@@ -30,7 +30,19 @@ assert(/\.neq\('status', 'running'\)/.test(monthly), 'Running rollups must not b
 assert(/RUNNING_LOCK_MS/.test(monthly) && /isFreshRunningRollup/.test(monthly), 'Fresh running rollups must be protected from duplicate generation.');
 assert(/synthesizeMonthlyRollup/.test(monthly) && /getOpenAI/.test(monthly), 'Monthly rollups must have an LLM synthesis path.');
 assert(/'provisional'/.test(monthly), 'Monthly rollup fallback must be explicitly provisional.');
-assert(/status === 'ready' \\|\\| status === 'provisional'/.test(monthly), 'Provisional rollups must retain generated_at for diagnostics.');
+assert(/status === 'ready' \|\| status === 'provisional'/.test(monthly), 'Provisional rollups must retain generated_at for diagnostics.');
+
+assert(/ROLLUP_REQUEST_CHAR_BUDGET/.test(monthly), 'Monthly rollups must enforce a request-size budget before OpenAI calls.');
+assert(/chunkArticlesByBudget/.test(monthly), 'Monthly source articles must be split into bounded chunks.');
+assert(/chunkNodesByBudget/.test(monthly), 'Monthly chunk summaries must be reduced hierarchically.');
+assert(/generation_method: 'hierarchical_llm'/.test(monthly), 'Formal monthly rollups must record hierarchical generation.');
+assert(/source_fingerprint/.test(monthly) && /partial_chunks/.test(monthly), 'Monthly rollups must persist resumable chunk progress.');
+assert(/monthly rollup preflight budget exceeded/.test(monthly), 'Oversized rollup prompts must fail before reaching the model.');
+assert(/ROLLUP_CONCURRENCY/.test(monthly) && /Promise\.all/.test(monthly), 'Chunk generation must use bounded concurrency.');
+assert(/ROLLUP_MAX_ATTEMPTS/.test(monthly) && /retryableRollupError/.test(monthly), 'Transient model errors must use bounded retries.');
+assert(/\['stale', 'failed', 'provisional'\]/.test(monthly), 'Provisional rollups must be eligible for formal regeneration.');
+assert(/rollup\.rollup_model === 'extractive_fallback'/.test(monthly), 'Extractive fallback rows must be eligible for regeneration even if previously marked ready.');
+assert(/fallback_used: false/.test(monthly) && /rollup_analysis_is_validated: true/.test(monthly), 'Formal hierarchical rollups must identify validated non-fallback output.');
 
 assert(/stale_only/.test(rollupApi), 'stale_only rollup API mode is missing.');
 assert(/needs_only/.test(rollupApi), 'needs_only rollup API mode is missing.');

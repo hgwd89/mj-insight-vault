@@ -69,8 +69,8 @@ assertIncludes(pipeline, 'createFullCorpusScanRun', 'pipeline must create a curr
 assertIncludes(pipeline, 'runFullCorpusScanBatches', 'pipeline must advance scan batches');
 assertIncludes(pipeline, 'terminal_batches', 'pipeline must distinguish terminal failures');
 assertIncludes(pipeline, 'retryable_batches', 'pipeline must distinguish retryable work');
-assertIncludes(pipeline, 'MAX_CONTEXT_CHARS', 'final report context must have a hard prompt budget');
-assertIncludes(pipeline, 'detail_omitted_for_prompt_budget', 'every completed batch must remain represented when details are bounded');
+assertIncludes(pipeline, 'MAX_CONTEXT_CHARS', 'legacy preparation context must remain bounded');
+assertIncludes(pipeline, 'detail_omitted_for_prompt_budget', 'legacy preparation must identify omitted detail rather than hiding it');
 
 const scan = read('lib/fullCorpusScan.ts');
 assertIncludes(scan, 'corpusFingerprint', 'identical article populations must reuse a scan run');
@@ -81,11 +81,12 @@ assertIncludes(scan, 'OPENAI_SCAN_TIMEOUT_MS', 'scan model calls must have a tim
 assertIncludes(scan, 'next_retry_at', 'scan retries must be delayed');
 assertExcludes(scan, 'fallbackBatchSummary', 'provider failures must not be saved as fake analysis results');
 assertIncludes(scan, 'allowedIds.has(id)', 'model-supplied evidence IDs must be restricted to the current batch');
-assertIncludes(scan, "full_corpus_batch_v2", 'prompt version must invalidate unsafe prior runs');
+assertIncludes(scan, 'full_corpus_batch_v2', 'prompt version must invalidate unsafe prior runs');
 assertIncludes(scan, '.slice(0, 4000)', 'scan article input must use the low-cost text budget');
 
 const guard = read('lib/chatRouteFullCorpusGuard.ts');
-assertIncludes(guard, 'getBoundedFullCorpusContext', 'formal report generation must use bounded corpus context');
+const integrity = read('lib/fullCorpusIntegrity.ts');
+assertIncludes(guard, 'getIntegrityCheckedFullCorpusContext', 'formal report generation must use integrity-checked all-batch context');
 assertIncludes(guard, 'enhanceChatAnalysisResult', 'passed full-corpus output must be revalidated after final augmentation');
 assertIncludes(guard, 'answer.analysis_is_provisional = false', 'passed full-corpus output must clear the stale provisional flag');
 assertIncludes(guard, 'analysis_is_provisional: false', 'coverage metadata must also clear the stale provisional flag');
@@ -93,7 +94,14 @@ assertIncludes(guard, 'delete answer.raw_quality_gate', 'stale pre-augmentation 
 assertIncludes(guard, 'FORMAL_STOP_HEADING', 'a prior provisional save-stop appendix must be removed before revalidation');
 assertIncludes(guard, ".from('chat_reports')", 'a revalidated report must be persisted even when the base route blocked its first save');
 assertIncludes(guard, 'payload.source_job_id = sourceJobId', 'formal reports must be linked to their source jobs');
+assertIncludes(guard, 'full_corpus_integrity_gate', 'formal finalization must carry the integrity result');
+assertIncludes(guard, 'final_context_all_batches_represented', 'formal finalization must prove every batch was represented');
 assertExcludes(guard, "from '@/lib/fullCorpusScan'", 'formal report generation must not inject every raw batch summary');
+assertIncludes(integrity, 'all_batches_uniform_compact_digest_v1', 'final synthesis must use a uniform all-batch digest');
+assertIncludes(integrity, 'omitted_batches: 0', 'formal final synthesis must omit no completed batches');
+assertIncludes(integrity, 'read_article_ids_mismatch', 'integrity validation must compare exact read article IDs');
+assertIncludes(integrity, 'non_article_record', 'formal corpus validation must reject non-article records');
+assertIncludes(integrity, 'prompt_version_mismatch', 'legacy scan prompt versions must fail integrity validation');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');
 assertIncludes(statusRoute, 'lease_expires_at', 'stale recovery must use worker leases');
@@ -112,5 +120,11 @@ assertExcludes(attemptFixMigration, 'attempt_count = j.attempt_count + 1', 'norm
 const reportLinkMigration = read('supabase/migrations/20260805094500_link_reports_to_jobs.sql');
 assertIncludes(reportLinkMigration, 'source_job_id uuid', 'reports must store the source job id');
 assertIncludes(reportLinkMigration, 'chat_reports_source_job_id_uidx', 'one job must map to at most one report');
+
+const integrityMigration = read('supabase/migrations/20260806133000_enforce_full_corpus_integrity_gate.sql');
+const countGateMigration = read('supabase/migrations/20260806134500_align_corpus_gate_with_formal_articles.sql');
+assertIncludes(integrityMigration, 'formal_report_integrity_gate_missing', 'database must reject false formal inserts');
+assertIncludes(integrityMigration, 'formal_corpus_articles_v1', 'database must define the formal article-only population');
+assertIncludes(countGateMigration, 'from public.formal_corpus_articles_v1', 'count gate must use the formal article-only population');
 
 console.log('Report pipeline hardening regression checks passed.');

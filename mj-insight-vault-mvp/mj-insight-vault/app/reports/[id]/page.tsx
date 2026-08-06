@@ -13,6 +13,11 @@ type Report = {
   answer_json: Record<string, unknown> | null;
   related_article_ids: string[] | null;
   created_at: string;
+  report_kind?: string | null;
+  generation_status?: string | null;
+  is_formal_report?: boolean | null;
+  analysis_verification_status?: string | null;
+  full_corpus_gate?: string | null;
 };
 
 type Article = {
@@ -24,6 +29,11 @@ type Article = {
 
 function asText(value: unknown) {
   return value === undefined || value === null ? '' : String(value);
+}
+
+function asNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function formatTokyo(value: string) {
@@ -83,6 +93,25 @@ function getQuery(report: Report) {
   return cleanDisplayText(report.user_query).replace(/\s+/g, ' ').trim() || '分析指示未保存';
 }
 
+function verification(report: Report) {
+  const json = report.answer_json || {};
+  const source = json.source_coverage && typeof json.source_coverage === 'object' && !Array.isArray(json.source_coverage)
+    ? json.source_coverage as Record<string, unknown>
+    : {};
+  return {
+    formal: report.is_formal_report === true,
+    kind: asText(report.report_kind || json.report_kind || 'provisional'),
+    verificationStatus: asText(report.analysis_verification_status || json.analysis_verification_status || 'unverified'),
+    countGate: asText(report.full_corpus_gate || json.full_corpus_gate || source.full_corpus_gate || 'failed'),
+    integrityGate: asText(json.full_corpus_integrity_gate || source.full_corpus_integrity_gate || 'failed'),
+    promptVersion: asText(json.full_corpus_prompt_version || source.full_corpus_prompt_version || '-'),
+    representedBatches: asNumber(json.final_context_represented_batches || source.final_context_represented_batches),
+    representedArticles: asNumber(json.final_context_represented_article_count || source.final_context_represented_article_count),
+    omittedBatches: asNumber(json.final_context_omitted_batches || source.final_context_omitted_batches),
+    analyzedArticles: asNumber(source.full_corpus_analyzed_article_count || json.full_corpus_analyzed_article_count)
+  };
+}
+
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
   const { data, error, loading } = useApi<{ report: Report; related_articles: Article[] }>(`/api/reports/${params.id}`);
@@ -96,19 +125,49 @@ export default function ReportDetailPage() {
   const answer = getAnswer(report);
   const title = getTitle(report);
   const query = getQuery(report);
+  const status = verification(report);
 
   return (
     <div className="space-y-5">
       <div className="card p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <p className="text-xs text-zinc-500">{formatTokyo(report.created_at)}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs text-zinc-500">{formatTokyo(report.created_at)}</p>
+              <span className={status.formal ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800' : 'rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800'}>
+                {status.formal ? '正式・検証済み' : '暫定・未検証'}
+              </span>
+              <span className="badge">{status.verificationStatus}</span>
+            </div>
             <h1 className="mt-2 text-xl font-black">{title}</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-600">指示: {query}</p>
           </div>
           <Link className="btn" href="/reports">分析履歴へ戻る</Link>
         </div>
       </div>
+
+      {!status.formal && (
+        <section className="card border-amber-300 bg-amber-50 p-5">
+          <h2 className="font-bold text-amber-900">このレポートは正式レポートではありません</h2>
+          <p className="mt-2 text-sm leading-6 text-amber-900">
+            件数完了だけでは正式扱いしません。v2本文読解、全バッチの最終統合、省略0、根拠品質の全条件が必要です。
+          </p>
+        </section>
+      )}
+
+      <section className="card p-5">
+        <h2 className="font-bold">検証状態</h2>
+        <div className="mt-3 grid gap-2 text-sm md:grid-cols-2">
+          <p>種別: <strong>{status.kind}</strong></p>
+          <p>件数ゲート: <strong>{status.countGate}</strong></p>
+          <p>整合性ゲート: <strong>{status.integrityGate}</strong></p>
+          <p>スキャン版: <strong>{status.promptVersion}</strong></p>
+          <p>最終統合バッチ: <strong>{status.representedBatches}</strong></p>
+          <p>省略バッチ: <strong>{status.omittedBatches}</strong></p>
+          <p>最終統合記事: <strong>{status.representedArticles}</strong></p>
+          <p>本文読解記事: <strong>{status.analyzedArticles}</strong></p>
+        </div>
+      </section>
 
       <section className="card p-5">
         <h2 className="font-bold">分析レポート本文</h2>

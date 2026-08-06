@@ -21,6 +21,7 @@ const reportListPage = read('app/reports/page.tsx');
 const markdown = read('components/MarkdownArticleText.tsx');
 const chatPanel = read('components/ChatPanel.tsx');
 const fullCorpusGuard = read('lib/chatRouteFullCorpusGuard.ts');
+const fullCorpusIntegrity = read('lib/fullCorpusIntegrity.ts');
 const monthlyRollups = read('lib/monthlyRollups.ts');
 const monthlyContext = read('lib/monthlyRollupContext.ts');
 const reportSafety = read('lib/reportSafety.ts');
@@ -29,6 +30,7 @@ const reportDetailRoute = read('app/api/reports/[id]/route.ts');
 const reportFollowupRoute = read('app/api/reports/[id]/chat/route.ts');
 const chatCore = read('lib/chatRouteCore.ts');
 const schemaReconcile = read('supabase/migrations/20260729000000_reconcile_report_analysis_schema.sql');
+const integrityMigration = read('supabase/migrations/20260806133000_enforce_full_corpus_integrity_gate.sql');
 const schema = read('supabase/schema.sql');
 
 for (const key of [
@@ -75,7 +77,17 @@ assert(/正式レポート未生成/.test(chatPanel) && /href="\/corpus-scans"/.
 assert(!/query: buildReportQuery/.test(chatPanel), 'ChatPanel must not persist internal report requirements inside user query.');
 assert(!/full_corpus_gate: 'provisional'/.test(fullCorpusGuard), 'Full-corpus gate failure must not degrade into provisional report generation.');
 assert(!/縮退分析/.test(fullCorpusGuard), 'Full-corpus gate failure must not run degraded report analysis.');
-assert(/report: null/.test(fullCorpusGuard) && /full_corpus_gate_failed/.test(fullCorpusGuard), 'Full-corpus diagnostic must not be saved as a normal chat report.');
+assert(/report: null/.test(fullCorpusGuard) && /full_corpus_integrity_gate_failed/.test(fullCorpusGuard), 'Full-corpus integrity diagnostic must not be saved as a normal chat report.');
+assert(/getIntegrityCheckedFullCorpusContext/.test(fullCorpusGuard), 'Formal report route must use the integrity-checked final context.');
+assert(/full_corpus_integrity_gate/.test(fullCorpusGuard) && /final_context_all_batches_represented/.test(fullCorpusGuard), 'Formal report finalization must persist integrity provenance.');
+assert(/FULL_CORPUS_PROMPT_VERSION/.test(fullCorpusIntegrity), 'Integrity context must require the current scan prompt version.');
+assert(/read_article_ids_mismatch/.test(fullCorpusIntegrity), 'Integrity context must verify exact batch read IDs.');
+assert(/non_article_record/.test(fullCorpusIntegrity), 'Integrity context must reject caption, table, and unknown records.');
+assert(/omitted_batches: 0/.test(fullCorpusIntegrity), 'Final context must represent every completed batch.');
+assert(/all_batches_uniform_compact_digest_v1/.test(fullCorpusIntegrity), 'Final context must use a non-positional all-batch digest.');
+assert(/formal_report_integrity_gate_missing/.test(integrityMigration), 'Database must reject formal reports without integrity proof.');
+assert(/formal_corpus_articles_v1/.test(integrityMigration), 'Database must define the formal article-only corpus.');
+assert(/full_corpus_batch_v2/.test(integrityMigration), 'Database formal classification must require scan v2.');
 assert(/extractive fallback is not valid as a formal monthly rollup/.test(monthlyRollups), 'Extractive monthly fallback must not be marked as formal ready context.');
 assert(/isExtractiveFallback/.test(monthlyContext), 'Monthly rollup context must exclude extractive fallback rows.');
 assert(/full_corpus_gate/.test(qualityGate), 'Quality gate must check full_corpus_gate for formal all/category reports.');

@@ -12,6 +12,9 @@ type Report = {
   answer_json: Record<string, unknown> | null;
   related_article_ids: string[] | null;
   created_at: string;
+  report_kind?: string | null;
+  is_formal_report?: boolean | null;
+  analysis_verification_status?: string | null;
 };
 
 const INTERNAL_PROMPT_DELIMITERS = [
@@ -79,12 +82,21 @@ function isPinned(report: Report) {
   return Boolean(report.answer_json?.pinned);
 }
 
-function articleCount(report: Report) {
+function coverage(report: Report) {
   const answer = report.answer_json || {};
-  const sourceCoverage = answer.source_coverage as Record<string, unknown> | undefined;
-  const fullCorpusCount = Number(sourceCoverage?.full_corpus_analyzed_article_count || answer.full_corpus_analyzed_article_count || 0);
-  if (Number.isFinite(fullCorpusCount) && fullCorpusCount > 0) return fullCorpusCount;
-  return report.related_article_ids?.length || 0;
+  const source = answer.source_coverage && typeof answer.source_coverage === 'object' && !Array.isArray(answer.source_coverage)
+    ? answer.source_coverage as Record<string, unknown>
+    : {};
+  const analyzed = Number(source.full_corpus_analyzed_article_count || answer.full_corpus_analyzed_article_count || 0);
+  const represented = Number(answer.final_context_represented_article_count || source.final_context_represented_article_count || 0);
+  const omitted = Number(answer.final_context_omitted_batches || source.final_context_omitted_batches || 0);
+  const integrity = String(answer.full_corpus_integrity_gate || source.full_corpus_integrity_gate || 'failed');
+  return {
+    analyzed: Number.isFinite(analyzed) ? analyzed : 0,
+    represented: Number.isFinite(represented) ? represented : 0,
+    omitted: Number.isFinite(omitted) ? omitted : 0,
+    integrity
+  };
 }
 
 export default function ReportsPage() {
@@ -128,7 +140,7 @@ export default function ReportsPage() {
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-xl font-black">分析履歴</h1>
-            <p className="mt-2 text-sm leading-6 text-zinc-600">保存された分析レポートです。内部プロンプトは表示しません。</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">正式・暫定の検証状態と、最終統合へ実際に入った記事数を表示します。</p>
           </div>
           <Link className="btn" href="/chat">新しく分析する</Link>
         </div>
@@ -143,6 +155,9 @@ export default function ReportsPage() {
         const modelUsed = typeof answer.model_used === 'string' ? answer.model_used : '';
         const parentReportId = typeof answer.parent_report_id === 'string' ? answer.parent_report_id : '';
         const preview = answerPreview(report);
+        const counts = coverage(report);
+        const formal = report.is_formal_report === true;
+        const verificationStatus = report.analysis_verification_status || 'unverified';
 
         return (
           <div key={report.id} className="card p-4">
@@ -151,6 +166,10 @@ export default function ReportsPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   {isPinned(report) && <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">Pinned</span>}
                   {parentReportId && <span className="badge">深掘り</span>}
+                  <span className={formal ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800' : 'rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800'}>
+                    {formal ? '正式・検証済み' : '暫定・未検証'}
+                  </span>
+                  <span className="badge">{verificationStatus}</span>
                   <p className="text-xs text-zinc-500">{formatTokyo(report.created_at)}</p>
                 </div>
                 <h2 className="mt-2 font-bold">{reportTitle(report)}</h2>
@@ -159,7 +178,10 @@ export default function ReportsPage() {
                   {targetScope && <span className="badge">scope: {targetScope}</span>}
                   {outputTemplate && <span className="badge">template: {outputTemplate}</span>}
                   {modelUsed && <span className="badge">model: {modelUsed}</span>}
-                  <span className="badge">記事 {articleCount(report)}</span>
+                  <span className="badge">本文読解 {counts.analyzed}</span>
+                  <span className="badge">最終統合 {counts.represented}</span>
+                  <span className="badge">省略バッチ {counts.omitted}</span>
+                  <span className="badge">integrity: {counts.integrity}</span>
                 </div>
                 {preview ? <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-700">{preview}</p> : <p className="mt-3 text-sm text-amber-700">本文プレビューがありません。開いて詳細を確認してください。</p>}
                 <p className="mt-3 text-sm font-semibold text-zinc-900">開く →</p>

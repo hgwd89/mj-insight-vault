@@ -70,12 +70,13 @@ function validatedReady(row: MonthlyRollup, expectedCount: number) {
 async function fetchRollupRows() {
   const modernSelect = 'month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, rollup_model, generated_at, lease_expires_at';
   const legacySelect = 'month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, rollup_model, generated_at';
-  let result = await supabaseAdmin.from('monthly_rollups').select(modernSelect).order('month_key', { ascending: true });
-  if (result.error && (result.error.code === '42703' || text(result.error.message).includes('lease_expires_at'))) {
-    result = await supabaseAdmin.from('monthly_rollups').select(legacySelect).order('month_key', { ascending: true });
-  }
-  if (result.error) throw result.error;
-  return (result.data || []) as unknown as MonthlyRollup[];
+  const modern = await supabaseAdmin.from('monthly_rollups').select(modernSelect).order('month_key', { ascending: true });
+  if (!modern.error) return (modern.data || []) as unknown as MonthlyRollup[];
+  if (modern.error.code !== '42703' && !text(modern.error.message).includes('lease_expires_at')) throw modern.error;
+
+  const legacy = await supabaseAdmin.from('monthly_rollups').select(legacySelect).order('month_key', { ascending: true });
+  if (legacy.error) throw legacy.error;
+  return (legacy.data || []) as unknown as MonthlyRollup[];
 }
 
 export async function buildMonthlyRollupContext() {

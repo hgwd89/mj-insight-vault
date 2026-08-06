@@ -67,18 +67,24 @@ function validatedReady(row: MonthlyRollup, expectedCount: number) {
     && Boolean(text(json.source_fingerprint) || method === 'empty');
 }
 
+async function fetchRollupRows() {
+  const modernSelect = 'month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, rollup_model, generated_at, lease_expires_at';
+  const legacySelect = 'month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, rollup_model, generated_at';
+  let result = await supabaseAdmin.from('monthly_rollups').select(modernSelect).order('month_key', { ascending: true });
+  if (result.error && (result.error.code === '42703' || text(result.error.message).includes('lease_expires_at'))) {
+    result = await supabaseAdmin.from('monthly_rollups').select(legacySelect).order('month_key', { ascending: true });
+  }
+  if (result.error) throw result.error;
+  return (result.data || []) as unknown as MonthlyRollup[];
+}
+
 export async function buildMonthlyRollupContext() {
-  const [{ data, error }, articleMonths, articleMonthCounts] = await Promise.all([
-    supabaseAdmin
-      .from('monthly_rollups')
-      .select('month_key, article_count, summary_text, summary_json, representative_article_ids, evidence_article_ids, status, rollup_model, generated_at, lease_expires_at')
-      .order('month_key', { ascending: true }),
+  const [rows, articleMonths, articleMonthCounts] = await Promise.all([
+    fetchRollupRows(),
     listArticleMonths(),
     listArticleMonthCounts()
   ]);
 
-  if (error) throw error;
-  const rows = (data || []) as MonthlyRollup[];
   const byMonth = new Map(rows.map((row) => [row.month_key, row]));
   const readyRows = rows.filter((row) => validatedReady(row, Number(articleMonthCounts[row.month_key] || 0)));
   const readySet = new Set(readyRows.map((row) => row.month_key));

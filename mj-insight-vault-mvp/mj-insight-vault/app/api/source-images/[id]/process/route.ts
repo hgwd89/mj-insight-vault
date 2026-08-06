@@ -3,16 +3,14 @@ import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
 import { runDocumentOcr } from '@/lib/vision';
 import { segmentArticlesFromImage } from '@/lib/articleSegmentation';
-import { buildEmbeddingText, normalizeOcrText } from '@/lib/text';
-import { embedText } from '@/lib/openai';
-import { markMonthlyRollupsStaleForArticleDates } from '@/lib/monthlyRollups';
+import { normalizeOcrText } from '@/lib/text';
+import { commitSourceImageArticles, enrichCommittedArticles } from '@/lib/sourceImageArticleCommit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
-
   try {
     return JSON.stringify(error);
   } catch {
@@ -30,19 +28,9 @@ function isQuotaErrorMessage(message: string) {
     || lower.includes('quota');
 }
 
-function normalizeKey(value: unknown) {
-  return String(value || '')
-    .replace(/\s+/g, '')
-    .replace(/[「」『』【】\[\]（）()、。,.，．・:：]/g, '')
-    .trim()
-    .toLowerCase();
-}
-
-function articleDuplicateKey(headline: unknown, articleDate: unknown) {
-  const normalizedHeadline = normalizeKey(headline);
-  const normalizedDate = String(articleDate || '').trim();
-  if (!normalizedHeadline || !normalizedDate) return '';
-  return `${normalizedDate}::${normalizedHeadline}`;
+function monthKey(value: unknown) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}` : '';
 }
 
 async function updateImage(imageId: string, values: Record<string, unknown>) {
@@ -84,12 +72,19 @@ async function maybeCompleteBatch(batchId: string) {
     .eq('batch_id', batchId);
 
   if (error) throw error;
-
   const allDone = (images || []).every((image) => ['done', 'failed', 'deleted'].includes(image.ocr_status));
+  if (allDone) await updateBatch(batchId, { status: 'ocr_done' });
+}
 
-  if (allDone) {
-    await updateBatch(batchId, { status: 'ocr_done' });
-  }
+async function existingCompletedArticles(imageId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('articles')
+    .select('*')
+    .eq('source_image_id', imageId)
+    .not('status', 'in', '(deleted,excluded,rejected)')
+    .order('article_index', { ascending: true });
+  if (error) throw error;
+  return data || [];
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -109,6 +104,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (imageError) throw imageError;
     if (!image?.storage_path) return Response.json({ error: 'source image has no storage_path' }, { status: 400 });
 
+    if (image.ocr_status === 'done') {
+      const existing = await existingCompletedArticles(id);
+      if (existing.length) {
+        return Response.json({
+          image,
+          articles: existing,
+          article_count: existing.length,
+          duplicates: [],
+          duplicate_count: 0,
+          already_processed: true
+        });
+      }
+    }
+
     const downloaded = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(image.storage_path);
     if (downloaded.error) throw downloaded.error;
 
@@ -121,6 +130,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     try {
       const ocr = await runDocumentOcr(buffer);
       const ocrText = normalizeOcrText(ocr.text);
+      const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
+
+      const committed = await commitSourceImageArticles({
+        imageId: id,
+        candidates,
+        fallbackArticleDate,
+        replaceExisting: false
+      });
 
       await updateImage(id, {
         ocr_status: 'done',
@@ -128,98 +145,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ocr_json: ocr.raw,
         error_message: null
       });
-
-      const candidates = await segmentArticlesFromImage({ ocrText, imageBuffer: buffer, mimeType });
-      const candidateDates = Array.from(new Set(candidates.map((candidate) => candidate.article_date || fallbackArticleDate || '').filter(Boolean)));
-      const { data: existingArticles, error: existingError } = candidateDates.length
-        ? await supabaseAdmin
-          .from('articles')
-          .select('id, headline, article_date, status')
-          .in('article_date', candidateDates)
-          .neq('status', 'deleted')
-        : { data: [], error: null };
-
-      if (existingError) throw existingError;
-
-      const existingKeys = new Map<string, { id: string; headline: string | null; article_date: string | null }>();
-      for (const article of existingArticles || []) {
-        const key = articleDuplicateKey(article.headline, article.article_date);
-        if (key) existingKeys.set(key, article);
-      }
-
-      const createdArticles: { id?: string; headline?: string | null; article_date?: string | null }[] = [];
-      const duplicateArticles: unknown[] = [];
-      const seenInThisImage = new Set<string>();
-
-      for (let idx = 0; idx < candidates.length; idx++) {
-        const candidate = candidates[idx];
-        const articleDate = candidate.article_date || fallbackArticleDate || null;
-        const duplicateKey = articleDuplicateKey(candidate.headline, articleDate);
-        const existing = duplicateKey ? existingKeys.get(duplicateKey) : undefined;
-        const duplicatedInThisImage = duplicateKey ? seenInThisImage.has(duplicateKey) : false;
-
-        if (duplicateKey) seenInThisImage.add(duplicateKey);
-
-        if (existing || duplicatedInThisImage) {
-          duplicateArticles.push({
-            headline: candidate.headline,
-            article_date: articleDate,
-            article_index: idx,
-            reason: existing ? '既存記事と同じ日付・見出し' : '同一画像内で同じ日付・見出し',
-            existing_article_id: existing?.id || null,
-            existing_headline: existing?.headline || null
-          });
-          continue;
-        }
-
-        const { data: article, error: articleError } = await supabaseAdmin
-          .from('articles')
-          .insert({
-            batch_id: image.batch_id,
-            source_image_id: id,
-            headline: candidate.headline,
-            article_date: articleDate,
-            article_index: idx,
-            ocr_text: candidate.ocr_text,
-            article_type: candidate.article_type,
-            has_table: candidate.has_table,
-            has_chart: candidate.has_chart,
-            has_image: candidate.has_image,
-            status: 'ocr_done'
-          })
-          .select('*')
-          .single();
-
-        if (articleError) throw articleError;
-
-        createdArticles.push(article);
-
-        const insertedKey = articleDuplicateKey(article.headline, article.article_date);
-        if (insertedKey) existingKeys.set(insertedKey, article);
-
-        const embeddingText = buildEmbeddingText(article);
-        const embedding = await embedText(embeddingText);
-
-        if (embedding) {
-          await supabaseAdmin.from('article_embeddings').insert({
-            article_id: article.id,
-            embedding_text: embeddingText,
-            embedding_vector: embedding
-          });
-        }
-      }
-
-      const stale = await markMonthlyRollupsStaleForArticleDates(createdArticles.map((article) => article.article_date));
       await maybeCompleteBatch(image.batch_id);
+
+      const enrichment = await enrichCommittedArticles(committed.created_articles);
+      const affectedMonths = Array.from(new Set(
+        candidates.map((candidate) => monthKey(candidate.article_date || fallbackArticleDate)).filter(Boolean)
+      ));
 
       return Response.json({
         image: { ...image, ocr_status: 'done' },
-        articles: createdArticles,
-        article_count: createdArticles.length,
-        duplicates: duplicateArticles,
-        duplicate_count: duplicateArticles.length,
-        stale_rollup_months: stale.months,
-        stale_rollup_updated: stale.updated
+        articles: committed.created_articles,
+        article_count: committed.created_count,
+        duplicates: committed.duplicate_candidates,
+        duplicate_count: committed.duplicate_count,
+        retired_article_ids: committed.retired_article_ids,
+        stale_rollup_months: affectedMonths,
+        stale_rollup_updated: affectedMonths.length,
+        enrichment,
+        atomic_commit: true
       });
     } catch (error) {
       const errorMessage = getErrorMessage(error);
@@ -238,7 +181,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           articles: [],
           article_count: 0,
           duplicates: [],
-          duplicate_count: 0
+          duplicate_count: 0,
+          atomic_commit: true
         },
         { status: isQuota ? 429 : 500 }
       );

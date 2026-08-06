@@ -18,6 +18,10 @@ const chatNo160 = read('lib/chatRouteNo160.ts');
 const chatCore = read('lib/chatRouteCore.ts');
 const wide = read('lib/wideArticleRetrieval.ts');
 const batchesApi = read('app/api/batches/route.ts');
+const processRoute = read('app/api/source-images/[id]/process/route.ts');
+const reprocessRoute = read('app/api/source-images/[id]/reprocess/route.ts');
+const commitHelper = read('lib/sourceImageArticleCommit.ts');
+const atomicMigration = read('supabase/migrations/20260806162000_atomic_source_image_article_commit.sql');
 
 assert(/const MAX_ATTEMPTS = 3;/.test(stable), 'Upload retry count must remain MAX_ATTEMPTS = 3.');
 assert(/const OCR_MAX_IMAGE_SIDE = 4200;/.test(stable), 'OCR max image side must remain 4200.');
@@ -39,5 +43,21 @@ assert(/fetchAllWideArticles/.test(chatNo160), 'No-160 chat route must use wide 
 assert(/PAGE_SIZE = 1000/.test(wide) && /\.range\(from, from \+ PAGE_SIZE - 1\)/.test(wide), 'Wide article retrieval must page through all articles.');
 assert(/\.from\('upload_batches'\)[\s\S]*?\.select\('\*'\)/.test(batchesApi), '/api/batches must fetch the batch list without unused embedded relation counts.');
 assert(!/source_images\(count\)|articles\(count\)/.test(batchesApi), '/api/batches must not depend on embedded relation count resolution.');
+
+assert(/commit_source_image_articles_v1/.test(atomicMigration), 'Article candidates must be committed by one database transaction.');
+assert(/for update/.test(atomicMigration), 'Source image commit must serialize concurrent processing.');
+assert(/source_image_already_has_active_articles/.test(atomicMigration), 'Normal processing must not append to an already committed image.');
+assert(/p_replace_existing/.test(atomicMigration) && /source_image_reprocessed/.test(atomicMigration), 'Reprocessing must replace old articles inside the same transaction.');
+assert(/exception when unique_violation/.test(atomicMigration), 'Concurrent duplicate insertion must be converted into an auditable duplicate result.');
+assert(/enrichment_status/.test(atomicMigration) && /embedding_failed/.test(atomicMigration), 'Embedding state must be separate from article commit state.');
+assert(/commitSourceImageArticles/.test(processRoute), 'Initial processing must use the atomic commit helper.');
+assert(/replaceExisting: false/.test(processRoute), 'Initial processing must reject accidental append behavior.');
+assert(!/\.from\('articles'\)[\s\S]*?\.insert/.test(processRoute), 'Initial processing must not insert articles one by one.');
+assert(/commitSourceImageArticles/.test(reprocessRoute) && /replaceExisting: true/.test(reprocessRoute), 'Reprocessing must use atomic replacement.');
+assert(!/softDeleteOldArticles/.test(reprocessRoute), 'Reprocessing must not delete old articles before a successful replacement commit.');
+assert(/old_articles_preserved: true/.test(reprocessRoute), 'Reprocess failure response must state that prior articles remain intact.');
+assert(/enrichCommittedArticles/.test(processRoute) && /enrichCommittedArticles/.test(reprocessRoute), 'Embedding must run only after atomic article commit.');
+assert(/upsert\(/.test(commitHelper) && /onConflict: 'article_id'/.test(commitHelper), 'Embedding writes must be idempotent.');
+assert(/recordEnrichmentFailure/.test(commitHelper), 'Embedding failures must be persisted without rolling back articles.');
 
 console.log('verify-upload-constants: ok');

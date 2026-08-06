@@ -19,6 +19,7 @@ const rollupApi = read('app/api/rollups/monthly/route.ts');
 const workerApi = read('app/api/rollups/monthly/worker/route.ts');
 const rollupPage = read('app/rollups/page.tsx');
 const workerMigration = read('supabase/migrations/20260806100000_add_monthly_rollup_worker.sql');
+const atomicArticleMigration = read('supabase/migrations/20260806162000_atomic_source_image_article_commit.sql');
 const processRoute = read('app/api/source-images/[id]/process/route.ts');
 const reprocessRoute = read('app/api/source-images/[id]/reprocess/route.ts');
 const chatJobRun = read('app/api/chat/jobs/[id]/run/route.ts');
@@ -73,8 +74,10 @@ assert(/完了ではありません/.test(rollupPage), 'Rollup UI must not descr
 assert(/pending_months/.test(rollupPage) && /10_000/.test(rollupPage), 'Rollup UI must poll pending work.');
 assert(/invalid_ready_months/.test(rollupPage), 'Rollup UI must expose invalid legacy ready rows.');
 
-assert(/markMonthlyRollupsStaleForArticleDates/.test(processRoute), 'New OCR article creation must stale the related rollup month.');
-assert(/markMonthlyRollupsStaleForArticleDates/.test(reprocessRoute), 'Reprocess must stale the related rollup month.');
+assert(/update public\.monthly_rollups/.test(atomicArticleMigration), 'Atomic article creation must stale affected rollup months in the same transaction.');
+assert(/v_affected_dates/.test(atomicArticleMigration), 'Atomic replacement must include both retired and newly created article months.');
+assert(/stale_rollup_months/.test(processRoute), 'New OCR article response must expose invalidated rollup months.');
+assert(/stale_rollup_months/.test(reprocessRoute), 'Reprocess response must expose invalidated rollup months.');
 assert(/buildMonthlyRollupContext/.test(chatRouteNo160), 'Chat analysis route must build monthly rollup context.');
 assert(!/buildMonthlyRollupContext/.test(chatJobRun), 'Chat job run must not inject monthly rollup context separately.');
 assert(/runChatAnalysis/.test(chatJobRun), 'Chat job run must use the shared chat analysis route.');

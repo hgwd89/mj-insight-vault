@@ -33,8 +33,8 @@ as $$
           and (
             b.status <> 'completed'
             or b.prompt_version <> 'full_corpus_batch_v2'
-            or coalesce((b.summary_json ->> 'analysis_is_validated')::boolean, false) is not true
-            or coalesce((b.summary_json ->> 'fallback_used')::boolean, false) is true
+            or lower(coalesce(b.summary_json ->> 'analysis_is_validated', 'false')) not in ('true', '1', 'yes')
+            or lower(coalesce(b.summary_json ->> 'fallback_used', 'false')) in ('true', '1', 'yes')
             or cardinality(b.article_ids) <> b.article_count
             or array(
               select article_id::text
@@ -51,15 +51,20 @@ as $$
               ) value
               order by value
             )
-            or jsonb_typeof(b.summary_json -> 'evidence') <> 'array'
-            or jsonb_array_length(b.summary_json -> 'evidence') = 0
+            or jsonb_array_length(
+              case
+                when jsonb_typeof(b.summary_json -> 'evidence') = 'array'
+                  then b.summary_json -> 'evidence'
+                else '[]'::jsonb
+              end
+            ) = 0
             or (
-              coalesce((b.summary_json ->> 'no_signal_detected')::boolean, false) is not true
-              and coalesce(jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'consumer_narratives') = 'array' then b.summary_json -> 'consumer_narratives' else '[]'::jsonb end), 0) = 0
-              and coalesce(jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'behavior_signals') = 'array' then b.summary_json -> 'behavior_signals' else '[]'::jsonb end), 0) = 0
-              and coalesce(jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'weak_signals') = 'array' then b.summary_json -> 'weak_signals' else '[]'::jsonb end), 0) = 0
-              and coalesce(jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'constraints') = 'array' then b.summary_json -> 'constraints' else '[]'::jsonb end), 0) = 0
-              and coalesce(jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'contradictions') = 'array' then b.summary_json -> 'contradictions' else '[]'::jsonb end), 0) = 0
+              lower(coalesce(b.summary_json ->> 'no_signal_detected', 'false')) not in ('true', '1', 'yes')
+              and jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'consumer_narratives') = 'array' then b.summary_json -> 'consumer_narratives' else '[]'::jsonb end) = 0
+              and jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'behavior_signals') = 'array' then b.summary_json -> 'behavior_signals' else '[]'::jsonb end) = 0
+              and jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'weak_signals') = 'array' then b.summary_json -> 'weak_signals' else '[]'::jsonb end) = 0
+              and jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'constraints') = 'array' then b.summary_json -> 'constraints' else '[]'::jsonb end) = 0
+              and jsonb_array_length(case when jsonb_typeof(b.summary_json -> 'contradictions') = 'array' then b.summary_json -> 'contradictions' else '[]'::jsonb end) = 0
             )
           )
       )
@@ -183,18 +188,12 @@ declare
     payload #>> '{source_coverage,final_context_all_batches_represented}',
     'false'
   )) in ('true', '1', 'yes');
-  omitted_batches integer := coalesce(nullif(
-    coalesce(payload ->> 'final_context_omitted_batches', payload #>> '{source_coverage,final_context_omitted_batches}', '0'),
-    ''
-  )::integer, 0);
-  represented_batches integer := coalesce(nullif(
-    coalesce(payload ->> 'final_context_represented_batches', payload #>> '{source_coverage,final_context_represented_batches}', '0'),
-    ''
-  )::integer, 0);
-  represented_articles integer := coalesce(nullif(
-    coalesce(payload ->> 'final_context_represented_article_count', payload #>> '{source_coverage,final_context_represented_article_count}', '0'),
-    ''
-  )::integer, 0);
+  omitted_text text := coalesce(payload ->> 'final_context_omitted_batches', payload #>> '{source_coverage,final_context_omitted_batches}', '0');
+  represented_batches_text text := coalesce(payload ->> 'final_context_represented_batches', payload #>> '{source_coverage,final_context_represented_batches}', '0');
+  represented_articles_text text := coalesce(payload ->> 'final_context_represented_article_count', payload #>> '{source_coverage,final_context_represented_article_count}', '0');
+  omitted_batches integer := 0;
+  represented_batches integer := 0;
+  represented_articles integer := 0;
   quality_status text := coalesce(payload #>> '{quality_gate,status}', '');
   gate_version text := coalesce(payload ->> 'formal_gate_version', payload #>> '{raw_quality_gate,version}', '');
   validation_mode text := coalesce(payload #>> '{raw_quality_gate,validation_mode}', '');
@@ -223,6 +222,10 @@ declare
   database_raw_integrity boolean := false;
   formal boolean;
 begin
+  if omitted_text ~ '^\d+$' then omitted_batches := omitted_text::integer; end if;
+  if represented_batches_text ~ '^\d+$' then represented_batches := represented_batches_text::integer; end if;
+  if represented_articles_text ~ '^\d+$' then represented_articles := represented_articles_text::integer; end if;
+
   if run_id_text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
     run_id := run_id_text::uuid;
   end if;

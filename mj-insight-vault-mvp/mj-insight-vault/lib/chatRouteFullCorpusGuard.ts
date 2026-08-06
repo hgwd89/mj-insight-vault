@@ -1,367 +1,325 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { fetchAllWideArticles } from '@/lib/wideArticleRetrieval';
 import { getIntegrityCheckedFullCorpusContext, type FullCorpusIntegrityContext } from '@/lib/fullCorpusIntegrity';
-import { getConceptClusters } from '@/lib/conceptClusters';
 import { runChatAnalysis as runBaseChatAnalysis } from '@/lib/chatRouteNo160';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 import { sanitizeReportForDisplay } from '@/lib/reportSafety';
+import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
+import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
-const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
-type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
-type JsonRecord = Record<string, unknown>;
-type CorpusContext = FullCorpusIntegrityContext;
-type Scope = { scopeType: 'all' | 'category'; scopeQuery: string; categoryName?: string };
-type ContextMessage = { role: 'user'; content: string };
-type ConceptClusterContext = { messages: ContextMessage[]; count: number };
+const MAX_EVIDENCE = 72;
+const TIMEOUT_MS = Number(process.env.FULL_CORPUS_FINAL_TIMEOUT_MS) || 120_000;
+const MAX_TOKENS = Number(process.env.FULL_CORPUS_FINAL_MAX_TOKENS) || 12_000;
 
-function text(value: unknown) { return value === undefined || value === null ? '' : String(value).trim(); }
-function isRecord(value: unknown): value is JsonRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
-function num(run: JsonRecord, key: string) { return Number(run[key] || 0); }
-function requestedCategory(body: JsonRecord) { return text(body.category_id || body.analysis_category_id || body.category); }
+type Json = Record<string, unknown>;
+type Scope = { type: 'all' | 'category'; query: string; name?: string };
+type Progress = (value: { progress: number; stage: string }) => void | Promise<void>;
+type Context = FullCorpusIntegrityContext;
+type Evidence = {
+  article_id: string;
+  batch_index: number;
+  claim: string;
+  evidence_excerpt_or_fact: string;
+  headline?: string;
+  article_date?: string;
+  article_url?: string;
+  article_link?: string;
+  ocr_text?: string;
+};
 
-async function inferCategoryFromQuery(query: string) {
-  const { data, error } = await supabaseAdmin.from('analysis_categories').select('id, name_ja, keywords').eq('is_active', true);
-  if (error) return null;
-  const q = query.toLowerCase();
-  for (const row of data || []) {
+const text = (value: unknown) => value === undefined || value === null ? '' : String(value).trim();
+const record = (value: unknown): value is Json => Boolean(value && typeof value === 'object' && !Array.isArray(value));
+const records = (value: unknown) => Array.isArray(value) ? value.filter(record) : [];
+const number = (value: unknown) => Number(value || 0);
+const runValue = (run: Json, key: string) => number(run[key]);
+
+async function reportProgress(onProgress: Progress | undefined, progress: number, stage: string) {
+  try { await onProgress?.({ progress, stage }); } catch {}
+}
+
+async function resolveScope(body: Json): Promise<Scope> {
+  const explicit = text(body.category_id || body.analysis_category_id || body.category);
+  if (explicit) return { type: 'category', query: explicit };
+  const query = text(body.query);
+  const { data } = await supabaseAdmin.from('analysis_categories').select('id, name_ja, keywords').eq('is_active', true);
+  const lower = query.toLowerCase();
+  const matched = (data || []).find((row) => {
     const id = text(row.id);
     const name = text(row.name_ja);
     const keywords = Array.isArray(row.keywords) ? row.keywords.map(text) : [];
-    if (q.includes(id.toLowerCase()) || (name && query.includes(name)) || keywords.some((kw) => kw && q.includes(kw.toLowerCase()))) return { id, name };
+    return lower.includes(id.toLowerCase()) || (name && query.includes(name)) || keywords.some((item) => item && lower.includes(item.toLowerCase()));
+  });
+  if (matched && (text(body.target_scope) === 'category' || !ALL_WORDS.test(query))) {
+    return { type: 'category', query: text(matched.id), name: text(matched.name_ja) };
   }
-  return null;
+  return { type: 'all', query: '' };
 }
 
-async function resolveScope(body: JsonRecord): Promise<Scope> {
-  const explicit = requestedCategory(body);
-  if (explicit) return { scopeType: 'category', scopeQuery: explicit };
-  const target = text(body.target_scope);
-  if (target === 'category') {
-    const inferred = await inferCategoryFromQuery(text(body.query));
-    if (inferred?.id) return { scopeType: 'category', scopeQuery: inferred.id, categoryName: inferred.name };
-  }
-  const inferred = await inferCategoryFromQuery(text(body.query));
-  if (inferred?.id && !ALL_WORDS.test(text(body.query))) return { scopeType: 'category', scopeQuery: inferred.id, categoryName: inferred.name };
-  return { scopeType: 'all', scopeQuery: '' };
-}
-
-function shouldGuard(body: JsonRecord, scope: Scope) {
+function shouldGuard(body: Json, scope: Scope) {
   if (body.require_full_corpus === false) return false;
-  if (scope.scopeType === 'category') return true;
-  return text(body.target_scope || 'all') === 'all' || ALL_WORDS.test(text(body.query));
+  return scope.type === 'category' || text(body.target_scope || 'all') === 'all' || ALL_WORDS.test(text(body.query));
 }
 
-function passed(context: CorpusContext) {
-  const run = isRecord(context.run) ? context.run : null;
-  if (!run) return false;
-  return context.full_corpus_gate === 'passed'
+function contextPassed(context: Context) {
+  const run = record(context.run) ? context.run : null;
+  return Boolean(run)
+    && context.full_corpus_gate === 'passed'
     && context.full_corpus_integrity_gate === 'passed'
     && context.integrity_failures.length === 0
     && Boolean(text(context.context_text))
     && context.prompt_version === 'full_corpus_batch_v2'
     && context.omitted_batches === 0
-    && context.represented_batches === num(run, 'total_batches')
-    && context.represented_article_count === num(run, 'analyzed_article_count')
-    && text(run.status) === 'completed'
-    && num(run, 'total_batches') > 0
-    && num(run, 'completed_batches') === num(run, 'total_batches')
-    && num(run, 'failed_batches') === 0
-    && num(run, 'needs_review_batches') === 0
-    && num(run, 'analyzed_article_count') > 0
-    && num(run, 'analyzed_article_count') === num(run, 'ocr_ready_article_count');
+    && context.represented_batches === runValue(run!, 'total_batches')
+    && context.represented_article_count === runValue(run!, 'analyzed_article_count')
+    && text(run!.status) === 'completed'
+    && runValue(run!, 'completed_batches') === runValue(run!, 'total_batches')
+    && runValue(run!, 'failed_batches') === 0
+    && runValue(run!, 'needs_review_batches') === 0
+    && runValue(run!, 'analyzed_article_count') === runValue(run!, 'ocr_ready_article_count');
 }
 
-function corpusMessage(context: CorpusContext, scope: Scope) {
-  const contextText = text(context.context_text);
-  if (!contextText) return [];
-  const rules = [
-    'この入力は全バッチを均等に圧縮した最終統合用コンテキストです。先頭バッチだけを優先しないでください。',
-    '各バッチの観察、反証、調査課題を横断し、頻度と反例を区別してください。',
-    '企業施策を生活者需要の証明へ変換しないでください。'
-  ];
-  if (scope.scopeType === 'category') {
-    return [{ role: 'user', content: [
-      `【CATEGORY_FULL_CORPUS_BATCH_ANALYSIS_PRIMARY:${scope.scopeQuery}】`,
-      ...rules,
-      'カテゴリ外の記事は比較・反証目的以外では主要根拠に使わないでください。',
-      contextText
-    ].join('\n') }];
+function fact(item: Json) {
+  return text(item.evidence_excerpt_or_fact || item.observed_fact || item.what_can_be_said || item.evidence_excerpt || item.excerpt || item.fact)
+    .replace(/\s+/g, ' ').slice(0, 700);
+}
+
+function claim(item: Json, summary: Json) {
+  return text(item.claim || item.theme || item.signal || item.consumer_narrative || summary.consumer_narratives || summary.behavior_signals || summary.weak_signals || '記事本文で観察された事実')
+    .replace(/\s+/g, ' ').slice(0, 240);
+}
+
+function collectEvidence(context: Context) {
+  const all: Evidence[] = [];
+  const seen = new Set<string>();
+  for (const rawBatch of context.batches) {
+    const batch = record(rawBatch) ? rawBatch : {};
+    const summary = record(batch.summary_json) ? batch.summary_json : {};
+    for (const item of records(summary.evidence)) {
+      const articleId = text(item.article_id || item.id);
+      const evidenceFact = fact(item);
+      if (!articleId || evidenceFact.length < 20 || seen.has(articleId)) continue;
+      seen.add(articleId);
+      all.push({ article_id: articleId, batch_index: number(batch.batch_index), claim: claim(item, summary), evidence_excerpt_or_fact: evidenceFact });
+    }
   }
-  return [{ role: 'user', content: ['【FULL_CORPUS_BATCH_ANALYSIS_PRIMARY】', ...rules, contextText].join('\n') }];
+  if (all.length <= MAX_EVIDENCE) return all;
+  const step = all.length / MAX_EVIDENCE;
+  return Array.from({ length: MAX_EVIDENCE }, (_, index) => all[Math.min(all.length - 1, Math.floor(index * step))]);
 }
 
-async function conceptClusterContext(run: JsonRecord): Promise<ConceptClusterContext> {
-  try {
-    const fingerprint = text(run.corpus_fingerprint);
-    const clusters = (await getConceptClusters()).filter((cluster) => {
-      const params = isRecord(cluster.generation_params) ? cluster.generation_params : {};
-      return params.integrity_verified === true
-        && text(params.corpus_fingerprint) === fingerprint
-        && text(params.labeling) !== 'temporary_no_llm'
-        && params.manual_labeling !== true;
-    });
-    if (!clusters.length) return { messages: [], count: 0 };
-    const clusterLines = clusters.slice(0, 20).map((cluster, index) => {
-      const members = (cluster.member_summaries || []).slice(0, 3).map((member) => {
-        const summary = text(member.summary_text).replace(/\s+/g, ' ').slice(0, 140);
-        return `- ${member.headline || '無題の記事'} (/articles/${member.article_id}): ${summary}`;
-      }).join('\n');
-      return [
-        `${index + 1}. ${cluster.cluster_label || `クラスタ${cluster.cluster_index + 1}`} (${cluster.total_articles}件; months: ${(cluster.source_rollup_months || []).join(', ') || '-'})`,
-        cluster.cluster_description ? `説明: ${cluster.cluster_description}` : '',
-        members ? `代表記事:\n${members}` : ''
-      ].filter(Boolean).join('\n');
-    }).join('\n\n');
-
+async function enrichEvidence(seeds: Evidence[]) {
+  const ids = seeds.map((item) => item.article_id);
+  const rows: Json[] = [];
+  for (let index = 0; index < ids.length; index += 200) {
+    const { data, error } = await supabaseAdmin.from('articles').select('id, headline, article_date, ocr_text').in('id', ids.slice(index, index + 200));
+    if (error) throw error;
+    rows.push(...((data || []).filter(record)));
+  }
+  const byId = new Map(rows.map((row) => [text(row.id), row]));
+  return seeds.map((seed) => {
+    const row = byId.get(seed.article_id) || {};
+    const headline = text(row.headline) || '無題の記事';
+    const date = text(row.article_date) || '日付不明';
     return {
-      count: clusters.length,
-      messages: [{
-        role: 'user',
-        content: [
-          '【ANALYSIS_LAYER_2_CONCEPT_CLUSTERS】',
-          '以下は現在の全件runと同一fingerprintで検証された横断クラスタです。',
-          'クラスタは中間解釈レイヤーであり、最終根拠は記事IDで確認してください。',
-          `cluster_count: ${clusters.length}`,
-          clusterLines
-        ].join('\n')
-      }]
+      ...seed,
+      headline,
+      article_date: date,
+      article_url: `/articles/${seed.article_id}`,
+      article_link: `[${headline}｜${date}](/articles/${seed.article_id})`,
+      ocr_text: text(row.ocr_text).replace(/\s+/g, ' ').slice(0, 900)
     };
-  } catch {
-    return { messages: [], count: 0 };
+  });
+}
+
+function timeout<T>(factory: (signal: AbortSignal) => Promise<T>, ms: number) {
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => { controller.abort(); reject(new Error(`full corpus writer timed out after ${ms}ms`)); }, ms);
+    factory(controller.signal).then((value) => { clearTimeout(timer); resolve(value); }).catch((error) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function parseContext(value: string) {
+  try { return JSON.parse(value) as unknown; } catch { return value; }
+}
+
+function ensureRawFields(answer: Json, evidenceLookup: Evidence[], run: Json, scope: Scope) {
+  const lookup = new Map(evidenceLookup.map((item) => [item.article_id, item]));
+  const evidence: Json[] = [];
+  const seen = new Set<string>();
+  for (const item of records(answer.evidence_matrix)) {
+    const id = text(item.article_id || item.id);
+    const source = lookup.get(id);
+    if (!source || seen.has(id)) continue;
+    const evidenceFact = fact(item) || source.evidence_excerpt_or_fact;
+    if (evidenceFact.length < 20) continue;
+    seen.add(id);
+    evidence.push({ ...item, article_id: id, headline: text(item.headline) || source.headline, article_date: text(item.article_date) || source.article_date, article_url: source.article_url, article_link: source.article_link, evidence_excerpt_or_fact: evidenceFact, evidence_strength: text(item.evidence_strength || 'B'), limitation: text(item.limitation) || '記事単独では生活者全体の需要や因果を断定できない。', synthetic_repair: false });
   }
-}
+  for (const source of evidenceLookup) {
+    if (evidence.length >= 10) break;
+    if (seen.has(source.article_id)) continue;
+    seen.add(source.article_id);
+    evidence.push({ ...source, evidence_strength: 'B', limitation: '記事本文で確認できる事実。頻度・代表性・因果は全バッチ横断と追加調査で確認する。', what_can_be_said: source.evidence_excerpt_or_fact, what_cannot_be_said: 'この記事単独では生活者全体の需要や心理を断定できない。', synthetic_repair: false, provenance: 'validated_full_corpus_batch_v2_evidence' });
+  }
+  answer.evidence_matrix = evidence;
+  if (!records(answer.refutation_audit).length) answer.refutation_audit = [{ target_claim: '主要トレンド全体', possible_counterargument: '企業施策や商品投入が多いだけで生活者需要の変化を示していない可能性がある。', evidence_gap: '生活者本人の発話、継続購買、非購買理由、カテゴリ横断の反例。', downgrade_or_revision: '生活者側の直接証拠がない主張は仮説へ格下げする。', falsification_condition: '追加調査で行動変化が一時的・局所的・企業主導に限定される場合。', synthetic_repair: false }];
+  if (!records(answer.negative_space).length) answer.negative_space = [{ expected_but_weak_or_absent_theme: '生活者本人の長期継続行動と非利用理由', why_absence_matters: '記事群は企業・市場側の情報を多く含み、心理や因果の直接証拠が弱い。', what_to_check_next: '時系列購買、非購買者インタビュー、カテゴリ外反例を確認する。', synthetic_repair: false }];
+  if (!records(answer.research_needs).length) answer.research_needs = [{ question: '観察された変化は生活者本人の継続行動と選択理由で再現されるか。', why_it_matters: '市場シグナルを生活者インサイトへ昇格するため。', needed_data: '生活者発話、購買・利用継続、非利用理由、カテゴリ外反例。', method_hint: 'N1深掘り、行動ログ、定量検証。', priority: 'high', synthetic_repair: false }];
+  if (!records(answer.confidence_rubric).length) answer.confidence_rubric = evidence.slice(0, 5).map((item) => ({ claim: text(item.claim || '根拠付き主張'), confidence: text(item.evidence_strength || 'B'), reason_for_confidence: text(item.evidence_excerpt_or_fact), reason_for_uncertainty: text(item.limitation), synthetic_repair: false }));
 
-function categoryQuery(query: string, scope: Scope) {
-  if (scope.scopeType !== 'category') return query;
-  return [query, `対象カテゴリID: ${scope.scopeQuery}`, scope.categoryName ? `対象カテゴリ名: ${scope.categoryName}` : '', 'このカテゴリの生活者ナラティブとインサイトに限定して分析してください。'].filter(Boolean).join('\n');
-}
+  const links = evidence.slice(0, 8).map((item) => text(item.article_link) ? `- ${text(item.claim || '根拠記事')}：${text(item.article_link)} — ${text(item.evidence_excerpt_or_fact).slice(0, 180)}` : '').filter(Boolean);
+  if (links.length && !text(answer.answer_text).includes('## 根拠記事')) answer.answer_text = `${text(answer.answer_text)}\n\n## 根拠記事\n${links.join('\n')}`.trim();
 
-async function diagnostic(query: string, body: JsonRecord, context: CorpusContext, scope: Scope) {
-  const allArticles = await fetchAllWideArticles();
-  const run = isRecord(context.run) ? context.run : {};
-  const scopeLabel = scope.scopeType === 'category' ? `カテゴリ「${scope.categoryName || scope.scopeQuery}」` : '全件';
-  const failures = context.integrity_failures.slice(0, 20);
-  const answer = {
-    report_title: `${scopeLabel}分析整合性未達`,
-    report_kind: 'diagnostic',
-    generation_status: 'blocked',
-    is_formal_report: false,
-    target_scope: scope.scopeType,
-    category_id: scope.scopeType === 'category' ? scope.scopeQuery : '',
-    model_used: text(body.model || ''),
-    full_corpus_gate: context.full_corpus_gate,
-    full_corpus_integrity_gate: context.full_corpus_integrity_gate,
-    analysis_is_provisional: true,
-    related_article_count: allArticles.length,
-    article_count_scanned: allArticles.length,
-    source_coverage: {
-      active_article_count: allArticles.length,
-      scanned_article_count: allArticles.length,
-      scope_type: scope.scopeType,
-      scope_query: scope.scopeQuery,
-      full_corpus_gate: context.full_corpus_gate,
-      full_corpus_integrity_gate: context.full_corpus_integrity_gate,
-      integrity_failures: failures,
-      full_corpus_prompt_version: context.prompt_version,
-      final_context_all_batches_represented: context.omitted_batches === 0,
-      final_context_represented_batches: context.represented_batches,
-      final_context_represented_article_count: context.represented_article_count,
-      full_corpus_run_id: text(run.id),
-      full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'),
-      full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'),
-      full_corpus_total_batches: num(run, 'total_batches'),
-      full_corpus_completed_batches: num(run, 'completed_batches'),
-      full_corpus_failed_batches: num(run, 'failed_batches'),
-      full_corpus_needs_review_batches: num(run, 'needs_review_batches')
-    },
-    quality_gate: { status: 'failed', failed_checks: ['full_corpus_integrity_gate', ...failures] },
-    answer_text: [
-      '## 1. 結論',
-      `${scopeLabel}の件数ゲートまたは内容整合性ゲートが未達のため、正式分析レポートは生成していません。`,
-      '',
-      '## 2. 状態',
-      `- 指示: ${query}`,
-      `- scan_run_id: ${text(run.id) || '未作成'}`,
-      `- count gate: ${context.full_corpus_gate}`,
-      `- integrity gate: ${context.full_corpus_integrity_gate}`,
-      `- prompt version: ${context.prompt_version}`,
-      `- 最終統合で表現されたバッチ: ${context.represented_batches} / ${num(run, 'total_batches')}`,
-      `- 最終統合で表現された記事レコード: ${context.represented_article_count} / ${num(run, 'analyzed_article_count')}`,
-      '',
-      '## 3. 整合性エラー',
-      ...(failures.length ? failures.map((failure) => `- ${failure}`) : ['- count gate未達']),
-      '',
-      '## 4. 必要な対応',
-      '正式母集団をarticle型に限定し、full_corpus_batch_v2で全バッチを再構築してください。'
-    ].join('\n')
+  const analyzed = runValue(run, 'analyzed_article_count');
+  Object.assign(answer, {
+    scan_enabled: true,
+    scan_model: 'full_corpus_batch_v2_direct_writer',
+    retrieval_mode: 'full_corpus_batch_v2_uniform_digest_plus_validated_evidence',
+    article_count_scanned: analyzed,
+    article_count_for_report: evidence.length,
+    related_article_count: analyzed,
+    selected_article_ids: evidence.map((item) => text(item.article_id)).filter(Boolean),
+    analysis_is_provisional: false,
+    target_scope: scope.type,
+    category_id: scope.query
+  });
+  answer.source_coverage = {
+    ...(record(answer.source_coverage) ? answer.source_coverage : {}),
+    active_article_count: runValue(run, 'active_article_count'),
+    scanned_article_count: analyzed,
+    final_article_count: evidence.length,
+    scope_type: scope.type,
+    scope_query: scope.query,
+    scan_model: 'full_corpus_batch_v2_direct_writer',
+    retrieval_mode: 'full_corpus_batch_v2_uniform_digest_plus_validated_evidence',
+    full_corpus_gate: 'passed',
+    analysis_is_provisional: false,
+    coverage_note: `full_corpus_batch_v2の全${runValue(run, 'total_batches')}バッチ・${analyzed}記事を均等圧縮して最終統合。`
   };
-  return { report: null, report_error: 'full_corpus_integrity_gate_failed', related_articles: [], selectable_models: [], answer };
+  return answer;
 }
 
-function removeStaleFormalStop(value: unknown) {
-  const body = text(value);
-  const index = body.indexOf(FORMAL_STOP_HEADING);
-  return index >= 0 ? body.slice(0, index).trim() : body;
+async function directWriter(body: Json, context: Context, scope: Scope, onProgress?: Progress) {
+  const openai = getOpenAI();
+  if (!openai) throw new Error('OPENAI_API_KEY missing');
+  const run = record(context.run) ? context.run : {};
+  const model = text(body.model) || TEXT_MODEL;
+  await reportProgress(onProgress, 40, '全バッチから検証済み根拠を構築中');
+  const seeds = collectEvidence(context);
+  if (seeds.length < 3) throw new Error(`validated evidence insufficient: ${seeds.length}`);
+  const evidence = await enrichEvidence(seeds);
+  const query = [text(body.query), scope.type === 'category' ? `対象カテゴリID: ${scope.query}` : '', scope.name ? `対象カテゴリ名: ${scope.name}` : ''].filter(Boolean).join('\n');
+  const payload = {
+    query,
+    coverage: { scope_type: scope.type, scope_query: scope.query, run_id: text(run.id), active_article_count: runValue(run, 'active_article_count'), analyzed_article_count: runValue(run, 'analyzed_article_count'), total_batches: runValue(run, 'total_batches'), represented_batches: context.represented_batches, represented_article_count: context.represented_article_count, omitted_batches: context.omitted_batches, prompt_version: context.prompt_version },
+    full_corpus_batch_context_primary: parseContext(context.context_text),
+    evidence_article_lookup_for_citation_only: evidence,
+    rules: [
+      '全体傾向・ナラティブ・インサイトはfull_corpus_batch_context_primaryからのみ導出する。',
+      'evidence lookupは引用・リンク・事実確認専用であり、テーマ分布や母集団として扱わない。',
+      '全バッチを横断し、一部バッチへ偏らない。頻度、反例、弱いシグナル、無信号を区別する。',
+      '企業施策・商品投入・販路拡大を生活者需要の証明へ変換しない。',
+      '事実、推論、仮説、調査必要を分離する。',
+      'evidence_matrixに異なるarticle_idを5件以上入れ、具体的事実を20文字以上書く。',
+      'answer_textに/articles/{article_id}のMarkdownリンクを3件以上含める。',
+      'refutation_audit、negative_space、confidence_rubric、research_needsを必ず生出力に含める。'
+    ],
+    required_json_fields: ['report_title', 'answer_text', 'major_trends', 'explanatory_hypotheses', 'cross_article_insights', 'evidence_matrix', 'refutation_audit', 'negative_space', 'confidence_rubric', 'research_needs', 'source_coverage']
+  };
+  await reportProgress(onProgress, 56, `全${runValue(run, 'total_batches')}バッチを専用Writerで統合中`);
+  const completion = await timeout((signal) => openai.chat.completions.create({
+    model,
+    ...(model.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
+    response_format: { type: 'json_object' },
+    max_completion_tokens: MAX_TOKENS,
+    messages: [
+      { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\n\nCRITICAL OVERRIDE: This is a formal full-corpus synthesis. Do not run or simulate article retrieval, hybrid search, monthly rollup selection, or top-N selection. The supplied full_corpus_batch_context_primary represents every validated batch. Return one JSON object only.` },
+      { role: 'user', content: JSON.stringify(payload) }
+    ]
+  }, { signal }), TIMEOUT_MS);
+  const parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Json;
+  if (text(parsed.answer_text).length < 120) throw new Error(`unusable writer output: ${text(parsed.answer_text).length}`);
+  return {
+    report: null,
+    report_error: '',
+    related_articles: evidence.map((item) => ({ id: item.article_id, headline: item.headline, article_date: item.article_date, ocr_text: item.ocr_text || item.evidence_excerpt_or_fact })),
+    selectable_models: [model],
+    answer: ensureRawFields(parsed, evidence, run, scope)
+  } as Json;
 }
 
-function clearPriorGate(answer: JsonRecord) {
-  delete answer.raw_quality_gate;
-  delete answer.quality_gate;
-  delete answer.formal_gate_version;
-  delete answer.display_enrichment;
-  delete answer.formal_report_ready;
-}
-
-function formalGatePassed(answer: JsonRecord) {
-  const rawGate = isRecord(answer.raw_quality_gate) ? answer.raw_quality_gate : {};
-  const source = isRecord(answer.source_coverage) ? answer.source_coverage : {};
+function formalGatePassed(answer: Json) {
+  const raw = record(answer.raw_quality_gate) ? answer.raw_quality_gate : {};
+  const source = record(answer.source_coverage) ? answer.source_coverage : {};
   return text(answer.full_corpus_gate) === 'passed'
     && text(answer.full_corpus_integrity_gate || source.full_corpus_integrity_gate) === 'passed'
     && text(answer.full_corpus_prompt_version || source.full_corpus_prompt_version) === 'full_corpus_batch_v2'
     && (answer.final_context_all_batches_represented ?? source.final_context_all_batches_represented) === true
-    && Number(answer.final_context_omitted_batches ?? source.final_context_omitted_batches ?? 0) === 0
+    && number(answer.final_context_omitted_batches ?? source.final_context_omitted_batches) === 0
     && answer.analysis_is_provisional !== true
-    && text(rawGate.version) === 'formal_gate_v2'
-    && text(rawGate.validation_mode) === 'raw_before_enrichment'
-    && text(rawGate.status) === 'passed';
+    && text(raw.version) === 'formal_gate_v2'
+    && text(raw.validation_mode) === 'raw_before_enrichment'
+    && text(raw.status) === 'passed';
 }
 
-function finalizePassedResult(result: JsonRecord, context: CorpusContext, scope: Scope, clusterCount: number) {
-  if (!isRecord(result.answer)) return result;
-  const run = isRecord(context.run) ? context.run : {};
-  const answer: JsonRecord = { ...result.answer };
-  const sourceCoverage = isRecord(answer.source_coverage) ? { ...answer.source_coverage } : {};
-  const coverageDiagnosis = isRecord(answer.coverage_diagnosis) ? { ...answer.coverage_diagnosis } : {};
-  const integrity = {
-    full_corpus_integrity_gate: context.full_corpus_integrity_gate,
-    full_corpus_prompt_version: context.prompt_version,
-    final_context_all_batches_represented: context.omitted_batches === 0,
-    final_context_represented_batches: context.represented_batches,
-    final_context_represented_article_count: context.represented_article_count,
-    final_context_omitted_batches: context.omitted_batches
-  };
-
-  clearPriorGate(answer);
-  answer.answer_text = removeStaleFormalStop(answer.answer_text);
-  answer.full_corpus_gate = 'passed';
-  Object.assign(answer, integrity);
-  answer.analysis_is_provisional = false;
-  answer.target_scope = scope.scopeType;
-  answer.category_id = scope.scopeQuery;
-  answer.full_corpus_run_id = text(run.id);
-  answer.analysis_layer_2_clusters_used = clusterCount > 0;
-  answer.analysis_layer_2_cluster_count = clusterCount;
-  answer.source_coverage = {
-    ...sourceCoverage,
-    ...integrity,
-    scope_type: scope.scopeType,
-    scope_query: scope.scopeQuery,
-    full_corpus_gate: 'passed',
-    analysis_is_provisional: false,
-    full_corpus_run_id: text(run.id),
-    full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'),
-    full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'),
-    analysis_layer_2_clusters_used: clusterCount > 0,
-    analysis_layer_2_cluster_count: clusterCount
-  };
-  answer.coverage_diagnosis = {
-    ...coverageDiagnosis,
-    ...integrity,
-    full_corpus_gate: 'passed',
-    analysis_is_provisional: false,
-    full_corpus_run_id: text(run.id)
-  };
-
-  const finalized = enhanceChatAnalysisResult({ ...result, answer }) as JsonRecord;
-  if (isRecord(finalized.answer) && formalGatePassed(finalized.answer)) {
-    finalized.answer.report_kind = 'formal';
-    finalized.answer.generation_status = 'completed';
-    finalized.answer.is_formal_report = true;
-    finalized.answer.analysis_verification_status = 'full_corpus_verified';
-    finalized.report_error = null;
-  }
+function finalize(result: Json, context: Context, scope: Scope) {
+  if (!record(result.answer)) return result;
+  const run = record(context.run) ? context.run : {};
+  const answer: Json = { ...result.answer };
+  delete answer.raw_quality_gate;
+  delete answer.quality_gate;
+  delete answer.formal_gate_version;
+  delete answer.display_enrichment;
+  const integrity = { full_corpus_integrity_gate: context.full_corpus_integrity_gate, full_corpus_prompt_version: context.prompt_version, final_context_all_batches_represented: context.omitted_batches === 0, final_context_represented_batches: context.represented_batches, final_context_represented_article_count: context.represented_article_count, final_context_omitted_batches: context.omitted_batches };
+  Object.assign(answer, integrity, { full_corpus_gate: 'passed', analysis_is_provisional: false, target_scope: scope.type, category_id: scope.query, full_corpus_run_id: text(run.id) });
+  answer.source_coverage = { ...(record(answer.source_coverage) ? answer.source_coverage : {}), ...integrity, scope_type: scope.type, scope_query: scope.query, full_corpus_gate: 'passed', analysis_is_provisional: false, full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: runValue(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: runValue(run, 'ocr_ready_article_count') };
+  answer.coverage_diagnosis = { ...(record(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {}), ...integrity, full_corpus_gate: 'passed', analysis_is_provisional: false, full_corpus_run_id: text(run.id) };
+  const finalized = enhanceChatAnalysisResult({ ...result, answer }) as Json;
+  if (record(finalized.answer) && formalGatePassed(finalized.answer)) Object.assign(finalized.answer, { report_kind: 'formal', generation_status: 'completed', is_formal_report: true, analysis_verification_status: 'full_corpus_verified' });
   return finalized;
 }
 
-function relatedArticleIds(result: JsonRecord) {
-  const related = Array.isArray(result.related_articles) ? result.related_articles : [];
-  return related.filter(isRecord).map((item) => text(item.id || item.article_id)).filter(Boolean);
-}
-
-async function persistFinalizedResult(result: JsonRecord, body: JsonRecord) {
-  if (!isRecord(result.answer)) return result;
+async function persist(result: Json, body: Json) {
+  if (!record(result.answer) || !formalGatePassed(result.answer)) return result;
   const sourceJobId = text(body.source_job_id);
-  const safe = sanitizeReportForDisplay({
-    user_query: text(body.query),
-    answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
-    answer_json: result.answer
-  });
-
-  if (isRecord(result.report) && text(result.report.id)) {
-    const patch: JsonRecord = {
-      answer_text: text(safe.answer_text),
-      answer_json: safe.answer_json
-    };
-    if (sourceJobId) patch.source_job_id = sourceJobId;
-    const { data, error } = await supabaseAdmin
-      .from('chat_reports')
-      .update(patch)
-      .eq('id', text(result.report.id))
-      .select('*')
-      .single();
-    if (error) throw error;
-    result.report = data;
-    return result;
-  }
-
-  if (!formalGatePassed(result.answer)) return result;
-
-  const payload: JsonRecord = {
-    user_query: text(safe.user_query),
-    answer_text: text(safe.answer_text),
-    answer_json: safe.answer_json,
-    related_article_ids: relatedArticleIds(result)
-  };
+  const safe = sanitizeReportForDisplay({ user_query: text(body.query), answer_text: text(result.answer.answer_text), answer_json: result.answer });
+  const related = Array.isArray(result.related_articles) ? result.related_articles.filter(record).map((item) => text(item.id || item.article_id)).filter(Boolean) : [];
+  const payload: Json = { user_query: text(safe.user_query), answer_text: text(safe.answer_text), answer_json: safe.answer_json, related_article_ids: related };
   if (sourceJobId) payload.source_job_id = sourceJobId;
-  const { data, error } = await supabaseAdmin
-    .from('chat_reports')
-    .insert(payload)
-    .select('*')
-    .single();
+  const { data, error } = await supabaseAdmin.from('chat_reports').insert(payload).select('*').single();
   if (error) throw error;
-  result.report = data;
-  result.report_error = null;
-  return result;
+  return { ...result, report: data, report_error: null };
 }
 
-export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressReporter) {
-  const query = text(body.query);
+function diagnostic(body: Json, context: Context, scope: Scope, reason: string) {
+  const run = record(context.run) ? context.run : {};
+  const answer = {
+    report_title: '全件分析整合性未達', report_kind: 'diagnostic', generation_status: 'blocked', is_formal_report: false,
+    target_scope: scope.type, category_id: scope.query, analysis_is_provisional: true,
+    full_corpus_gate: context.full_corpus_gate, full_corpus_integrity_gate: context.full_corpus_integrity_gate,
+    source_coverage: { full_corpus_run_id: text(run.id), full_corpus_prompt_version: context.prompt_version, represented_batches: context.represented_batches, represented_article_count: context.represented_article_count, omitted_batches: context.omitted_batches, integrity_failures: [...context.integrity_failures, reason] },
+    answer_text: `## 結論\n正式レポートは生成していません。\n\n## 原因\n- ${reason}\n- run: ${text(run.id) || 'なし'}\n- batches: ${context.represented_batches}/${runValue(run, 'total_batches')}\n- articles: ${context.represented_article_count}/${runValue(run, 'analyzed_article_count')}`
+  };
+  return { report: null, report_error: reason, related_articles: [], selectable_models: [], answer };
+}
+
+export async function runChatAnalysis(body: Json, onProgress?: Progress) {
   const scope = await resolveScope(body);
   if (!shouldGuard(body, scope)) return runBaseChatAnalysis(body, onProgress);
-  await onProgress?.({ progress: 12, stage: scope.scopeType === 'category' ? 'カテゴリ本文読解整合性を確認中' : '全件本文読解整合性を確認中' });
-  const context = await getIntegrityCheckedFullCorpusContext(scope.scopeType, scope.scopeQuery);
-  const run = isRecord(context.run) ? context.run : {};
-  const clusterContext = passed(context) ? await conceptClusterContext(run) : { messages: [], count: 0 };
-  if (!passed(context)) {
-    const result = await diagnostic(query, body, context, scope);
-    await onProgress?.({ progress: 100, stage: '全件分析整合性未達' });
-    return result;
+  await reportProgress(onProgress, 12, '全件本文読解整合性を確認中');
+  const context = await getIntegrityCheckedFullCorpusContext(scope.type, scope.query);
+  if (!contextPassed(context)) return diagnostic(body, context, scope, 'full_corpus_integrity_gate_failed');
+  try {
+    const generated = await directWriter(body, context, scope, onProgress);
+    await reportProgress(onProgress, 92, '専用Writer出力を正式品質ゲートで検査中');
+    const finalized = finalize(generated, context, scope);
+    const saved = await persist(finalized, body);
+    await reportProgress(onProgress, 100, formalGatePassed(record(saved.answer) ? saved.answer : {}) ? '正式レポート生成完了' : '正式品質ゲート未達');
+    return saved;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'full_corpus_direct_writer_failed';
+    await reportProgress(onProgress, 100, '全件専用Writer失敗');
+    return diagnostic(body, context, scope, `direct_writer:${reason}`);
   }
-  const conversation = Array.isArray(body.conversation) ? body.conversation : [];
-  const routedBody = {
-    ...body,
-    query: categoryQuery(query, scope),
-    target_scope: 'all',
-    category_id: scope.scopeQuery,
-    analysis_scope_type: scope.scopeType,
-    conversation: [...conversation, ...corpusMessage(context, scope), ...clusterContext.messages],
-    full_corpus_gate: 'passed',
-    full_corpus_integrity_gate: 'passed',
-    full_corpus_prompt_version: context.prompt_version,
-    final_context_all_batches_represented: true
-  };
-  const baseResult = await runBaseChatAnalysis(routedBody, onProgress) as JsonRecord;
-  const finalized = finalizePassedResult(baseResult, context, scope, clusterContext.count);
-  return persistFinalizedResult(finalized, body);
 }

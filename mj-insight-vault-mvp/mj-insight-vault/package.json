@@ -12,7 +12,8 @@
     "test:report": "node scripts/verify-report-shape.mjs",
     "test:report-pipeline": "node scripts/verify-report-pipeline.mjs",
     "test:upload": "node scripts/verify-upload-constants.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload"
+    "test:integrity": "node scripts/verify-integrity-loop.mjs",
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.3.3",
@@ -28,7 +29,7 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.1",
-    "@types/react-dom": "^19.0.2",
+    "@types/react-dom": "^19.0.1",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.17.0",
     "eslint-config-next": "^15.1.0",

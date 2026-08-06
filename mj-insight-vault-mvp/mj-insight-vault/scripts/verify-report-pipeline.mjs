@@ -86,7 +86,13 @@ assertIncludes(scan, '.slice(0, 4000)', 'scan article input must use the low-cos
 
 const guard = read('lib/chatRouteFullCorpusGuard.ts');
 assertIncludes(guard, 'getBoundedFullCorpusContext', 'formal report generation must use bounded corpus context');
-assertIncludes(guard, 'patch.source_job_id = sourceJobId', 'formal reports must be linked to their source jobs');
+assertIncludes(guard, 'enhanceChatAnalysisResult', 'passed full-corpus output must be revalidated after final augmentation');
+assertIncludes(guard, 'answer.analysis_is_provisional = false', 'passed full-corpus output must clear the stale provisional flag');
+assertIncludes(guard, 'analysis_is_provisional: false', 'coverage metadata must also clear the stale provisional flag');
+assertIncludes(guard, 'delete answer.raw_quality_gate', 'stale pre-augmentation quality results must not be reused');
+assertIncludes(guard, 'FORMAL_STOP_HEADING', 'a prior provisional save-stop appendix must be removed before revalidation');
+assertIncludes(guard, ".from('chat_reports')", 'a revalidated report must be persisted even when the base route blocked its first save');
+assertIncludes(guard, 'payload.source_job_id = sourceJobId', 'formal reports must be linked to their source jobs');
 assertExcludes(guard, "from '@/lib/fullCorpusScan'", 'formal report generation must not inject every raw batch summary');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');

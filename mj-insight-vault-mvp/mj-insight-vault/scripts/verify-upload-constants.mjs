@@ -22,6 +22,7 @@ const processRoute = read('app/api/source-images/[id]/process/route.ts');
 const reprocessRoute = read('app/api/source-images/[id]/reprocess/route.ts');
 const commitHelper = read('lib/sourceImageArticleCommit.ts');
 const atomicMigration = read('supabase/migrations/20260806162000_atomic_source_image_article_commit.sql');
+const provenanceMigration = read('supabase/migrations/20260806170000_add_article_text_provenance.sql');
 
 assert(/const MAX_ATTEMPTS = 3;/.test(stable), 'Upload retry count must remain MAX_ATTEMPTS = 3.');
 assert(/const OCR_MAX_IMAGE_SIDE = 4200;/.test(stable), 'OCR max image side must remain 4200.');
@@ -59,5 +60,15 @@ assert(/old_articles_preserved: true/.test(reprocessRoute), 'Reprocess failure r
 assert(/enrichCommittedArticles/.test(processRoute) && /enrichCommittedArticles/.test(reprocessRoute), 'Embedding must run only after atomic article commit.');
 assert(/upsert\(/.test(commitHelper) && /onConflict: 'article_id'/.test(commitHelper), 'Embedding writes must be idempotent.');
 assert(/recordEnrichmentFailure/.test(commitHelper), 'Embedding failures must be persisted without rolling back articles.');
+
+assert(/source_ocr_sha256/.test(provenanceMigration) && /analysis_text_sha256/.test(provenanceMigration), 'Formal articles must persist source and analysis text fingerprints.');
+assert(/legacy_vision_llm_reconstruction/.test(provenanceMigration), 'Existing reconstructed articles must be explicitly classified as legacy reconstruction.');
+assert(/provenance_status in \('traceable', 'legacy_traceable'\)/.test(provenanceMigration), 'Formal corpus view must exclude untraceable articles.');
+assert(/article_provenance_audit_v1/.test(provenanceMigration), 'Article provenance hashes must be auditable against current stored text.');
+assert(/persistCommittedArticleProvenance/.test(processRoute) && /persistCommittedArticleProvenance/.test(reprocessRoute), 'Both ingestion paths must persist provenance before enrichment.');
+assert(/createHash\('sha256'\)/.test(commitHelper), 'Runtime provenance must use SHA-256.');
+assert(/vision_llm_reconstruction/.test(commitHelper) && /text_llm_segmentation/.test(commitHelper) && /raw_ocr_fallback/.test(commitHelper), 'Runtime provenance must distinguish all article text paths.');
+assert(/provenance_status: 'traceable'/.test(commitHelper), 'New articles must be explicitly marked traceable after provenance persistence.');
+assert(/recordProvenanceFailure/.test(commitHelper), 'Failed provenance writes must fail closed and exclude the article from formal analysis.');
 
 console.log('verify-upload-constants: ok');

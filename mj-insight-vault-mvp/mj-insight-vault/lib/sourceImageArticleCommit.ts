@@ -1,14 +1,18 @@
+import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { buildEmbeddingText } from '@/lib/text';
-import { embedText } from '@/lib/openai';
+import { embedText, TEXT_MODEL, VISION_MODEL } from '@/lib/openai';
 import type { ArticleCandidate } from '@/lib/articleSegmentation';
 
 type JsonRecord = Record<string, unknown>;
+
+type AnalysisTextOrigin = 'vision_llm_reconstruction' | 'text_llm_segmentation' | 'raw_ocr_fallback';
 
 export type CommittedArticle = JsonRecord & {
   id: string;
   headline?: string | null;
   article_date?: string | null;
+  article_index?: number | null;
   ocr_text?: string | null;
 };
 
@@ -26,6 +30,11 @@ export type SourceImageCommitResult = {
 
 export type EnrichmentResult = {
   embedded_article_ids: string[];
+  failed: Array<{ article_id: string; error: string }>;
+};
+
+export type ProvenanceResult = {
+  traceable_article_ids: string[];
   failed: Array<{ article_id: string; error: string }>;
 };
 
@@ -53,7 +62,67 @@ function recordArray(value: unknown) {
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message) return error.message;
   if (isRecord(error)) return text(error.message || error.details || error.hint || error.code);
-  return text(error) || 'unknown enrichment error';
+  return text(error) || 'unknown persistence error';
+}
+
+function sha256(value: string) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function comparable(value: unknown) {
+  return text(value).replace(/\s+/g, ' ');
+}
+
+function reconstructionConfidence(value: unknown) {
+  const match = text(value).match(/【全体信頼度】(high|medium|low)/i);
+  return match?.[1]?.toLowerCase() || 'unknown';
+}
+
+function provenanceForCandidate(candidate: ArticleCandidate, sourceOcrText: string) {
+  const analysisText = text(candidate.ocr_text);
+  const normalizedSource = comparable(sourceOcrText);
+  const normalizedAnalysis = comparable(analysisText);
+  let origin: AnalysisTextOrigin;
+  let model: string;
+  let promptVersion: string;
+  let inference: string;
+
+  if (analysisText.startsWith('【GPT記事構造化】')) {
+    origin = 'vision_llm_reconstruction';
+    model = VISION_MODEL;
+    promptVersion = 'vision_article_structure_responses_schema_v1';
+    inference = 'persisted_analysis_text_marker';
+  } else if (normalizedAnalysis === normalizedSource) {
+    origin = 'raw_ocr_fallback';
+    model = 'none';
+    promptVersion = 'raw_ocr_fallback_v1';
+    inference = 'analysis_text_equals_normalized_source_ocr';
+  } else {
+    origin = 'text_llm_segmentation';
+    model = TEXT_MODEL;
+    promptVersion = 'text_article_segmentation_chat_json_v1';
+    inference = 'non_vision_analysis_text_differs_from_source_ocr';
+  }
+
+  return {
+    analysis_text_origin: origin,
+    source_ocr_sha256: sha256(sourceOcrText),
+    analysis_text_sha256: sha256(analysisText),
+    reconstruction_model: model,
+    reconstruction_prompt_version: promptVersion,
+    reconstruction_confidence: reconstructionConfidence(analysisText),
+    provenance_status: 'traceable',
+    provenance_json: {
+      provenance_version: 'article_text_provenance_v1',
+      source_ocr_available: Boolean(text(sourceOcrText)),
+      source_hash_algorithm: 'sha256',
+      analysis_hash_algorithm: 'sha256',
+      path_inference: inference,
+      model_exactly_known_from_runtime_config: model !== 'none',
+      prompt_version_declared_by_current_writer: true
+    },
+    updated_at: new Date().toISOString()
+  };
 }
 
 function candidatePayload(candidate: ArticleCandidate) {
@@ -100,6 +169,53 @@ export async function commitSourceImageArticles(input: {
     created_count: number(data.created_count),
     duplicate_count: number(data.duplicate_count)
   };
+}
+
+async function recordProvenanceFailure(articleId: string, message: string) {
+  const { error } = await supabaseAdmin
+    .from('articles')
+    .update({
+      provenance_status: 'failed',
+      provenance_json: {
+        provenance_version: 'article_text_provenance_v1',
+        error: message.slice(0, 2000)
+      },
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', articleId);
+  if (error) console.error('Failed to persist provenance error:', articleId, error.message);
+}
+
+export async function persistCommittedArticleProvenance(input: {
+  articles: CommittedArticle[];
+  candidates: ArticleCandidate[];
+  sourceOcrText: string;
+}): Promise<ProvenanceResult> {
+  const traceableArticleIds: string[] = [];
+  const failed: Array<{ article_id: string; error: string }> = [];
+
+  for (const article of input.articles) {
+    try {
+      const index = Math.max(0, Math.round(number(article.article_index)));
+      const candidate = input.candidates[index];
+      if (!candidate) throw new Error(`candidate not found for article_index=${index}`);
+      if (!text(input.sourceOcrText)) throw new Error('source OCR text is empty');
+      if (!text(candidate.ocr_text)) throw new Error('analysis text is empty');
+
+      const { error } = await supabaseAdmin
+        .from('articles')
+        .update(provenanceForCandidate(candidate, input.sourceOcrText))
+        .eq('id', article.id);
+      if (error) throw error;
+      traceableArticleIds.push(article.id);
+    } catch (error) {
+      const message = errorMessage(error);
+      failed.push({ article_id: article.id, error: message });
+      await recordProvenanceFailure(article.id, message);
+    }
+  }
+
+  return { traceable_article_ids: traceableArticleIds, failed };
 }
 
 async function recordEnrichmentFailure(articleId: string, message: string) {

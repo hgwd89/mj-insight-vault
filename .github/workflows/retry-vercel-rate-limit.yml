@@ -1,6 +1,8 @@
 name: Retry Vercel after build rate limit
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
@@ -15,6 +17,7 @@ concurrency:
 
 jobs:
   retry:
+    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'retry Vercel production after build-rate-limit')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
@@ -23,6 +26,10 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Wait for Vercel status on push
+        if: github.event_name == 'push'
+        run: sleep 60
+
       - name: Inspect latest Vercel status
         id: status
         env:
@@ -30,6 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
           sha="$(git rev-parse HEAD)"
           status_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/status")"
 

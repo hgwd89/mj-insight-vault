@@ -138,20 +138,17 @@ function allowedArticleIds(value: unknown, allowed: Set<string>, max = Number.PO
   return uniqueStrings(value.filter((id) => allowed.has(rollupText(id))), max);
 }
 
-function sanitizeEvidenceMatrix(value: unknown, allowed: Set<string>, max = 24) {
+function sanitizeEvidenceMatrix(value: unknown, allowed: Set<string>, max = 24): RollupJson[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter(isRecord)
-    .map((item) => {
-      const articleId = rollupText(item.article_id || item.id);
-      if (!articleId || !allowed.has(articleId)) return null;
-      return {
-        ...item,
-        article_id: articleId
-      };
-    })
-    .filter(Boolean)
-    .slice(0, max);
+  const cleaned: RollupJson[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const articleId = rollupText(item.article_id || item.id);
+    if (!articleId || !allowed.has(articleId)) continue;
+    cleaned.push({ ...item, article_id: articleId });
+    if (cleaned.length >= max) break;
+  }
+  return cleaned;
 }
 
 function sleep(ms: number) {
@@ -489,11 +486,7 @@ async function upsertMonthlyRollup(
   return data as MonthlyRollupRow;
 }
 
-async function callRollupJson(
-  system: string,
-  payload: RollupJson,
-  maxTokens: number
-) {
+async function callRollupJson(system: string, payload: RollupJson, maxTokens: number) {
   const openai = getOpenAI();
   if (!openai) throw new Error('OPENAI_API_KEY is not configured');
 
@@ -547,7 +540,6 @@ function buildNode(
 
   const evidenceMatrix = sanitizeEvidenceMatrix(parsed.evidence_matrix, allowed);
   const matrixIds = evidenceMatrix
-    .filter(isRecord)
     .map((item) => rollupText(item.article_id))
     .filter(Boolean);
 
@@ -660,7 +652,7 @@ async function synthesizeNodeGroup(
 }
 
 function recoverPartialNodes(existing: MonthlyRollupRow | null, fingerprint: string, totalChunks: number) {
-  const summary = isRecord(existing?.summary_json) ? existing?.summary_json : {};
+  const summary = isRecord(existing?.summary_json) ? existing.summary_json : {};
   if (rollupText(summary.source_fingerprint) !== fingerprint) return new Map<number, RollupNode>();
   if (Number(summary.total_chunks || 0) !== totalChunks) return new Map<number, RollupNode>();
 

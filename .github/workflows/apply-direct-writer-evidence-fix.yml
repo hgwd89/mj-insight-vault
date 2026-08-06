@@ -25,6 +25,7 @@ jobs:
         run: |
           python3 scripts/patch_direct_writer_evidence_integrity.py
           python3 scripts/add_direct_writer_static_marker.py
+          python3 scripts/add_formal_stop_cleanup.py
       - name: Install dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm ci

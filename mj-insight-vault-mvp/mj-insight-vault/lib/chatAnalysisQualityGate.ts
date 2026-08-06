@@ -142,7 +142,7 @@ function evidenceFallback(answer: JsonRecord, relatedArticles: unknown[]) {
 function normalizeEvidenceMatrix(answer: JsonRecord, relatedArticles: unknown[]) {
   const current = asArray(answer.evidence_matrix).filter(isRecord).map((item, index) => normalizeEvidenceItem(item, index));
   if (current.length >= 3) return current;
-  const merged = [...current];
+  const merged: JsonRecord[] = [...current];
   const seen = new Set(current.map((item) => text(item.article_id)).filter(Boolean));
   for (const item of evidenceFallback(answer, relatedArticles)) {
     const id = text(item.article_id);

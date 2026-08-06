@@ -7,6 +7,7 @@ import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
 import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
+const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
 const MAX_EVIDENCE = 72;
 const TIMEOUT_MS = Number(process.env.FULL_CORPUS_FINAL_TIMEOUT_MS) || 120_000;
 const MAX_TOKENS = Number(process.env.FULL_CORPUS_FINAL_MAX_TOKENS) || 12_000;
@@ -32,6 +33,48 @@ const record = (value: unknown): value is Json => Boolean(value && typeof value 
 const records = (value: unknown) => Array.isArray(value) ? value.filter(record) : [];
 const number = (value: unknown) => Number(value || 0);
 const runValue = (run: Json, key: string) => number(run[key]);
+
+const STRUCTURED_TEXT_KEYS = [
+  'claim', 'consumer_narrative', 'narrative', 'theme', 'signal', 'insight', 'summary',
+  'text', 'title', 'label', 'description', 'observed_fact', 'fact', 'what_can_be_said'
+];
+
+function structuredText(value: unknown): string {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return text(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = structuredText(item);
+      if (found) return found;
+    }
+    return '';
+  }
+  if (record(value)) {
+    for (const key of STRUCTURED_TEXT_KEYS) {
+      const found = structuredText(value[key]);
+      if (found) return found;
+    }
+  }
+  return '';
+}
+
+function cleanText(candidates: unknown[], maxLength: number) {
+  for (const candidate of candidates) {
+    const value = structuredText(candidate).replace(/\s+/g, ' ').replace(/\[object Object\]/gi, '').trim();
+    if (value) return value.slice(0, maxLength);
+  }
+  return '';
+}
+
+function brokenText(value: unknown) {
+  const normalized = text(value);
+  return !normalized || /\[object Object\]|\[object Undefined\]|^undefined$|^null$/i.test(normalized);
+}
+
+function stripPriorFormalStop(value: unknown) {
+  const body = text(value);
+  const index = body.indexOf(FORMAL_STOP_HEADING);
+  return index >= 0 ? body.slice(0, index).trim() : body;
+}
 
 async function reportProgress(onProgress: Progress | undefined, progress: number, stage: string) {
   try { await onProgress?.({ progress, stage }); } catch {}
@@ -79,13 +122,18 @@ function contextPassed(context: Context) {
 }
 
 function fact(item: Json) {
-  return text(item.evidence_excerpt_or_fact || item.observed_fact || item.what_can_be_said || item.evidence_excerpt || item.excerpt || item.fact)
-    .replace(/\s+/g, ' ').slice(0, 700);
+  return cleanText([
+    item.evidence_excerpt_or_fact, item.observed_fact, item.what_can_be_said,
+    item.evidence_excerpt, item.excerpt, item.fact
+  ], 700);
 }
 
 function claim(item: Json, summary: Json) {
-  return text(item.claim || item.theme || item.signal || item.consumer_narrative || summary.consumer_narratives || summary.behavior_signals || summary.weak_signals || '記事本文で観察された事実')
-    .replace(/\s+/g, ' ').slice(0, 240);
+  return cleanText([
+    item.claim, item.theme, item.signal, item.consumer_narrative,
+    summary.consumer_narratives, summary.behavior_signals, summary.weak_signals,
+    '記事本文で観察された事実'
+  ], 240);
 }
 
 function collectEvidence(context: Context) {
@@ -151,25 +199,31 @@ function ensureRawFields(answer: Json, evidenceLookup: Evidence[], run: Json, sc
     const id = text(item.article_id || item.id);
     const source = lookup.get(id);
     if (!source || seen.has(id)) continue;
-    const evidenceFact = fact(item) || source.evidence_excerpt_or_fact;
-    if (evidenceFact.length < 20) continue;
+    const evidenceClaim = cleanText([item.claim, item.theme, item.insight, item.title], 240);
+    const evidenceFact = fact(item);
+    const whatCanBeSaid = cleanText([item.what_can_be_said, evidenceFact], 700);
+    const whatCannotBeSaid = cleanText([item.what_cannot_be_said, item.limitation], 700);
+    if (evidenceClaim.length < 8 || evidenceFact.length < 20 || whatCanBeSaid.length < 10) continue;
+    if (brokenText(evidenceClaim) || brokenText(evidenceFact) || brokenText(whatCanBeSaid)) continue;
     seen.add(id);
-    evidence.push({ ...item, article_id: id, headline: text(item.headline) || source.headline, article_date: text(item.article_date) || source.article_date, article_url: source.article_url, article_link: source.article_link, evidence_excerpt_or_fact: evidenceFact, evidence_strength: text(item.evidence_strength || 'B'), limitation: text(item.limitation) || '記事単独では生活者全体の需要や因果を断定できない。', synthetic_repair: false });
-  }
-  for (const source of evidenceLookup) {
-    if (evidence.length >= 10) break;
-    if (seen.has(source.article_id)) continue;
-    seen.add(source.article_id);
-    evidence.push({ ...source, evidence_strength: 'B', limitation: '記事本文で確認できる事実。頻度・代表性・因果は全バッチ横断と追加調査で確認する。', what_can_be_said: source.evidence_excerpt_or_fact, what_cannot_be_said: 'この記事単独では生活者全体の需要や心理を断定できない。', synthetic_repair: false, provenance: 'validated_full_corpus_batch_v2_evidence' });
+    evidence.push({
+      ...item,
+      claim: evidenceClaim,
+      article_id: id,
+      headline: text(item.headline) || source.headline,
+      article_date: text(item.article_date) || source.article_date,
+      article_url: source.article_url,
+      article_link: source.article_link,
+      evidence_excerpt_or_fact: evidenceFact,
+      what_can_be_said: whatCanBeSaid,
+      what_cannot_be_said: whatCannotBeSaid || 'この記事単独では生活者全体の需要や因果を断定できない。',
+      evidence_strength: text(item.evidence_strength || 'B'),
+      limitation: cleanText([item.limitation, whatCannotBeSaid], 700) || '記事単独では生活者全体の需要や因果を断定できない。',
+      synthetic_repair: false
+    });
   }
   answer.evidence_matrix = evidence;
-  if (!records(answer.refutation_audit).length) answer.refutation_audit = [{ target_claim: '主要トレンド全体', possible_counterargument: '企業施策や商品投入が多いだけで生活者需要の変化を示していない可能性がある。', evidence_gap: '生活者本人の発話、継続購買、非購買理由、カテゴリ横断の反例。', downgrade_or_revision: '生活者側の直接証拠がない主張は仮説へ格下げする。', falsification_condition: '追加調査で行動変化が一時的・局所的・企業主導に限定される場合。', synthetic_repair: false }];
-  if (!records(answer.negative_space).length) answer.negative_space = [{ expected_but_weak_or_absent_theme: '生活者本人の長期継続行動と非利用理由', why_absence_matters: '記事群は企業・市場側の情報を多く含み、心理や因果の直接証拠が弱い。', what_to_check_next: '時系列購買、非購買者インタビュー、カテゴリ外反例を確認する。', synthetic_repair: false }];
-  if (!records(answer.research_needs).length) answer.research_needs = [{ question: '観察された変化は生活者本人の継続行動と選択理由で再現されるか。', why_it_matters: '市場シグナルを生活者インサイトへ昇格するため。', needed_data: '生活者発話、購買・利用継続、非利用理由、カテゴリ外反例。', method_hint: 'N1深掘り、行動ログ、定量検証。', priority: 'high', synthetic_repair: false }];
-  if (!records(answer.confidence_rubric).length) answer.confidence_rubric = evidence.slice(0, 5).map((item) => ({ claim: text(item.claim || '根拠付き主張'), confidence: text(item.evidence_strength || 'B'), reason_for_confidence: text(item.evidence_excerpt_or_fact), reason_for_uncertainty: text(item.limitation), synthetic_repair: false }));
-
-  const links = evidence.slice(0, 8).map((item) => text(item.article_link) ? `- ${text(item.claim || '根拠記事')}：${text(item.article_link)} — ${text(item.evidence_excerpt_or_fact).slice(0, 180)}` : '').filter(Boolean);
-  if (links.length && !text(answer.answer_text).includes('## 根拠記事')) answer.answer_text = `${text(answer.answer_text)}\n\n## 根拠記事\n${links.join('\n')}`.trim();
+  answer.answer_text = stripPriorFormalStop(answer.answer_text);
 
   const analyzed = runValue(run, 'analyzed_article_count');
   Object.assign(answer, {
@@ -221,32 +275,55 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       '全バッチを横断し、一部バッチへ偏らない。頻度、反例、弱いシグナル、無信号を区別する。',
       '企業施策・商品投入・販路拡大を生活者需要の証明へ変換しない。',
       '事実、推論、仮説、調査必要を分離する。',
-      'evidence_matrixに異なるarticle_idを5件以上入れ、具体的事実を20文字以上書く。',
+      'evidence_matrixに異なるarticle_idを5件以上、12件以下で入れ、具体的事実を20文字以上書く。',
+      'evidence_matrixのclaim、evidence_excerpt_or_fact、what_can_be_said、what_cannot_be_said、limitationは必ず文字列にする。配列やオブジェクトを入れない。',
+      'evidence_article_lookup_for_citation_onlyに存在するarticle_idだけを使い、主要トレンドまたは仮説を実際に支える記事だけを選ぶ。無関係な記事で件数を埋めない。',
       'answer_textに/articles/{article_id}のMarkdownリンクを3件以上含める。',
       'refutation_audit、negative_space、confidence_rubric、research_needsを必ず生出力に含める。'
     ],
     required_json_fields: ['report_title', 'answer_text', 'major_trends', 'explanatory_hypotheses', 'cross_article_insights', 'evidence_matrix', 'refutation_audit', 'negative_space', 'confidence_rubric', 'research_needs', 'source_coverage']
   };
   await reportProgress(onProgress, 56, `全${runValue(run, 'total_batches')}バッチを専用Writerで統合中`);
-  const completion = await timeout((signal) => openai.chat.completions.create({
-    model,
-    ...(model.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
-    response_format: { type: 'json_object' },
-    max_completion_tokens: MAX_TOKENS,
-    messages: [
-      { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\n\nCRITICAL OVERRIDE: This is a formal full-corpus synthesis. Do not run or simulate article retrieval, hybrid search, monthly rollup selection, or top-N selection. The supplied full_corpus_batch_context_primary represents every validated batch. Return one JSON object only.` },
-      { role: 'user', content: JSON.stringify(payload) }
-    ]
-  }, { signal }), TIMEOUT_MS);
-  const parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Json;
-  if (text(parsed.answer_text).length < 120) throw new Error(`unusable writer output: ${text(parsed.answer_text).length}`);
-  return {
-    report: null,
-    report_error: '',
-    related_articles: evidence.map((item) => ({ id: item.article_id, headline: item.headline, article_date: item.article_date, ocr_text: item.ocr_text || item.evidence_excerpt_or_fact })),
-    selectable_models: [model],
-    answer: ensureRawFields(parsed, evidence, run, scope)
-  } as Json;
+  let validationFeedback: string[] = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const attemptPayload = validationFeedback.length
+      ? { ...payload, validation_feedback_from_previous_attempt: validationFeedback }
+      : payload;
+    const completion = await timeout((signal) => openai.chat.completions.create({
+      model,
+      ...(model.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
+      response_format: { type: 'json_object' },
+      max_completion_tokens: MAX_TOKENS,
+      messages: [
+        { role: 'system', content: `${MJ_REPORT_SYSTEM_PROMPT}\n\nCRITICAL OVERRIDE: This is a formal full-corpus synthesis. Do not run or simulate article retrieval, hybrid search, monthly rollup selection, or top-N selection. The supplied full_corpus_batch_context_primary represents every validated batch. Return one JSON object only. Every evidence field must be a scalar JSON string; never serialize objects as strings.` },
+        { role: 'user', content: JSON.stringify(attemptPayload) }
+      ]
+    }, { signal }), TIMEOUT_MS);
+    const parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Json;
+    const normalized = ensureRawFields(parsed, evidence, run, scope);
+    const normalizedEvidence = records(normalized.evidence_matrix);
+    const linkCount = (text(normalized.answer_text).match(/\[[^\]]+\]\(\/articles\/[a-zA-Z0-9_-]+\)/g) || []).length;
+    const errors: string[] = [];
+    if (text(normalized.answer_text).length < 120) errors.push(`answer_text is too short: ${text(normalized.answer_text).length}`);
+    if (normalizedEvidence.length < 5) errors.push(`evidence_matrix requires at least 5 valid distinct items; received ${normalizedEvidence.length}`);
+    if (normalizedEvidence.some((item) => brokenText(item.claim) || brokenText(item.evidence_excerpt_or_fact) || brokenText(item.what_can_be_said))) errors.push('evidence_matrix contains malformed or non-scalar text');
+    if (linkCount < 3) errors.push(`answer_text requires at least 3 article links; received ${linkCount}`);
+    for (const field of ['refutation_audit', 'negative_space', 'confidence_rubric', 'research_needs']) {
+      if (!records(normalized[field]).length) errors.push(`${field} requires at least one non-empty object`);
+    }
+    if (!errors.length) {
+      return {
+        report: null,
+        report_error: '',
+        related_articles: normalizedEvidence.map((item) => ({ id: text(item.article_id), headline: text(item.headline), article_date: text(item.article_date), ocr_text: text(item.evidence_excerpt_or_fact) })),
+        selectable_models: [model],
+        answer: normalized
+      } as Json;
+    }
+    validationFeedback = errors;
+    await reportProgress(onProgress, 56 + attempt * 8, `専用Writer出力を自己修正中 (${attempt}/3)`);
+  }
+  throw new Error(`direct writer validation failed after 3 attempts: ${validationFeedback.join('; ')}`);
 }
 
 function formalGatePassed(answer: Json) {
@@ -273,6 +350,7 @@ function finalize(result: Json, context: Context, scope: Scope): Json {
   delete answer.display_enrichment;
   const integrity = { full_corpus_integrity_gate: context.full_corpus_integrity_gate, full_corpus_prompt_version: context.prompt_version, final_context_all_batches_represented: context.omitted_batches === 0, final_context_represented_batches: context.represented_batches, final_context_represented_article_count: context.represented_article_count, final_context_omitted_batches: context.omitted_batches };
   Object.assign(answer, integrity, { full_corpus_gate: 'passed', analysis_is_provisional: false, target_scope: scope.type, category_id: scope.query, full_corpus_run_id: text(run.id) });
+  answer.analysis_is_provisional = false;
   answer.source_coverage = { ...(record(answer.source_coverage) ? answer.source_coverage : {}), ...integrity, scope_type: scope.type, scope_query: scope.query, full_corpus_gate: 'passed', analysis_is_provisional: false, full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: runValue(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: runValue(run, 'ocr_ready_article_count') };
   answer.coverage_diagnosis = { ...(record(answer.coverage_diagnosis) ? answer.coverage_diagnosis : {}), ...integrity, full_corpus_gate: 'passed', analysis_is_provisional: false, full_corpus_run_id: text(run.id) };
   const finalized = enhanceChatAnalysisResult({ ...result, answer }) as Json;

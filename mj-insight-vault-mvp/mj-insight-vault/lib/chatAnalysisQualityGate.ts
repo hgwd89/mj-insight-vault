@@ -234,8 +234,20 @@ function researchNeedsFallback(answer: JsonRecord) {
 
 function rawEvidenceValid(item: JsonRecord) {
   const id = text(item.article_id || item.id);
+  const claim = text(item.claim || item.theme || item.title);
   const fact = text(item.evidence_excerpt_or_fact || item.evidence_excerpt || item.observed_fact || item.excerpt);
-  return Boolean(id && fact.length >= 20 && !bool(item.synthetic_repair));
+  const whatCanBeSaid = text(item.what_can_be_said);
+  const malformed = /\[object Object\]|\[object Undefined\]|^undefined$|^null$/i;
+  return Boolean(
+    id
+    && claim.length >= 8
+    && fact.length >= 20
+    && whatCanBeSaid.length >= 10
+    && !malformed.test(claim)
+    && !malformed.test(fact)
+    && !malformed.test(whatCanBeSaid)
+    && !bool(item.synthetic_repair)
+  );
 }
 
 function existingRawGate(answer: JsonRecord): QualityGate | null {
@@ -283,12 +295,12 @@ function buildRawQualityGate(answer: JsonRecord, answerText: string): QualityGat
     { key: 'not_provisional', passed: !provisional, note: '暫定分析を正式扱いしていないか' },
     { key: 'no_emergency_fallback', passed: !emergencyFallback, note: '緊急fallbackを正式品質として扱っていないか' },
     { key: 'no_extract_fallback_rollup', passed: !extractiveFallbackRollup, note: '抽出型fallback rollupを正式入力として扱っていないか' },
-    { key: 'raw_evidence_matrix', passed: validEvidence.length >= 3 && distinctEvidenceIds >= 3, note: '表示補修前に3件以上の具体的根拠があるか' },
+    { key: 'raw_evidence_matrix', passed: validEvidence.length >= 5 && distinctEvidenceIds >= 5, note: '表示補修前に5件以上の具体的かつ文字列整合した根拠があるか' },
     { key: 'raw_refutation_audit', passed: asArray(answer.refutation_audit).filter(isRecord).length >= 1, note: '表示補修前に反証・棄却条件があるか' },
     { key: 'raw_research_needs', passed: asArray(answer.research_needs).filter(isRecord).length >= 1, note: '表示補修前に調査論点があるか' },
     { key: 'raw_negative_space', passed: asArray(answer.negative_space).filter(isRecord).length >= 1, note: '表示補修前に欠落証拠があるか' },
     { key: 'raw_confidence_rubric', passed: asArray(answer.confidence_rubric).filter(isRecord).length >= 1, note: '表示補修前に信頼度と不確実性があるか' },
-    { key: 'raw_article_links', passed: rawLinkCount >= 3 || distinctEvidenceIds >= 3, note: '生出力に追跡可能な記事根拠があるか' }
+    { key: 'raw_article_links', passed: rawLinkCount >= 3, note: '生出力本文に追跡可能な記事リンクが3件以上あるか' }
   ];
   const failed = checks.filter((check) => !check.passed).map((check) => check.key);
   return {
@@ -352,7 +364,7 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   const answer = isRecord(result.answer) ? { ...result.answer } : {};
   const relatedArticles = asArray(result.related_articles);
   const rawAnswerText = text(answer.answer_text);
-  const rawGate = existingRawGate(answer) || buildRawQualityGate(answer, rawAnswerText);
+  const rawGate = buildRawQualityGate(answer, rawAnswerText);
 
   answer.raw_quality_gate = rawGate;
   answer.quality_gate = rawGate;

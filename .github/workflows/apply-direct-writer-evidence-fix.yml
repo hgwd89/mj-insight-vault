@@ -22,7 +22,9 @@ jobs:
           cache: npm
           cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
       - name: Apply evidence integrity patch
-        run: python3 scripts/patch_direct_writer_evidence_integrity.py
+        run: |
+          python3 scripts/patch_direct_writer_evidence_integrity.py
+          python3 scripts/add_direct_writer_static_marker.py
       - name: Install dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm ci

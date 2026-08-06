@@ -144,14 +144,15 @@ export async function POST(req: NextRequest) {
 
     if (needsOnly) {
       attemptedMonths = before.needed_months.slice(0, maxMonths);
+      force = true;
       mode = 'needs_only_queued';
     } else if (staleOnly) {
       attemptedMonths = before.stale_months.slice(0, maxMonths);
       mode = 'stale_only_queued';
     } else if (all) {
-      attemptedMonths = before.months.slice(0, maxMonths);
+      attemptedMonths = before.months;
       force = true;
-      mode = 'all_bounded_queued';
+      mode = 'all_queued';
     } else {
       if (!validMonthKey(monthKey)) {
         return Response.json({ error: 'month_key must be YYYY-MM or undated' }, { status: 400 });

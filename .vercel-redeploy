@@ -1,3 +1,3 @@
-Retrigger production deployment for hardened report and classification pipeline.
-Commit target: cf3789f86ef42f0ce82acde8141ae53ac4de8b0b
+Retrigger production deployment for classification isolation and UAT pilot.
+Commit target: 7112150bd530e3aec85389434296f701e000d581
 Date: 2026-08-06

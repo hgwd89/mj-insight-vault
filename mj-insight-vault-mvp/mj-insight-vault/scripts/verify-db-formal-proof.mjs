@@ -6,6 +6,10 @@ const sql = fs.readFileSync(path.join(root, 'supabase/migrations/20260806142000_
 const noSignal = fs.readFileSync(path.join(root, 'supabase/migrations/20260806144500_normalize_no_signal_scan_proof.sql'), 'utf8');
 const dedupe = fs.readFileSync(path.join(root, 'supabase/migrations/20260806152000_deduplicate_formal_corpus.sql'), 'utf8');
 const categoryGate = fs.readFileSync(path.join(root, 'supabase/migrations/20260806154500_block_incomplete_category_reports.sql'), 'utf8');
+const classification = fs.readFileSync(path.join(root, 'supabase/migrations/20260806180000_add_resumable_article_classification.sql'), 'utf8');
+const classificationWorker = fs.readFileSync(path.join(root, 'lib/articleClassificationWorker.ts'), 'utf8');
+const classificationRoute = fs.readFileSync(path.join(root, 'app/api/classification/route.ts'), 'utf8');
+const classificationWorkerRoute = fs.readFileSync(path.join(root, 'app/api/classification/worker/route.ts'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -53,5 +57,24 @@ assert(/category_classification_/.test(categoryGate) && /corpus_scan_gate_view/.
 assert(/formal_category_classification_incomplete/.test(categoryGate), 'Database must reject a category report when global classification is incomplete.');
 assert(/formal_category_id_invalid/.test(categoryGate), 'Database must reject inactive or unknown category IDs.');
 assert(/trg_00_enforce_category_report_classification_v1/.test(categoryGate), 'Category proof must be enforced before report metadata synchronization.');
+
+assert(/article_classification_jobs/.test(classification), 'Classification work must be persisted.');
+assert(/for update skip locked/.test(classification), 'Classification claims must be atomic and concurrency-safe.');
+assert(/lease_token/.test(classification) && /lease_expires_at/.test(classification), 'Classification jobs must use expiring leases.');
+assert(/attempt_count<3/.test(classification), 'Classification retries must be bounded.');
+assert(/complete_article_classification_job_v2/.test(classification), 'Profiles and memberships need one atomic completion function.');
+assert(/delete from public\.article_category_memberships/.test(classification), 'A new validated classification must replace stale memberships.');
+assert(/article_category_profile_v2/.test(classification), 'The category gate must require the validated classifier version.');
+assert(/other_unclassified/.test(classification), 'Weak matches must have an explicit holdout category.');
+assert(/runArticleClassificationWorkerStep/.test(classificationWorker), 'A bounded classification worker is required.');
+assert(/ARTICLE_TEXT_LIMIT = 3600/.test(classificationWorker), 'Classification cost needs a bounded article input.');
+assert(/MAX_JOBS_PER_STEP = 6/.test(classificationWorker), 'Classification request size must remain bounded.');
+assert(/Use other_unclassified/.test(classificationWorker), 'The model prompt must forbid forced weak matches.');
+assert(/A product launch is a market signal, not proof of consumer demand/.test(classificationWorker), 'Classification must preserve market-side versus consumer-side evidence discipline.');
+assert(/model omitted article/.test(classificationWorker), 'Missing model outputs must be retried rather than silently completed.');
+assert(/fail_article_classification_job_v2/.test(classificationWorker), 'Worker failures must be persisted through the retry contract.');
+assert(/enqueue_article_classification_v2/.test(classificationRoute), 'Queue API must enqueue classification jobs.');
+assert(/maxDuration = 240/.test(classificationWorkerRoute), 'Worker endpoint must remain below the Vercel hard limit.');
+assert(/requireAppPassword/.test(classificationRoute) && /requireAppPassword/.test(classificationWorkerRoute), 'Classification APIs must require authentication.');
 
 console.log('verify-db-formal-proof: ok');

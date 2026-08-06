@@ -68,7 +68,7 @@ assert(/invalid_ready_months/.test(monthlyContext), 'Legacy or invalid ready mon
 assert(/hierarchical_llm_worker/.test(monthlyContext), 'Worker-generated rollups must be explicitly recognized.');
 assert(/pending_months/.test(monthlyContext), 'Pending rollup months must be surfaced to the report gate.');
 
-assert(/rollups_generated/.test(rollupPage), 'Rollup UI must use the queued/generated subset rather than all database rows.');
+assert(/queued_count/.test(rollupPage) && !/json\.rollups\b/.test(rollupPage), 'Rollup UI must use the queued subset rather than all database rows.');
 assert(/完了ではありません/.test(rollupPage), 'Rollup UI must not describe queue acceptance as completion.');
 assert(/pending_months/.test(rollupPage) && /10_000/.test(rollupPage), 'Rollup UI must poll pending work.');
 assert(/invalid_ready_months/.test(rollupPage), 'Rollup UI must expose invalid legacy ready rows.');

@@ -3,8 +3,11 @@ import { fetchAllWideArticles } from '@/lib/wideArticleRetrieval';
 import { getBoundedFullCorpusContext } from '@/lib/reportPipeline';
 import { getConceptClusters } from '@/lib/conceptClusters';
 import { runChatAnalysis as runBaseChatAnalysis } from '@/lib/chatRouteNo160';
+import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
+import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
+const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
 type ProgressReporter = (update: { progress: number; stage: string }) => void | Promise<void>;
 type JsonRecord = Record<string, unknown>;
 type CorpusContext = { run?: JsonRecord | null; context_text?: string; full_corpus_gate?: string };
@@ -168,20 +171,124 @@ async function diagnostic(query: string, body: JsonRecord, context: CorpusContex
   return { report: null, report_error: 'full_corpus_gate_failed', related_articles: [], selectable_models: [], answer };
 }
 
-async function persistAugmentedResult(result: JsonRecord, sourceJobId = '') {
-  if (!isRecord(result.answer) || !isRecord(result.report)) return;
-  const reportId = text(result.report.id);
-  if (!reportId) return;
-  const patch: JsonRecord = {
+function removeStaleFormalStop(value: unknown) {
+  const body = text(value);
+  const index = body.indexOf(FORMAL_STOP_HEADING);
+  return index >= 0 ? body.slice(0, index).trim() : body;
+}
+
+function clearPriorGate(answer: JsonRecord) {
+  delete answer.raw_quality_gate;
+  delete answer.quality_gate;
+  delete answer.formal_gate_version;
+  delete answer.display_enrichment;
+  delete answer.formal_report_ready;
+}
+
+function formalGatePassed(answer: JsonRecord) {
+  const rawGate = isRecord(answer.raw_quality_gate) ? answer.raw_quality_gate : {};
+  return text(answer.full_corpus_gate) === 'passed'
+    && answer.analysis_is_provisional !== true
+    && text(rawGate.version) === 'formal_gate_v2'
+    && text(rawGate.validation_mode) === 'raw_before_enrichment'
+    && text(rawGate.status) === 'passed';
+}
+
+function finalizePassedResult(result: JsonRecord, context: CorpusContext, scope: Scope, clusterCount: number) {
+  if (!isRecord(result.answer)) return result;
+  const run = isRecord(context.run) ? context.run : {};
+  const answer: JsonRecord = { ...result.answer };
+  const sourceCoverage = isRecord(answer.source_coverage) ? { ...answer.source_coverage } : {};
+  const coverageDiagnosis = isRecord(answer.coverage_diagnosis) ? { ...answer.coverage_diagnosis } : {};
+
+  clearPriorGate(answer);
+  answer.answer_text = removeStaleFormalStop(answer.answer_text);
+  answer.full_corpus_gate = 'passed';
+  answer.analysis_is_provisional = false;
+  answer.target_scope = scope.scopeType;
+  answer.category_id = scope.scopeQuery;
+  answer.full_corpus_run_id = text(run.id);
+  answer.analysis_layer_2_clusters_used = clusterCount > 0;
+  answer.analysis_layer_2_cluster_count = clusterCount;
+  answer.source_coverage = {
+    ...sourceCoverage,
+    scope_type: scope.scopeType,
+    scope_query: scope.scopeQuery,
+    full_corpus_gate: 'passed',
+    analysis_is_provisional: false,
+    full_corpus_run_id: text(run.id),
+    full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'),
+    full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'),
+    analysis_layer_2_clusters_used: clusterCount > 0,
+    analysis_layer_2_cluster_count: clusterCount
+  };
+  answer.coverage_diagnosis = {
+    ...coverageDiagnosis,
+    full_corpus_gate: 'passed',
+    analysis_is_provisional: false,
+    full_corpus_run_id: text(run.id)
+  };
+
+  const finalized = enhanceChatAnalysisResult({ ...result, answer }) as JsonRecord;
+  if (isRecord(finalized.answer) && formalGatePassed(finalized.answer)) {
+    finalized.answer.report_kind = 'formal';
+    finalized.answer.generation_status = 'completed';
+    finalized.answer.is_formal_report = true;
+    finalized.answer.analysis_verification_status = 'full_corpus_verified';
+    finalized.report_error = null;
+  }
+  return finalized;
+}
+
+function relatedArticleIds(result: JsonRecord) {
+  const related = Array.isArray(result.related_articles) ? result.related_articles : [];
+  return related.filter(isRecord).map((item) => text(item.id || item.article_id)).filter(Boolean);
+}
+
+async function persistFinalizedResult(result: JsonRecord, body: JsonRecord) {
+  if (!isRecord(result.answer)) return result;
+  const sourceJobId = text(body.source_job_id);
+  const safe = sanitizeReportForDisplay({
+    user_query: text(body.query),
     answer_text: text(result.answer.answer_text) || JSON.stringify(result.answer),
     answer_json: result.answer
+  });
+
+  if (isRecord(result.report) && text(result.report.id)) {
+    const patch: JsonRecord = {
+      answer_text: text(safe.answer_text),
+      answer_json: safe.answer_json
+    };
+    if (sourceJobId) patch.source_job_id = sourceJobId;
+    const { data, error } = await supabaseAdmin
+      .from('chat_reports')
+      .update(patch)
+      .eq('id', text(result.report.id))
+      .select('*')
+      .single();
+    if (error) throw error;
+    result.report = data;
+    return result;
+  }
+
+  if (!formalGatePassed(result.answer)) return result;
+
+  const payload: JsonRecord = {
+    user_query: text(safe.user_query),
+    answer_text: text(safe.answer_text),
+    answer_json: safe.answer_json,
+    related_article_ids: relatedArticleIds(result)
   };
-  if (sourceJobId) patch.source_job_id = sourceJobId;
-  const { error } = await supabaseAdmin
+  if (sourceJobId) payload.source_job_id = sourceJobId;
+  const { data, error } = await supabaseAdmin
     .from('chat_reports')
-    .update(patch)
-    .eq('id', reportId);
+    .insert(payload)
+    .select('*')
+    .single();
   if (error) throw error;
+  result.report = data;
+  result.report_error = null;
+  return result;
 }
 
 export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressReporter) {
@@ -206,17 +313,7 @@ export async function runChatAnalysis(body: JsonRecord, onProgress?: ProgressRep
     conversation: [...conversation, ...corpusMessage(context, scope), ...clusterContext.messages],
     full_corpus_gate: 'passed'
   };
-  const result = await runBaseChatAnalysis(routedBody, onProgress) as JsonRecord;
-  if (isRecord(result.answer)) {
-    const run = isRecord(context.run) ? context.run : {};
-    result.answer.full_corpus_gate = 'passed';
-    result.answer.target_scope = scope.scopeType;
-    result.answer.category_id = scope.scopeQuery;
-    result.answer.full_corpus_run_id = text(run.id);
-    result.answer.analysis_layer_2_clusters_used = clusterContext.count > 0;
-    result.answer.analysis_layer_2_cluster_count = clusterContext.count;
-    result.answer.source_coverage = { ...(isRecord(result.answer.source_coverage) ? result.answer.source_coverage : {}), scope_type: scope.scopeType, scope_query: scope.scopeQuery, full_corpus_gate: 'passed', full_corpus_run_id: text(run.id), full_corpus_analyzed_article_count: num(run, 'analyzed_article_count'), full_corpus_ocr_ready_article_count: num(run, 'ocr_ready_article_count'), analysis_layer_2_clusters_used: clusterContext.count > 0, analysis_layer_2_cluster_count: clusterContext.count };
-  }
-  await persistAugmentedResult(result, text(body.source_job_id));
-  return result;
+  const baseResult = await runBaseChatAnalysis(routedBody, onProgress) as JsonRecord;
+  const finalized = finalizePassedResult(baseResult, context, scope, clusterContext.count);
+  return persistFinalizedResult(finalized, body);
 }

@@ -110,6 +110,10 @@ assertIncludes(guard, 'attempt <= 2', 'direct writer retries must fit the server
 assertIncludes(guard, 'previous output was invalid or truncated JSON', 'truncated writer JSON must be retried');
 assertIncludes(guard, 'JSON全体を必ず完結させる', 'writer prompt must prioritize complete JSON');
 assertIncludes(guard, 'evidence_matrixは異なるarticle_idを5〜8件', 'writer evidence output must remain concise');
+assertIncludes(guard, 'full_corpus_staged_writer_evidence_critic_v1', 'formal generation must use staged writer and evidence critic');
+assertIncludes(guard, 'Evidence Criticで根拠を選定中', 'evidence selection must be a separate model stage');
+assertIncludes(guard, 'evidence_excerpt_or_fact: groundedFact', 'citation facts must be grounded to article text');
+assertIncludes(guard, 'evidence_excerpt_or_factは出力しない', 'critic must not invent quotation text');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');

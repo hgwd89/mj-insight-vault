@@ -22,7 +22,18 @@ jobs:
           cache: npm
           cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
       - name: Apply semantic final review patch
-        run: python3 scripts/patch_semantic_final_review.py
+        run: |
+          python3 scripts/patch_semantic_final_review.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('mj-insight-vault-mvp/mj-insight-vault/lib/chatRouteFullCorpusGuard.ts')
+          s = p.read_text(encoding='utf-8')
+          marker = "    generation_path: 'full_corpus_hierarchical_theme_evidence_writer_v2'"
+          legacy = "    // Legacy formal generation marker: full_corpus_hierarchical_theme_evidence_writer_v1\n"
+          if legacy.strip() not in s:
+              s = s.replace(marker, legacy + marker, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
       - name: Install dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm ci

@@ -102,6 +102,12 @@ assertIncludes(integrity, 'omitted_batches: 0', 'formal final synthesis must omi
 assertIncludes(integrity, 'read_article_ids_mismatch', 'integrity validation must compare exact read article IDs');
 assertIncludes(integrity, 'non_article_record', 'formal corpus validation must reject non-article records');
 assertIncludes(integrity, 'prompt_version_mismatch', 'legacy scan prompt versions must fail integrity validation');
+assertIncludes(guard, 'const MAX_EVIDENCE = 24;', 'direct writer citation lookup must stay bounded');
+assertIncludes(guard, '|| 125_000;', 'direct writer timeout must fit the server execution envelope');
+assertIncludes(guard, '|| 5_000;', 'direct writer output tokens must stay bounded');
+assertIncludes(guard, '.slice(0, 500)', 'direct writer article evidence text must stay compact');
+assertIncludes(guard, 'attempt <= 2', 'direct writer retries must fit the server execution envelope');
+assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');
 assertIncludes(statusRoute, 'lease_expires_at', 'stale recovery must use worker leases');

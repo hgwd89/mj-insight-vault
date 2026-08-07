@@ -8,9 +8,9 @@ import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
 const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
-const MAX_EVIDENCE = 72;
-const TIMEOUT_MS = Number(process.env.FULL_CORPUS_FINAL_TIMEOUT_MS) || 120_000;
-const MAX_TOKENS = Number(process.env.FULL_CORPUS_FINAL_MAX_TOKENS) || 12_000;
+const MAX_EVIDENCE = 24;
+const TIMEOUT_MS = Number(process.env.FULL_CORPUS_FINAL_TIMEOUT_MS) || 125_000;
+const MAX_TOKENS = Number(process.env.FULL_CORPUS_FINAL_MAX_TOKENS) || 5_000;
 
 type Json = Record<string, unknown>;
 type Scope = { type: 'all' | 'category'; query: string; name?: string };
@@ -174,7 +174,7 @@ async function enrichEvidence(seeds: Evidence[]) {
       article_date: date,
       article_url: `/articles/${seed.article_id}`,
       article_link: `[${headline}｜${date}](/articles/${seed.article_id})`,
-      ocr_text: text(row.ocr_text).replace(/\s+/g, ' ').slice(0, 900)
+      ocr_text: text(row.ocr_text).replace(/\s+/g, ' ').slice(0, 500)
     };
   });
 }
@@ -273,6 +273,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       '全体傾向・ナラティブ・インサイトはfull_corpus_batch_context_primaryからのみ導出する。',
       'evidence lookupは引用・リンク・事実確認専用であり、テーマ分布や母集団として扱わない。',
       '全バッチを横断し、一部バッチへ偏らない。頻度、反例、弱いシグナル、無信号を区別する。',
+      'answer_textは日本語2,200〜4,200文字を目安とし、冗長な記事列挙を避ける。',
       '企業施策・商品投入・販路拡大を生活者需要の証明へ変換しない。',
       '事実、推論、仮説、調査必要を分離する。',
       'evidence_matrixに異なるarticle_idを5件以上、12件以下で入れ、具体的事実を20文字以上書く。',
@@ -285,7 +286,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
   };
   await reportProgress(onProgress, 56, `全${runValue(run, 'total_batches')}バッチを専用Writerで統合中`);
   let validationFeedback: string[] = [];
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
     const attemptPayload = validationFeedback.length
       ? { ...payload, validation_feedback_from_previous_attempt: validationFeedback }
       : payload;

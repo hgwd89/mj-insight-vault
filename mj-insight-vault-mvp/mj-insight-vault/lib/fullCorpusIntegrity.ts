@@ -45,7 +45,7 @@ export type FullCorpusIntegrityContext = {
   current_article_count_diff: number;
 };
 
-const MAX_CONTEXT_CHARS = 90_000;
+const MAX_CONTEXT_CHARS = 70_000;
 const HEADER_RESERVE_CHARS = 12_000;
 const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 

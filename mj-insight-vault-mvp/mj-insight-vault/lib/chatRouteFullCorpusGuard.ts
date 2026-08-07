@@ -603,26 +603,30 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
   const allowedArticleIds = new Set(selectedIds.map((id) => id.toLowerCase()));
   const allowedNumbers = significantNumberTokens(JSON.stringify(finalPayload));
   let finalText = '';
+  let previousDraft = '';
   let finalFeedback: string[] = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     if (attempt > 1) await reportProgress(onProgress, 84, '最終WriterのURL・数値制約を自己修正中');
+    const repairAttempt = attempt > 1 && Boolean(previousDraft);
     const writerPayload = finalFeedback.length
       ? {
           ...finalPayload,
+          previous_draft: previousDraft,
           correction: {
             errors: finalFeedback,
-            instruction: 'Return only a 1,600〜2,600-character Japanese Markdown report body. Do not include any URL, Markdown link, code fence, JSON, unsupported number, or unselected article.'
+            instruction: 'Rewrite and expand previous_draft into a complete 1,800〜2,600-character Japanese Markdown report. Preserve only grounded claims from ranked_themes and selected_evidence. Required sections: 統合ナラティブ, 4〜5個の主要テーマ, コーパス内反証・制約, 実務含意, 調査課題. Each major theme must state article-grounded fact, consumer interpretation, and boundary/what cannot be concluded. Do not pad with generic prose. Do not include any URL, Markdown link, code fence, JSON, unsupported number, or unselected article.'
           }
         }
       : finalPayload;
+    const activeWriterModel = repairAttempt ? analystModel : writerModel;
     const finalCompletion = await timeout((signal) => openai.chat.completions.create({
-      model: writerModel,
-      ...(writerModel.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
+      model: activeWriterModel,
+      ...(activeWriterModel.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
       max_completion_tokens: 2_500,
       messages: [
         {
           role: 'system',
-          content: 'Return only the Japanese Markdown report body. Do not return JSON, a code fence, a title wrapper, a preface, any URL, or any Markdown link. Verified article links are appended by the server. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the body between 1,600 and 2,600 Japanese characters.'
+          content: 'Return only the Japanese Markdown report body. Do not return JSON, a code fence, a title wrapper, a preface, any URL, or any Markdown link. Verified article links are appended by the server. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the body between 1,600 and 2,600 Japanese characters. Structure the reasoning as: 統合ナラティブ → 4〜5個の主要テーマ（各テーマで事実・生活者解釈・限界）→ コーパス内反証・制約 → 実務含意 → 調査課題. Avoid generic filler and make the cross-theme narrative explicit.'
         },
         { role: 'user', content: JSON.stringify(writerPayload) }
       ]
@@ -632,6 +636,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       .replace(/^```(?:markdown)?\s*/i, '')
       .replace(/\s*```$/, '')
       .trim();
+    previousDraft = candidateText;
     const errors: string[] = [];
     if (candidateText.length < 1_200) errors.push(`final answer_text too short: ${candidateText.length}`);
     if (candidateText.length > 3_600) errors.push(`final answer_text too long: ${candidateText.length}`);

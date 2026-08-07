@@ -59,6 +59,15 @@ function retryableError(error: unknown) {
     || message.includes('network');
 }
 
+function qualityGateError(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes('final writer validation failed')
+    || message.includes('theme analysis validation failed')
+    || message.includes('evidence critic validation failed')
+    || message.includes('semantic review failed')
+    || message.includes('semantic review json invalid');
+}
+
 function retryDelaySeconds(failureCount: number) {
   return Math.min(300, 20 * Math.pow(2, Math.max(0, failureCount - 1)));
 }
@@ -330,6 +339,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
 
       const message = errorMessage(error);
       const nextFailureCount = consecutiveFailureCount + 1;
+      if (qualityGateError(error)) {
+        const failed = await updateClaimedJob(jobId, leaseToken, {
+          status: 'failed',
+          progress: 100,
+          stage: 'quality_gate',
+          error_message: message,
+          attempt_count: consecutiveFailureCount,
+          finished_at: new Date().toISOString(),
+          next_retry_at: null
+        }, true);
+        return Response.json({ job: failed, blocked: true, error: message }, { status: 409 });
+      }
       if (retryableError(error) && nextFailureCount <= MAX_CONSECUTIVE_TRANSIENT_FAILURES) {
         const delaySeconds = retryDelaySeconds(nextFailureCount);
         const queued = await updateClaimedJob(jobId, leaseToken, {

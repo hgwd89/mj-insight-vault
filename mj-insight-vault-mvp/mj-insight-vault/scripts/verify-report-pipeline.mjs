@@ -53,6 +53,8 @@ assertIncludes(runner, 'completed_recovered: true', 'saved report recovery must 
 assertIncludes(runner, 'source_job_id: sourceJobId', 'report persistence must attach the source job');
 assertIncludes(runner, 'retryableError', 'transient job failures must be classified');
 assertIncludes(runner, 'retry_scheduled', 'transient job failures must be retried');
+assertIncludes(runner, 'qualityGateError', 'writer validation failures must be classified as quality-gate failures');
+assertIncludes(runner, "status: 409", 'quality-gate failures must not surface as generic 500 errors');
 assertIncludes(runner, "status: 'queued'", 'incomplete scan work must return to the queue');
 assertIncludes(runner, '{ status: 202 }', 'incomplete scan work must be reported as pending');
 assertIncludes(runner, 'pipelineSnapshot', 'job state must persist bounded pipeline diagnostics');
@@ -140,6 +142,9 @@ assertIncludes(guard, "const candidateText = text(finalCompletion.choices[0]?.me
 assertExcludes(guard, 'final writer JSON invalid or truncated', 'final writer must not depend on JSON parsing');
 assertIncludes(guard, 'final answer_text contains links or URLs', 'final writer must reject external and placeholder links');
 assertIncludes(guard, '最終WriterのURL・数値制約を自己修正中', 'invalid final writer prose must be retried');
+assertIncludes(guard, 'previous_draft: previousDraft', 'writer repair must use the failed draft instead of blind rerolling');
+assertIncludes(guard, 'repairAttempt ? analystModel : writerModel', 'writer repair must escalate to the analyst model');
+assertIncludes(guard, '統合ナラティブ', 'final writer must synthesize an explicit cross-theme narrative');
 assertIncludes(guard, 'batch_index: number(source.batch_index)', 'evidence metadata must preserve the actual scan batch');
 assertIncludes(qualityGate, 'theme_id: text(item.theme_id)', 'quality enrichment must preserve theme metadata');
 assertIncludes(qualityGate, '!hierarchicalReport', 'hierarchical reports must not duplicate evidence appendices');
@@ -148,6 +153,10 @@ assertIncludes(qualityGate, '!hierarchicalReport && !body.includes', 'hierarchic
 assertIncludes(qualityGate, '!hierarchicalReport && appendix', 'hierarchical reports must not append quality prose');
 assertIncludes(guard, "'gpt-4.1-mini'", 'critical analysis stages must use the stronger low-cost analyst model');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
+
+const monthlyRollupsRoute = read('app/api/rollups/monthly/route.ts');
+assertIncludes(monthlyRollupsRoute, 'function activeLease(row: RollupRow | undefined)', 'rollups page must tolerate months without an existing rollup row');
+assertIncludes(monthlyRollupsRoute, 'if (!row || row.status', 'rollup lease checks must null-guard missing rows');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');
 assertIncludes(statusRoute, 'lease_expires_at', 'stale recovery must use worker leases');

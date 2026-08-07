@@ -45,8 +45,8 @@ function bool(value: unknown) {
   return ['true', '1', 'yes'].includes(text(value).toLowerCase());
 }
 
-function activeLease(row: RollupRow) {
-  if (row.status !== 'running') return false;
+function activeLease(row: RollupRow | undefined) {
+  if (!row || row.status !== 'running') return false;
   const expires = Date.parse(text(row.lease_expires_at));
   return Number.isFinite(expires) && expires > Date.now();
 }
@@ -80,7 +80,7 @@ async function rawStatus() {
     const expectedCount = Number(monthCounts[month] || 0);
     if (validatedReady(row, expectedCount)) continue;
     if (row?.status === 'stale') staleMonths.push(month);
-    if (row?.status === 'queued' || activeLease(row as RollupRow)) {
+    if (row?.status === 'queued' || activeLease(row)) {
       pendingMonths.push(month);
       continue;
     }

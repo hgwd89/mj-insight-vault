@@ -8,7 +8,11 @@ import { ChatJobStatusProvider } from '@/components/ChatJobStatusProvider';
 export const metadata: Metadata = {
   title: 'MJ Insight Vault',
   description: 'MJ記事キャプチャをOCR・蓄積・分析する個人用PWA',
-  manifest: '/manifest.webmanifest'
+  manifest: '/manifest.webmanifest',
+  icons: {
+    icon: '/icon-192.png',
+    apple: '/icon-192.png'
+  }
 };
 
 export const viewport: Viewport = {

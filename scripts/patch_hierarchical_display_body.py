@@ -5,7 +5,7 @@ QUALITY = ROOT / 'lib/chatAnalysisQualityGate.ts'
 TEST = ROOT / 'scripts/verify-report-pipeline.mjs'
 
 quality = QUALITY.read_text(encoding='utf-8')
-old = """  let body = moveCoverageToEnd(rawAnswerText);
+old = r"""  let body = moveCoverageToEnd(rawAnswerText);
   const coverage = isRecord(answer.source_coverage) ? answer.source_coverage : {};
   if (!body.includes('## 99. カバレッジ・システム情報')) {
     body = `${body}\n\n${[
@@ -25,7 +25,7 @@ old = """  let body = moveCoverageToEnd(rawAnswerText);
   const appendix = qualityAppendix(rawGate);
   if (appendix && !body.includes('## 11. 品質ゲート補足')) body = `${body}\n\n${appendix}`.trim();
 """
-new = """  const hierarchicalReport = text(answer.generation_path).startsWith('full_corpus_hierarchical_');
+new = r"""  const hierarchicalReport = text(answer.generation_path).startsWith('full_corpus_hierarchical_');
   let body = hierarchicalReport ? rawAnswerText.trim() : moveCoverageToEnd(rawAnswerText);
   const coverage = isRecord(answer.source_coverage) ? answer.source_coverage : {};
   if (!hierarchicalReport && !body.includes('## 99. カバレッジ・システム情報')) {

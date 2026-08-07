@@ -1,9 +1,11 @@
 from pathlib import Path
 
-path = Path('scripts/patch_semantic_evidence_and_final_writer.py')
+path = Path('mj-insight-vault-mvp/mj-insight-vault/lib/chatRouteFullCorpusGuard.ts')
 source = path.read_text(encoding='utf-8')
 old = "headline: item.headline.slice(0, 100),"
 new = "headline: text(item.headline).slice(0, 100),"
-if old not in source:
+if old in source:
+    source = source.replace(old, new, 1)
+elif new not in source:
     raise SystemExit('optional headline marker not found')
-path.write_text(source.replace(old, new, 1), encoding='utf-8')
+path.write_text(source, encoding='utf-8')

@@ -388,9 +388,10 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
   if (!asArray(answer.confidence_rubric).length) answer.confidence_rubric = confidenceRubricFallback(answer);
   if (!asArray(answer.research_needs).length) answer.research_needs = researchNeedsFallback(answer);
 
-  let body = moveCoverageToEnd(rawAnswerText);
+  const hierarchicalReport = text(answer.generation_path).startsWith('full_corpus_hierarchical_');
+  let body = hierarchicalReport ? rawAnswerText.trim() : moveCoverageToEnd(rawAnswerText);
   const coverage = isRecord(answer.source_coverage) ? answer.source_coverage : {};
-  if (!body.includes('## 99. カバレッジ・システム情報')) {
+  if (!hierarchicalReport && !body.includes('## 99. カバレッジ・システム情報')) {
     body = `${body}\n\n${[
       '## 99. カバレッジ・システム情報',
       `全件カバレッジ: ${text(coverage.full_corpus_article_count || coverage.article_count) || '-'}件`,
@@ -402,11 +403,10 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
     ].join('\n')}`.trim();
   }
 
-  const hierarchicalReport = text(answer.generation_path).startsWith('full_corpus_hierarchical_');
   const evidenceLinks = evidenceLinksMarkdown(answer);
   if (!hierarchicalReport && evidenceLinks && !body.includes('## 10.5 根拠記事リンク')) body = `${body}\n\n${evidenceLinks}`.trim();
   const appendix = qualityAppendix(rawGate);
-  if (appendix && !body.includes('## 11. 品質ゲート補足')) body = `${body}\n\n${appendix}`.trim();
+  if (!hierarchicalReport && appendix && !body.includes('## 11. 品質ゲート補足')) body = `${body}\n\n${appendix}`.trim();
 
   answer.answer_text = body;
   answer.display_enrichment = {

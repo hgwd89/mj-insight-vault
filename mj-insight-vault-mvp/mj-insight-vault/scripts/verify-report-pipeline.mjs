@@ -133,6 +133,9 @@ assertIncludes(guard, 'contains unselected article IDs', 'final writer must reje
 assertIncludes(guard, 'max_completion_tokens: 2_500', 'final writer output must stay concise');
 assertIncludes(qualityGate, 'theme_id: text(item.theme_id)', 'quality enrichment must preserve theme metadata');
 assertIncludes(qualityGate, '!hierarchicalReport', 'hierarchical reports must not duplicate evidence appendices');
+assertIncludes(qualityGate, 'hierarchicalReport ? rawAnswerText.trim()', 'hierarchical report body must remain writer-bounded');
+assertIncludes(qualityGate, '!hierarchicalReport && !body.includes', 'hierarchical reports must not append coverage prose');
+assertIncludes(qualityGate, '!hierarchicalReport && appendix', 'hierarchical reports must not append quality prose');
 assertIncludes(guard, "'gpt-4.1-mini'", 'critical analysis stages must use the stronger low-cost analyst model');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 

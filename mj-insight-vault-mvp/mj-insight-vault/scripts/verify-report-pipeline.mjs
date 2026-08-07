@@ -116,6 +116,9 @@ assertIncludes(guard, 'evidence_excerpt_or_fact: groundedFact', 'citation facts 
 assertIncludes(guard, 'evidence_excerpt_or_factは出力しない', 'critic must not invent quotation text');
 assertIncludes(guard, 'full_corpus_hierarchical_theme_evidence_writer_v1', 'formal generation must use hierarchical theme, evidence, and writer stages');
 assertIncludes(guard, '全78バッチから頻度・反証付きテーマを抽出中', 'theme extraction must be a separate stage');
+assertIncludes(guard, 'テーマ抽出JSONを短縮して自己修正中', 'truncated theme JSON must be retried compactly');
+assertIncludes(guard, 'ranked_themes requires 4〜5 items', 'theme output must remain concise');
+assertIncludes(guard, 'max_completion_tokens: 2_800', 'theme output token budget must be bounded');
 assertIncludes(guard, 'collectEvidence(context, 0)', 'evidence critic must evaluate the full validated candidate pool');
 assertIncludes(guard, 'requires at least 4 represented themes', 'evidence must cover multiple themes');
 assertIncludes(guard, 'supply-side evidence exceeds limit', 'supply-side evidence must be bounded');

@@ -84,6 +84,7 @@ assertIncludes(scan, 'allowedIds.has(id)', 'model-supplied evidence IDs must be 
 assertIncludes(scan, 'full_corpus_batch_v2', 'prompt version must invalidate unsafe prior runs');
 assertIncludes(scan, '.slice(0, 4000)', 'scan article input must use the low-cost text budget');
 
+const qualityGate = read('lib/chatAnalysisQualityGate.ts');
 const guard = read('lib/chatRouteFullCorpusGuard.ts');
 const integrity = read('lib/fullCorpusIntegrity.ts');
 assertIncludes(guard, 'getIntegrityCheckedFullCorpusContext', 'formal report generation must use integrity-checked all-batch context');
@@ -125,6 +126,13 @@ assertIncludes(guard, 'supply-side evidence exceeds limit', 'supply-side evidenc
 assertIncludes(guard, 'Evidence Criticの件数と構成を自己修正中', 'invalid evidence selection must be retried');
 assertIncludes(guard, 'after deterministic selection', 'overlong evidence output must be deterministically bounded');
 assertIncludes(guard, 'chosen.length >= 8', 'evidence selection must have a hard upper bound');
+assertIncludes(guard, 'semanticEvidenceMatch', 'claim-to-article semantic alignment must be checked');
+assertIncludes(guard, 'shortlistedEvidence', 'evidence critic input must be theme-shortlisted');
+assertIncludes(guard, 'contains unsupported numbers', 'final writer must reject unsupplied numbers');
+assertIncludes(guard, 'contains unselected article IDs', 'final writer must reject unselected links');
+assertIncludes(guard, 'max_completion_tokens: 2_500', 'final writer output must stay concise');
+assertIncludes(qualityGate, 'theme_id: text(item.theme_id)', 'quality enrichment must preserve theme metadata');
+assertIncludes(qualityGate, '!hierarchicalReport', 'hierarchical reports must not duplicate evidence appendices');
 assertIncludes(guard, "'gpt-4.1-mini'", 'critical analysis stages must use the stronger low-cost analyst model');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 

@@ -4,7 +4,6 @@ import { runChatAnalysis as runBaseChatAnalysis } from '@/lib/chatRouteNo160';
 import { enhanceChatAnalysisResult } from '@/lib/chatAnalysisQualityGate';
 import { sanitizeReportForDisplay } from '@/lib/reportSafety';
 import { getOpenAI, TEXT_MODEL } from '@/lib/openai';
-import { MJ_REPORT_SYSTEM_PROMPT } from '@/lib/reportPrompt';
 
 const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべて|全て/i;
 const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
@@ -68,6 +67,44 @@ function cleanText(candidates: unknown[], maxLength: number) {
 function brokenText(value: unknown) {
   const normalized = text(value);
   return !normalized || /\[object Object\]|\[object Undefined\]|^undefined$|^null$/i.test(normalized);
+}
+
+function semanticChars(value: unknown) {
+  return Array.from(text(value).toLowerCase()).filter((char) => /[\p{L}\p{N}]/u.test(char)).join('');
+}
+
+function bigramCoverage(left: unknown, right: unknown) {
+  const a = semanticChars(left);
+  const b = semanticChars(right);
+  if (a.length < 2 || b.length < 2) return 0;
+  const leftBigrams = new Set(Array.from({ length: a.length - 1 }, (_, index) => a.slice(index, index + 2)));
+  const rightBigrams = new Set(Array.from({ length: b.length - 1 }, (_, index) => b.slice(index, index + 2)));
+  let overlap = 0;
+  for (const gram of leftBigrams) if (rightBigrams.has(gram)) overlap += 1;
+  return leftBigrams.size ? overlap / leftBigrams.size : 0;
+}
+
+function semanticEvidenceMatch(item: Json, source: Evidence) {
+  const claim = text(item.claim);
+  const target = `${text(source.headline)} ${text(source.claim)} ${text(source.evidence_excerpt_or_fact)}`;
+  return bigramCoverage(claim, target) >= 0.04;
+}
+
+function linkedArticleIds(value: unknown) {
+  const ids = new Set<string>();
+  const pattern = /\/articles\/([0-9a-fA-F-]{36})/g;
+  for (const match of text(value).matchAll(pattern)) ids.add(match[1].toLowerCase());
+  return ids;
+}
+
+function significantNumberTokens(value: unknown) {
+  const tokens = new Set<string>();
+  for (const match of text(value).match(/\d[\d,，.]*(?:%|％)?/g) || []) {
+    const normalized = match.replace(/[，,]/g, '').replace('％', '%');
+    const numeric = Number(normalized.replace('%', ''));
+    if (normalized.includes('%') || (Number.isFinite(numeric) && numeric > 10)) tokens.add(normalized);
+  }
+  return tokens;
 }
 
 function stripPriorFormalStop(value: unknown) {
@@ -378,14 +415,31 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
   if (allSeeds.length < 20) throw new Error(`validated evidence candidate pool insufficient: ${allSeeds.length}`);
   const allEvidence = await enrichEvidence(allSeeds);
   const evidenceById = new Map(allEvidence.map((item) => [item.article_id, item]));
+  const shortlistedById = new Map<string, Evidence>();
+  for (const theme of themes) {
+    const themeText = `${text(theme.title)} ${text(theme.claim)} ${text(theme.support_summary)}`;
+    const ranked = allEvidence
+      .map((item) => ({ item, score: bigramCoverage(themeText, `${text(item.headline)} ${item.claim} ${item.evidence_excerpt_or_fact}`) }))
+      .sort((left, right) => right.score - left.score)
+      .filter((entry) => entry.score > 0.01)
+      .slice(0, 18);
+    for (const entry of ranked) shortlistedById.set(entry.item.article_id, entry.item);
+  }
+  if (shortlistedById.size < 40) {
+    for (const item of allEvidence) {
+      shortlistedById.set(item.article_id, item);
+      if (shortlistedById.size >= 64) break;
+    }
+  }
+  const shortlistedEvidence = Array.from(shortlistedById.values()).slice(0, 80);
 
-  await reportProgress(onProgress, 58, 'Evidence Criticで全候補からテーマ対応根拠を選定中');
+  await reportProgress(onProgress, 58, 'Evidence Criticでテーマ別候補から根拠を選定中');
   const evidencePayload = {
     ranked_themes: themes,
-    evidence_candidates: allEvidence.map((item) => ({
+    evidence_candidates: shortlistedEvidence.map((item) => ({
       article_id: item.article_id,
       batch_index: item.batch_index,
-      headline: item.headline.slice(0, 100),
+      headline: text(item.headline).slice(0, 100),
       batch_claim: item.claim.slice(0, 120),
       validated_fact: item.evidence_excerpt_or_fact.slice(0, 180)
     })),
@@ -453,9 +507,11 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       const id = text(item.article_id);
       const themeId = text(item.theme_id);
       const type = text(item.evidence_type);
-      if (!id || seenArticleIds.has(id) || !evidenceById.has(id) || !themeIds.has(themeId)) return false;
+      const sourceItem = evidenceById.get(id);
+      if (!id || seenArticleIds.has(id) || !sourceItem || !themeIds.has(themeId)) return false;
       if (!directTypes.has(type) && type !== 'supply_signal') return false;
       if (text(item.claim).length < 15 || brokenText(item.claim) || brokenText(item.what_can_be_said) || brokenText(item.what_cannot_be_said)) return false;
+      if (!semanticEvidenceMatch(item, sourceItem)) return false;
       seenArticleIds.add(id);
       return true;
     });
@@ -534,7 +590,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       evidence_strength: item.evidence_strength
     })),
     rules: [
-      '日本語1,800〜3,000文字で、結論、4〜7個の主要テーマ、反証・制約、実務含意、調査課題を書く。',
+      '日本語1,600〜2,600文字で、結論、4〜5個の主要テーマ、反証・制約、実務含意、調査課題を書く。',
       'ranked_themesの順位と限定条件を維持し、selected_evidence以外の記事や数値を追加しない。',
       'selected_evidenceの記事リンクを本文中に少なくとも4件使う。',
       '企業側のsupply_signalは供給側シグナルと明記し、生活者需要へ昇格しない。',
@@ -547,11 +603,11 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
     model: writerModel,
     ...(writerModel.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
     response_format: { type: 'json_object' },
-    max_completion_tokens: 4_000,
+    max_completion_tokens: 2_500,
     messages: [
       {
         role: 'system',
-        content: `${MJ_REPORT_SYSTEM_PROMPT}\n\nReturn one concise complete JSON object only. Write from the ranked themes and selected grounded evidence. Do not introduce any other article, number, demographic claim or causal claim.`
+        content: 'Return one concise complete JSON object only. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the Japanese answer_text between 1,600 and 2,600 characters.'
       },
       { role: 'user', content: JSON.stringify(finalPayload) }
     ]
@@ -564,7 +620,16 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
     const detail = error instanceof Error ? error.message : text(error);
     throw new Error(`final writer JSON invalid or truncated: ${detail}`);
   }
-  if (text(finalDraft.answer_text).length < 1_200) throw new Error(`final answer_text too short: ${text(finalDraft.answer_text).length}`);
+  const finalText = text(finalDraft.answer_text);
+  if (finalText.length < 1_200) throw new Error(`final answer_text too short: ${finalText.length}`);
+  if (finalText.length > 3_600) throw new Error(`final answer_text too long: ${finalText.length}`);
+  if (/直接的な証拠は\s*\d|間接的な証拠は\s*\d|弱い証拠は\s*\d/.test(finalText)) throw new Error('final answer_text contains invented evidence counts');
+  const allowedArticleIds = new Set(selectedIds.map((id) => id.toLowerCase()));
+  const outsideArticleIds = Array.from(linkedArticleIds(finalText)).filter((id) => !allowedArticleIds.has(id));
+  if (outsideArticleIds.length) throw new Error(`final answer_text contains unselected article IDs: ${outsideArticleIds.join(',')}`);
+  const allowedNumbers = significantNumberTokens(JSON.stringify(finalPayload));
+  const unsupportedNumbers = Array.from(significantNumberTokens(finalText)).filter((token) => !allowedNumbers.has(token));
+  if (unsupportedNumbers.length) throw new Error(`final answer_text contains unsupported numbers: ${unsupportedNumbers.join(',')}`);
 
   const refutationAudit = themes.slice(0, 5).map((item) => ({
     target_claim: text(item.claim),
@@ -615,6 +680,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
     research_needs: researchNeeds,
     analyst_model: analystModel,
     writer_model: writerModel,
+    ranked_themes_raw: themes,
     generation_path: 'full_corpus_hierarchical_theme_evidence_writer_v1'
   }, selectedLookup, run, scope);
 

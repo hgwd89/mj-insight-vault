@@ -118,6 +118,9 @@ function normalizeEvidenceItem(item: JsonRecord, index: number, syntheticRepair 
     article_link: articleLinkFromRecord(item),
     evidence_excerpt_or_fact: fact || '根拠抜粋未取得',
     evidence_strength: text(item.evidence_strength || item.strength || item.confidence || 'C'),
+    theme_id: text(item.theme_id),
+    evidence_type: text(item.evidence_type),
+    batch_index: firstNumber(item.batch_index),
     limitation: text(item.limitation || '記事本文から確認できる範囲に限定。生活者心理は仮説として扱う。'),
     what_can_be_said: text(item.what_can_be_said || '当該記事で観察できる事実に限定する。'),
     what_cannot_be_said: text(item.what_cannot_be_said || 'この記事単独では生活者全体の傾向とは断定できない。'),
@@ -399,8 +402,9 @@ export function enhanceChatAnalysisResult<T>(result: T): T {
     ].join('\n')}`.trim();
   }
 
+  const hierarchicalReport = text(answer.generation_path).startsWith('full_corpus_hierarchical_');
   const evidenceLinks = evidenceLinksMarkdown(answer);
-  if (evidenceLinks && !body.includes('## 10.5 根拠記事リンク')) body = `${body}\n\n${evidenceLinks}`.trim();
+  if (!hierarchicalReport && evidenceLinks && !body.includes('## 10.5 根拠記事リンク')) body = `${body}\n\n${evidenceLinks}`.trim();
   const appendix = qualityAppendix(rawGate);
   if (appendix && !body.includes('## 11. 品質ゲート補足')) body = `${body}\n\n${appendix}`.trim();
 

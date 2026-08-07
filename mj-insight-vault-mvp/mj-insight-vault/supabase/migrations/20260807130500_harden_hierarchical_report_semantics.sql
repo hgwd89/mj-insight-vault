@@ -7,7 +7,7 @@ as $function$
 declare
   generation_path text := coalesce(p_payload->>'generation_path','');
   run_id_text text := coalesce(p_payload->>'full_corpus_run_id',p_payload#>>'{source_coverage,full_corpus_run_id}','');
-  run_id uuid;
+  v_run_id uuid;
   total_count integer := 0;
   valid_count integer := 0;
   distinct_article_count integer := 0;
@@ -27,7 +27,7 @@ begin
   if run_id_text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
     return false;
   end if;
-  run_id := run_id_text::uuid;
+  v_run_id := run_id_text::uuid;
 
   with items as (
     select item
@@ -72,7 +72,7 @@ begin
         else null
       end
     left join public.full_corpus_scan_batches b
-      on b.run_id = run_id
+      on b.run_id = v_run_id
      and a.id = any(b.article_ids)
   )
   select

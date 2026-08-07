@@ -129,6 +129,10 @@ assertIncludes(guard, 'chosen.length >= 8', 'evidence selection must have a hard
 assertIncludes(guard, 'semanticEvidenceMatch', 'claim-to-article semantic alignment must be checked');
 assertIncludes(guard, 'shortlistedEvidence', 'evidence critic input must be theme-shortlisted');
 assertIncludes(guard, 'contains unsupported numbers', 'final writer must reject unsupplied numbers');
+assertIncludes(guard, 'Semantic Criticで過剰一般化とテーマ混線を検証中', 'semantic critic stage must run before persistence');
+assertIncludes(guard, 'semantic_report_critic_v1', 'semantic critic proof must be persisted');
+assertIncludes(guard, 'cross-theme counterarguments', 'semantic critic must reject cross-theme counterarguments');
+assertIncludes(guard, 'full_corpus_hierarchical_theme_evidence_writer_v2', 'semantic-reviewed generation path must be versioned');
 assertIncludes(guard, 'contains unselected article IDs', 'final writer must reject unselected links');
 assertIncludes(guard, 'max_completion_tokens: 2_500', 'final writer output must stay concise');
 assertIncludes(guard, 'Return only the Japanese Markdown report body', 'final writer must avoid a fragile JSON envelope');

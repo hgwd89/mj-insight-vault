@@ -107,6 +107,9 @@ assertIncludes(guard, '|| 125_000;', 'direct writer timeout must fit the server 
 assertIncludes(guard, '|| 5_000;', 'direct writer output tokens must stay bounded');
 assertIncludes(guard, '.slice(0, 500)', 'direct writer article evidence text must stay compact');
 assertIncludes(guard, 'attempt <= 2', 'direct writer retries must fit the server execution envelope');
+assertIncludes(guard, 'previous output was invalid or truncated JSON', 'truncated writer JSON must be retried');
+assertIncludes(guard, 'JSON全体を必ず完結させる', 'writer prompt must prioritize complete JSON');
+assertIncludes(guard, 'evidence_matrixは異なるarticle_idを5〜8件', 'writer evidence output must remain concise');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');

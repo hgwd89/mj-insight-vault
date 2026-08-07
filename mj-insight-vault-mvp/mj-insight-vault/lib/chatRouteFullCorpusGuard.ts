@@ -273,14 +273,15 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       '全体傾向・ナラティブ・インサイトはfull_corpus_batch_context_primaryからのみ導出する。',
       'evidence lookupは引用・リンク・事実確認専用であり、テーマ分布や母集団として扱わない。',
       '全バッチを横断し、一部バッチへ偏らない。頻度、反例、弱いシグナル、無信号を区別する。',
-      'answer_textは日本語2,200〜4,200文字を目安とし、冗長な記事列挙を避ける。',
+      'answer_textは日本語1,600〜2,600文字を目安とし、冗長な記事列挙を避ける。',
       '企業施策・商品投入・販路拡大を生活者需要の証明へ変換しない。',
       '事実、推論、仮説、調査必要を分離する。',
-      'evidence_matrixに異なるarticle_idを5件以上、12件以下で入れ、具体的事実を20文字以上書く。',
+      'evidence_matrixは異なるarticle_idを5〜8件だけ入れ、具体的事実を20文字以上書く。',
       'evidence_matrixのclaim、evidence_excerpt_or_fact、what_can_be_said、what_cannot_be_said、limitationは必ず文字列にする。配列やオブジェクトを入れない。',
       'evidence_article_lookup_for_citation_onlyに存在するarticle_idだけを使い、主要トレンドまたは仮説を実際に支える記事だけを選ぶ。無関係な記事で件数を埋めない。',
       'answer_textに/articles/{article_id}のMarkdownリンクを3件以上含める。',
-      'refutation_audit、negative_space、confidence_rubric、research_needsを必ず生出力に含める。'
+      'refutation_auditは2〜4件、negative_spaceは2〜3件、confidence_rubricは3〜5件、research_needsは3〜5件に限定し、各フィールドを簡潔にする。',
+      'JSON全体を必ず完結させる。説明の重複、記事本文の長文転載、同じリンクの繰り返しは禁止する。'
     ],
     required_json_fields: ['report_title', 'answer_text', 'major_trends', 'explanatory_hypotheses', 'cross_article_insights', 'evidence_matrix', 'refutation_audit', 'negative_space', 'confidence_rubric', 'research_needs', 'source_coverage']
   };
@@ -300,7 +301,20 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
         { role: 'user', content: JSON.stringify(attemptPayload) }
       ]
     }, { signal }), TIMEOUT_MS);
-    const parsed = JSON.parse(completion.choices[0]?.message.content || '{}') as Json;
+    const rawContent = completion.choices[0]?.message.content || '{}';
+    let parsed: Json;
+    try {
+      parsed = JSON.parse(rawContent) as Json;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : text(error);
+      validationFeedback = [
+        `previous output was invalid or truncated JSON: ${detail}`,
+        'Return a shorter complete JSON object. Keep answer_text within 1,600〜2,600 Japanese characters.',
+        'Use 5〜8 evidence items and compact audit arrays. Do not repeat article text or links.'
+      ];
+      await reportProgress(onProgress, 64 + attempt * 8, `専用WriterのJSONを自己修正中 (${attempt}/2)`);
+      continue;
+    }
     const normalized = ensureRawFields(parsed, evidence, run, scope);
     const normalizedEvidence = records(normalized.evidence_matrix);
     const linkCount = (text(normalized.answer_text).match(/\[[^\]]+\]\(\/articles\/[a-zA-Z0-9_-]+\)/g) || []).length;

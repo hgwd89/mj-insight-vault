@@ -122,6 +122,9 @@ assertIncludes(guard, 'max_completion_tokens: 2_800', 'theme output token budget
 assertIncludes(guard, 'collectEvidence(context, 0)', 'evidence critic must evaluate the full validated candidate pool');
 assertIncludes(guard, 'requires at least 4 represented themes', 'evidence must cover multiple themes');
 assertIncludes(guard, 'supply-side evidence exceeds limit', 'supply-side evidence must be bounded');
+assertIncludes(guard, 'Evidence Criticの件数と構成を自己修正中', 'invalid evidence selection must be retried');
+assertIncludes(guard, 'after deterministic selection', 'overlong evidence output must be deterministically bounded');
+assertIncludes(guard, 'chosen.length >= 8', 'evidence selection must have a hard upper bound');
 assertIncludes(guard, "'gpt-4.1-mini'", 'critical analysis stages must use the stronger low-cost analyst model');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 

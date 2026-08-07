@@ -1,67 +1,17 @@
 name: Retry Vercel after build rate limit
 
 on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   statuses: read
-
-concurrency:
-  group: vercel-rate-limit-retry
-  cancel-in-progress: false
 
 jobs:
   retry:
-    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'retry Vercel production after build-rate-limit')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Wait for Vercel status on push
-        if: github.event_name == 'push'
-        run: sleep 60
-
-      - name: Inspect latest Vercel status
-        id: status
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+      - name: Disabled automatic retry
         run: |
-          set -euo pipefail
-          git fetch origin main
-          git reset --hard origin/main
-          sha="$(git rev-parse HEAD)"
-          status_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/status")"
-
-          if jq -e '.statuses[] | select(.context == "Vercel – hgwd89-mj-insight-vault-k5k2" and .state == "success")' <<<"${status_json}" >/dev/null; then
-            echo "retry=false" >> "${GITHUB_OUTPUT}"
-            echo "Production Vercel status is already successful."
-            exit 0
-          fi
-
-          if jq -e '.statuses[] | select((.target_url // "") | contains("build-rate-limit"))' <<<"${status_json}" >/dev/null; then
-            echo "retry=true" >> "${GITHUB_OUTPUT}"
-            echo "Vercel is still blocked by build-rate-limit."
-          else
-            echo "retry=false" >> "${GITHUB_OUTPUT}"
-            echo "No build-rate-limit status found; do not create a retry commit."
-          fi
-
-      - name: Create one retry commit
-        if: steps.status.outputs.retry == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "retry Vercel production after build-rate-limit"
-          git push origin HEAD:main
+          echo "Automatic Vercel retry is disabled to avoid exhausting deployment quotas."
+          echo "After the Vercel deployment quota resets, deploy the latest main commit explicitly."

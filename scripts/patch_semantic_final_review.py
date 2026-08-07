@@ -6,16 +6,10 @@ TEST = ROOT / 'scripts/verify-report-pipeline.mjs'
 
 source = GUARD.read_text(encoding='utf-8')
 
-old_decl = """  const finalText = text(finalCompletion.choices[0]?.message.content)
-    .replace(/^```(?:markdown)?\\s*/i, '')
-    .replace(/\\s*```$/, '')
-    .trim();
+marker = """  if (!finalText) throw new Error(`final writer validation failed: ${finalFeedback.join('; ')}`);
   const finalDraft: Json = {
 """
-new_decl = """  let finalText = text(finalCompletion.choices[0]?.message.content)
-    .replace(/^```(?:markdown)?\\s*/i, '')
-    .replace(/\\s*```$/, '')
-    .trim();
+insert = """  if (!finalText) throw new Error(`final writer validation failed: ${finalFeedback.join('; ')}`);
 
   await reportProgress(onProgress, 88, 'Semantic Criticで過剰一般化とテーマ混線を検証中');
   const semanticPayload = {
@@ -76,9 +70,9 @@ new_decl = """  let finalText = text(finalCompletion.choices[0]?.message.content
 
   const finalDraft: Json = {
 """
-if old_decl not in source:
-    raise SystemExit('final text declaration marker not found')
-source = source.replace(old_decl, new_decl, 1)
+if marker not in source:
+    raise SystemExit('final writer loop marker not found')
+source = source.replace(marker, insert, 1)
 
 old_generation = """    ranked_themes_raw: themes,
     generation_path: 'full_corpus_hierarchical_theme_evidence_writer_v1'
@@ -96,7 +90,6 @@ new_generation = """    ranked_themes_raw: themes,
 if old_generation not in source:
     raise SystemExit('generation path marker not found')
 source = source.replace(old_generation, new_generation, 1)
-
 GUARD.write_text(source, encoding='utf-8')
 
 test = TEST.read_text(encoding='utf-8')

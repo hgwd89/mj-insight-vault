@@ -132,8 +132,11 @@ assertIncludes(guard, 'contains unsupported numbers', 'final writer must reject 
 assertIncludes(guard, 'contains unselected article IDs', 'final writer must reject unselected links');
 assertIncludes(guard, 'max_completion_tokens: 2_500', 'final writer output must stay concise');
 assertIncludes(guard, 'Return only the Japanese Markdown report body', 'final writer must avoid a fragile JSON envelope');
-assertIncludes(guard, "const finalText = text(finalCompletion.choices[0]?.message.content)", 'final writer body must be consumed directly');
+assertIncludes(guard, "const candidateText = text(finalCompletion.choices[0]?.message.content)", 'final writer body must be consumed directly');
 assertExcludes(guard, 'final writer JSON invalid or truncated', 'final writer must not depend on JSON parsing');
+assertIncludes(guard, 'final answer_text contains links or URLs', 'final writer must reject external and placeholder links');
+assertIncludes(guard, '最終WriterのURL・数値制約を自己修正中', 'invalid final writer prose must be retried');
+assertIncludes(guard, 'batch_index: number(source.batch_index)', 'evidence metadata must preserve the actual scan batch');
 assertIncludes(qualityGate, 'theme_id: text(item.theme_id)', 'quality enrichment must preserve theme metadata');
 assertIncludes(qualityGate, '!hierarchicalReport', 'hierarchical reports must not duplicate evidence appendices');
 assertIncludes(qualityGate, 'hierarchicalReport ? rawAnswerText.trim()', 'hierarchical report body must remain writer-bounded');

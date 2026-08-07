@@ -253,6 +253,7 @@ function ensureRawFields(answer: Json, evidenceLookup: Evidence[], run: Json, sc
       ...item,
       claim: evidenceClaim,
       article_id: id,
+      batch_index: number(source.batch_index),
       headline: text(item.headline) || source.headline,
       article_date: text(item.article_date) || source.article_date,
       article_url: source.article_url,
@@ -592,30 +593,62 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
     rules: [
       '日本語1,600〜2,600文字で、結論、4〜5個の主要テーマ、反証・制約、実務含意、調査課題を書く。',
       'ranked_themesの順位と限定条件を維持し、selected_evidence以外の記事や数値を追加しない。',
-      'selected_evidenceの記事リンクを本文中に少なくとも4件使う。',
+      'URLやMarkdownリンクは一切書かない。検証済み根拠リンクはサーバーが後付けする。',
       '企業側のsupply_signalは供給側シグナルと明記し、生活者需要へ昇格しない。',
       '因果、年代、性別、市場規模を根拠なしに追加しない。',
       '最終WriterはJSONではなく日本語Markdown本文だけを返す。JSON、コードフェンス、前置きは禁止する。'
     ]
   };
 
-  const finalCompletion = await timeout((signal) => openai.chat.completions.create({
-    model: writerModel,
-    ...(writerModel.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
-    max_completion_tokens: 2_500,
-    messages: [
-      {
-        role: 'system',
-        content: 'Return only the Japanese Markdown report body. Do not return JSON, a code fence, a title wrapper, or any preface. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the body between 1,600 and 2,600 Japanese characters.'
-      },
-      { role: 'user', content: JSON.stringify(finalPayload) }
-    ]
-  }, { signal }), stageTimeout);
+  const allowedArticleIds = new Set(selectedIds.map((id) => id.toLowerCase()));
+  const allowedNumbers = significantNumberTokens(JSON.stringify(finalPayload));
+  let finalText = '';
+  let finalFeedback: string[] = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    if (attempt > 1) await reportProgress(onProgress, 84, '最終WriterのURL・数値制約を自己修正中');
+    const writerPayload = finalFeedback.length
+      ? {
+          ...finalPayload,
+          correction: {
+            errors: finalFeedback,
+            instruction: 'Return only a 1,600〜2,600-character Japanese Markdown report body. Do not include any URL, Markdown link, code fence, JSON, unsupported number, or unselected article.'
+          }
+        }
+      : finalPayload;
+    const finalCompletion = await timeout((signal) => openai.chat.completions.create({
+      model: writerModel,
+      ...(writerModel.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
+      max_completion_tokens: 2_500,
+      messages: [
+        {
+          role: 'system',
+          content: 'Return only the Japanese Markdown report body. Do not return JSON, a code fence, a title wrapper, a preface, any URL, or any Markdown link. Verified article links are appended by the server. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the body between 1,600 and 2,600 Japanese characters.'
+        },
+        { role: 'user', content: JSON.stringify(writerPayload) }
+      ]
+    }, { signal }), stageTimeout);
 
-  const finalText = text(finalCompletion.choices[0]?.message.content)
-    .replace(/^```(?:markdown)?\s*/i, '')
-    .replace(/\s*```$/, '')
-    .trim();
+    const candidateText = text(finalCompletion.choices[0]?.message.content)
+      .replace(/^```(?:markdown)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+    const errors: string[] = [];
+    if (candidateText.length < 1_200) errors.push(`final answer_text too short: ${candidateText.length}`);
+    if (candidateText.length > 3_600) errors.push(`final answer_text too long: ${candidateText.length}`);
+    if (/直接的な証拠は\s*\d|間接的な証拠は\s*\d|弱い証拠は\s*\d/.test(candidateText)) errors.push('final answer_text contains invented evidence counts');
+    const outsideArticleIds = Array.from(linkedArticleIds(candidateText)).filter((id) => !allowedArticleIds.has(id));
+    if (outsideArticleIds.length) errors.push(`final answer_text contains unselected article IDs: ${outsideArticleIds.join(',')}`);
+    if (/(?:https?:\/\/|www\.|\]\()/i.test(candidateText)) errors.push('final answer_text contains links or URLs');
+    const unsupportedNumbers = Array.from(significantNumberTokens(candidateText)).filter((token) => !allowedNumbers.has(token));
+    if (unsupportedNumbers.length) errors.push(`final answer_text contains unsupported numbers: ${unsupportedNumbers.join(',')}`);
+    if (!errors.length) {
+      finalText = candidateText;
+      finalFeedback = [];
+      break;
+    }
+    finalFeedback = errors;
+  }
+  if (!finalText) throw new Error(`final writer validation failed: ${finalFeedback.join('; ')}`);
   const finalDraft: Json = {
     report_title: text(themeAnalysis.report_title) || '全件生活者インサイト総合レポート',
     answer_text: finalText,
@@ -623,15 +656,6 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
     explanatory_hypotheses: themes.map((item) => ({ hypothesis: item.claim, why: item.support_summary })),
     cross_article_insights: themeAnalysis.cross_article_insights
   };
-  if (finalText.length < 1_200) throw new Error(`final answer_text too short: ${finalText.length}`);
-  if (finalText.length > 3_600) throw new Error(`final answer_text too long: ${finalText.length}`);
-  if (/直接的な証拠は\s*\d|間接的な証拠は\s*\d|弱い証拠は\s*\d/.test(finalText)) throw new Error('final answer_text contains invented evidence counts');
-  const allowedArticleIds = new Set(selectedIds.map((id) => id.toLowerCase()));
-  const outsideArticleIds = Array.from(linkedArticleIds(finalText)).filter((id) => !allowedArticleIds.has(id));
-  if (outsideArticleIds.length) throw new Error(`final answer_text contains unselected article IDs: ${outsideArticleIds.join(',')}`);
-  const allowedNumbers = significantNumberTokens(JSON.stringify(finalPayload));
-  const unsupportedNumbers = Array.from(significantNumberTokens(finalText)).filter((token) => !allowedNumbers.has(token));
-  if (unsupportedNumbers.length) throw new Error(`final answer_text contains unsupported numbers: ${unsupportedNumbers.join(',')}`);
 
   const refutationAudit = themes.slice(0, 5).map((item) => ({
     target_claim: text(item.claim),

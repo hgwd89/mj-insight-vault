@@ -131,6 +131,9 @@ assertIncludes(guard, 'shortlistedEvidence', 'evidence critic input must be them
 assertIncludes(guard, 'contains unsupported numbers', 'final writer must reject unsupplied numbers');
 assertIncludes(guard, 'contains unselected article IDs', 'final writer must reject unselected links');
 assertIncludes(guard, 'max_completion_tokens: 2_500', 'final writer output must stay concise');
+assertIncludes(guard, 'Return only the Japanese Markdown report body', 'final writer must avoid a fragile JSON envelope');
+assertIncludes(guard, "const finalText = text(finalCompletion.choices[0]?.message.content)", 'final writer body must be consumed directly');
+assertExcludes(guard, 'final writer JSON invalid or truncated', 'final writer must not depend on JSON parsing');
 assertIncludes(qualityGate, 'theme_id: text(item.theme_id)', 'quality enrichment must preserve theme metadata');
 assertIncludes(qualityGate, '!hierarchicalReport', 'hierarchical reports must not duplicate evidence appendices');
 assertIncludes(qualityGate, 'hierarchicalReport ? rawAnswerText.trim()', 'hierarchical report body must remain writer-bounded');

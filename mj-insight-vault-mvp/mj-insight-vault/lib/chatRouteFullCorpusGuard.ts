@@ -595,32 +595,34 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       'selected_evidenceの記事リンクを本文中に少なくとも4件使う。',
       '企業側のsupply_signalは供給側シグナルと明記し、生活者需要へ昇格しない。',
       '因果、年代、性別、市場規模を根拠なしに追加しない。',
-      'JSONはreport_title、answer_text、major_trends、explanatory_hypotheses、cross_article_insightsだけを持つ完全なオブジェクトにする。'
+      '最終WriterはJSONではなく日本語Markdown本文だけを返す。JSON、コードフェンス、前置きは禁止する。'
     ]
   };
 
   const finalCompletion = await timeout((signal) => openai.chat.completions.create({
     model: writerModel,
     ...(writerModel.startsWith('gpt-5') ? { reasoning_effort: 'low' as const } : {}),
-    response_format: { type: 'json_object' },
     max_completion_tokens: 2_500,
     messages: [
       {
         role: 'system',
-        content: 'Return one concise complete JSON object only. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the Japanese answer_text between 1,600 and 2,600 characters.'
+        content: 'Return only the Japanese Markdown report body. Do not return JSON, a code fence, a title wrapper, or any preface. You are a skeptical senior marketing-research writer. Use only ranked_themes and selected_evidence. Do not use a legacy report template, invent evidence counts, add unlisted articles, add unsupplied numbers, or convert supply signals into consumer demand. Keep the body between 1,600 and 2,600 Japanese characters.'
       },
       { role: 'user', content: JSON.stringify(finalPayload) }
     ]
   }, { signal }), stageTimeout);
 
-  let finalDraft: Json;
-  try {
-    finalDraft = JSON.parse(finalCompletion.choices[0]?.message.content || '{}') as Json;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : text(error);
-    throw new Error(`final writer JSON invalid or truncated: ${detail}`);
-  }
-  const finalText = text(finalDraft.answer_text);
+  const finalText = text(finalCompletion.choices[0]?.message.content)
+    .replace(/^```(?:markdown)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  const finalDraft: Json = {
+    report_title: text(themeAnalysis.report_title) || '全件生活者インサイト総合レポート',
+    answer_text: finalText,
+    major_trends: themes,
+    explanatory_hypotheses: themes.map((item) => ({ hypothesis: item.claim, why: item.support_summary })),
+    cross_article_insights: themeAnalysis.cross_article_insights
+  };
   if (finalText.length < 1_200) throw new Error(`final answer_text too short: ${finalText.length}`);
   if (finalText.length > 3_600) throw new Error(`final answer_text too long: ${finalText.length}`);
   if (/直接的な証拠は\s*\d|間接的な証拠は\s*\d|弱い証拠は\s*\d/.test(finalText)) throw new Error('final answer_text contains invented evidence counts');

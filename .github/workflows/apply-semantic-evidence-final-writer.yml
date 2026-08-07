@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/trigger-semantic-evidence-final-writer-v5'
+      - '.github/trigger-semantic-evidence-final-writer-v6'
 
 permissions:
   contents: write
@@ -48,6 +48,7 @@ jobs:
                   mj-insight-vault-mvp/mj-insight-vault/scripts/verify-report-pipeline.mjs
           git diff --cached --quiet && exit 1
           git commit -m 'enforce semantic evidence and concise final writer'
+          git restore scripts/patch_semantic_evidence_and_final_writer.py
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main

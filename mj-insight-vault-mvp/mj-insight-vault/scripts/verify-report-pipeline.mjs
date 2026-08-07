@@ -114,6 +114,12 @@ assertIncludes(guard, 'full_corpus_staged_writer_evidence_critic_v1', 'formal ge
 assertIncludes(guard, 'Evidence Criticで根拠を選定中', 'evidence selection must be a separate model stage');
 assertIncludes(guard, 'evidence_excerpt_or_fact: groundedFact', 'citation facts must be grounded to article text');
 assertIncludes(guard, 'evidence_excerpt_or_factは出力しない', 'critic must not invent quotation text');
+assertIncludes(guard, 'full_corpus_hierarchical_theme_evidence_writer_v1', 'formal generation must use hierarchical theme, evidence, and writer stages');
+assertIncludes(guard, '全78バッチから頻度・反証付きテーマを抽出中', 'theme extraction must be a separate stage');
+assertIncludes(guard, 'collectEvidence(context, 0)', 'evidence critic must evaluate the full validated candidate pool');
+assertIncludes(guard, 'requires at least 4 represented themes', 'evidence must cover multiple themes');
+assertIncludes(guard, 'supply-side evidence exceeds limit', 'supply-side evidence must be bounded');
+assertIncludes(guard, "'gpt-4.1-mini'", 'critical analysis stages must use the stronger low-cost analyst model');
 assertIncludes(integrity, 'const MAX_CONTEXT_CHARS = 70_000;', 'all-batch context must stay within the latency budget');
 
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');

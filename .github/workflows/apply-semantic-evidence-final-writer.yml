@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/trigger-semantic-evidence-final-writer-v2'
+      - '.github/trigger-semantic-evidence-final-writer-v3'
 
 permissions:
   contents: write
@@ -24,6 +24,7 @@ jobs:
       - name: Apply semantic evidence and writer patch
         run: |
           python3 scripts/fix_semantic_patch_escaping.py
+          python3 scripts/fix_semantic_patch_test_variable.py
           python3 scripts/patch_semantic_evidence_and_final_writer.py
       - name: Install dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault

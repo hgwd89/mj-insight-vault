@@ -15,7 +15,8 @@
     "test:integrity": "node scripts/verify-integrity-loop.mjs",
     "test:db-formal-proof": "node scripts/verify-db-formal-proof.mjs",
     "test:inventory": "node scripts/verify-article-inventory-worker.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:inventory"
+    "test:original-ingest": "node scripts/verify-original-ingest.mjs",
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:inventory && npm run test:original-ingest"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.3.3",

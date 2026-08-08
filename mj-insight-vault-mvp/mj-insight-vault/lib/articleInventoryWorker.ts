@@ -50,8 +50,8 @@ type MappingRow = {
 class ReviewRequiredError extends Error {}
 class StructuralOutputError extends Error {}
 
-const CALL_TIMEOUT_MS = 180_000;
-const LEASE_SECONDS = 900;
+const CALL_TIMEOUT_MS = 150_000;
+const LEASE_SECONDS = 360;
 const MIN_CONFIDENCE = 0.8;
 
 const INVENTORY_RESPONSE_FORMAT = {
@@ -72,12 +72,7 @@ const INVENTORY_RESPONSE_FORMAT = {
           required: ['group_kind', 'block_indices', 'headline_anchor', 'non_article_role', 'confidence', 'reason'],
           properties: {
             group_kind: { type: 'string', enum: ['article', 'non_article'] },
-            block_indices: {
-              type: 'array',
-              minItems: 1,
-              uniqueItems: true,
-              items: { type: 'integer', minimum: 0 }
-            },
+            block_indices: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'integer', minimum: 0 } },
             headline_anchor: { type: 'string' },
             non_article_role: { type: 'string' },
             confidence: { type: 'number', minimum: 0, maximum: 1 },
@@ -136,10 +131,7 @@ function errorMessage(error: unknown) {
 }
 
 function extractResponseText(responseJson: unknown) {
-  const json = responseJson as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string }> }>;
-  };
+  const json = responseJson as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
   if (typeof json.output_text === 'string' && json.output_text.trim()) return json.output_text.trim();
   const parts: string[] = [];
   for (const item of json.output || []) {
@@ -153,23 +145,18 @@ function extractResponseText(responseJson: unknown) {
 function blindModels(job: ClaimedInventoryJob) {
   const mapper = process.env.OPENAI_INVENTORY_MAPPER_MODEL?.trim() || VISION_MODEL;
   const critic = process.env.OPENAI_INVENTORY_CRITIC_MODEL?.trim() || 'gpt-4o';
-  const adjudicator = process.env.OPENAI_INVENTORY_ADJUDICATOR_MODEL?.trim() || '';
-  if (!mapper || !critic || mapper === critic) {
-    throw new Error('Inventory mapper and critic models must be configured and distinct.');
-  }
+  const adjudicator = process.env.OPENAI_INVENTORY_ADJUDICATOR_MODEL?.trim() || 'gpt-4o-mini';
+  if (!mapper || !critic || mapper === critic) throw new Error('Inventory mapper and critic models must be configured and distinct.');
   if (job.requires_third_pass && (!adjudicator || adjudicator === mapper || adjudicator === critic)) {
-    throw new Error('OPENAI_INVENTORY_ADJUDICATOR_MODEL must be configured and distinct for third-pass pages.');
+    throw new Error('Inventory adjudicator model must be configured and distinct for third-pass pages.');
   }
   return { mapper, critic, adjudicator };
 }
 
 function mappingModels() {
   const mapper = process.env.OPENAI_INVENTORY_MAPPING_MAPPER_MODEL?.trim() || TEXT_MODEL;
-  const fallbackCritic = mapper === 'gpt-4o' ? 'gpt-4.1' : 'gpt-4o';
-  const critic = process.env.OPENAI_INVENTORY_MAPPING_CRITIC_MODEL?.trim() || fallbackCritic;
-  if (!mapper || !critic || mapper === critic) {
-    throw new Error('Inventory mapping mapper and critic models must be configured and distinct.');
-  }
+  const critic = process.env.OPENAI_INVENTORY_MAPPING_CRITIC_MODEL?.trim() || (mapper === 'gpt-4o' ? 'gpt-4.1' : 'gpt-4o');
+  if (!mapper || !critic || mapper === critic) throw new Error('Inventory mapping mapper and critic models must be configured and distinct.');
   return { mapper, critic };
 }
 
@@ -182,7 +169,6 @@ async function callResponsesJson(input: {
 }) {
   const apiKey = getOpenAIKey();
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
-
   const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: input.userText }];
   if (input.image) {
     content.push({
@@ -191,23 +177,13 @@ async function callResponsesJson(input: {
       detail: 'high'
     });
   }
-
-  const promptSha = sha256([
-    input.model,
-    input.instructions,
-    input.userText,
-    input.image ? `image_sha256=${sha256(input.image.buffer)}` : ''
-  ].join('\n---\n'));
-
+  const promptSha = sha256([input.model, input.instructions, input.userText, input.image ? `image_sha256=${sha256(input.image.buffer)}` : ''].join('\n---\n'));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
   try {
     const res = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/json'
-      },
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
         model: input.model,
@@ -224,21 +200,14 @@ async function callResponsesJson(input: {
     const providerResponseId = text(responseJson.id);
     const outputText = extractResponseText(responseJson);
     if (!providerResponseId || !outputText) throw new Error('OpenAI response receipt or output_text is missing.');
-    return {
-      value: JSON.parse(outputText) as unknown,
-      providerResponseId,
-      promptSha,
-      responseSha: sha256(raw)
-    };
+    return { value: JSON.parse(outputText) as unknown, providerResponseId, promptSha, responseSha: sha256(raw) };
   } finally {
     clearTimeout(timer);
   }
 }
 
 async function claimOneJob() {
-  const { data, error } = await supabaseAdmin.rpc('claim_source_page_article_inventory_job_v1', {
-    p_lease_seconds: LEASE_SECONDS
-  });
+  const { data, error } = await supabaseAdmin.rpc('claim_source_page_article_inventory_job_v2', { p_lease_seconds: LEASE_SECONDS });
   if (error) throw error;
   const row = Array.isArray(data) && isRecord(data[0]) ? data[0] : null;
   if (!row) return null;
@@ -255,9 +224,7 @@ async function claimOneJob() {
     attempt_count: Number(row.attempt_count || 0),
     lease_token: text(row.lease_token)
   };
-  if (!job.id || !job.inventory_source_image_id || !job.lease_token || !job.source_ocr_json_sha256) {
-    throw new Error('Invalid claimed inventory job.');
-  }
+  if (!job.id || !job.inventory_source_image_id || !job.lease_token || !job.source_ocr_json_sha256) throw new Error('Invalid claimed inventory job.');
   return job;
 }
 
@@ -270,52 +237,37 @@ async function renewLease(job: ClaimedInventoryJob) {
   if (error) throw error;
 }
 
+async function yieldJob(job: ClaimedInventoryJob, stage: string) {
+  const { data, error } = await supabaseAdmin.rpc('yield_source_page_article_inventory_job_v2', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token,
+    p_stage: stage
+  });
+  if (error) throw error;
+  return data;
+}
+
 async function loadBlindInput(job: ClaimedInventoryJob) {
   const [{ data: source, error: sourceError }, { data: blocks, error: blockError }] = await Promise.all([
-    supabaseAdmin
-      .from('source_images')
-      .select('id,storage_path,mime_type,width,height,publication_date')
-      .eq('id', job.inventory_source_image_id)
-      .single(),
-    supabaseAdmin
-      .from('source_ocr_blocks_v1')
+    supabaseAdmin.from('source_images').select('id,storage_path,mime_type,width,height,publication_date').eq('id', job.inventory_source_image_id).single(),
+    supabaseAdmin.from('source_ocr_blocks_v1')
       .select('block_index,block_text,x_min,y_min,x_max,y_max,ocr_confidence,source_ocr_json_sha256')
-      .eq('source_image_id', job.inventory_source_image_id)
-      .eq('page_index', 0)
-      .order('block_index', { ascending: true })
+      .eq('source_image_id', job.inventory_source_image_id).eq('page_index', 0).order('block_index', { ascending: true })
   ]);
   if (sourceError) throw sourceError;
   if (blockError) throw blockError;
   if (!source?.storage_path) throw new Error(`Inventory source image is missing: ${job.inventory_source_image_id}`);
-
   const typedBlocks = (blocks || []).map((row) => ({
-    block_index: Number(row.block_index),
-    block_text: text(row.block_text),
-    x_min: Number(row.x_min || 0),
-    y_min: Number(row.y_min || 0),
-    x_max: Number(row.x_max || 0),
-    y_max: Number(row.y_max || 0),
-    ocr_confidence: Number(row.ocr_confidence || 0),
-    source_ocr_json_sha256: text(row.source_ocr_json_sha256)
+    block_index: Number(row.block_index), block_text: text(row.block_text),
+    x_min: Number(row.x_min || 0), y_min: Number(row.y_min || 0), x_max: Number(row.x_max || 0), y_max: Number(row.y_max || 0),
+    ocr_confidence: Number(row.ocr_confidence || 0), source_ocr_json_sha256: text(row.source_ocr_json_sha256)
   })) as OcrBlock[];
-
-  if (typedBlocks.length !== job.block_count) {
-    throw new Error(`Inventory block count changed: expected=${job.block_count} actual=${typedBlocks.length}`);
-  }
-  if (typedBlocks.some((block) => block.source_ocr_json_sha256 !== job.source_ocr_json_sha256)) {
-    throw new Error('Inventory OCR block hash no longer matches the frozen job.');
-  }
-
+  if (typedBlocks.length !== job.block_count) throw new Error(`Inventory block count changed: expected=${job.block_count} actual=${typedBlocks.length}`);
+  if (typedBlocks.some((block) => block.source_ocr_json_sha256 !== job.source_ocr_json_sha256)) throw new Error('Inventory OCR block hash no longer matches the frozen job.');
   const download = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(source.storage_path);
   if (download.error) throw download.error;
   if (!download.data) throw new Error('Inventory source image download returned no data.');
-  const imageBuffer = Buffer.from(await download.data.arrayBuffer());
-
-  return {
-    source,
-    blocks: typedBlocks,
-    image: { buffer: imageBuffer, mimeType: text(source.mime_type) || 'image/jpeg' }
-  };
+  return { source, blocks: typedBlocks, image: { buffer: Buffer.from(await download.data.arrayBuffer()), mimeType: text(source.mime_type) || 'image/jpeg' } };
 }
 
 function blocksForPrompt(blocks: OcrBlock[]) {
@@ -347,17 +299,14 @@ function blindInstructions(passKind: BlindPassKind) {
   ].join('\n');
 }
 
-function blindUserText(job: ClaimedInventoryJob, blocks: OcrBlock[], passKind: BlindPassKind, repair?: string) {
+function blindUserText(job: ClaimedInventoryJob, blocks: OcrBlock[], passKind: BlindPassKind) {
   return [
     `inventory_version=${job.inventory_version}`,
     `pass_kind=${passKind}`,
     `source_ocr_json_sha256=${job.source_ocr_json_sha256}`,
     `expected_block_count=${job.block_count}`,
-    repair ? `Previous structural validation failed. Repair only this issue while re-checking the whole page: ${repair}` : '',
-    '',
-    'OCR BLOCKS:',
-    blocksForPrompt(blocks)
-  ].filter(Boolean).join('\n');
+    '', 'OCR BLOCKS:', blocksForPrompt(blocks)
+  ].join('\n');
 }
 
 function parseInventoryGroups(value: unknown, blocks: OcrBlock[]) {
@@ -366,7 +315,6 @@ function parseInventoryGroups(value: unknown, blocks: OcrBlock[]) {
   const allowed = new Map(blocks.map((block) => [block.block_index, block]));
   const used = new Set<number>();
   const groups: InventoryGroup[] = [];
-
   for (const raw of root.groups) {
     if (!isRecord(raw)) throw new StructuralOutputError('group is not an object');
     const groupKind = text(raw.group_kind);
@@ -379,15 +327,14 @@ function parseInventoryGroups(value: unknown, blocks: OcrBlock[]) {
       used.add(index);
     }
     const confidence = Number(raw.confidence);
-    if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) {
-      throw new ReviewRequiredError(`blind inventory confidence below ${MIN_CONFIDENCE}`);
-    }
+    if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) throw new ReviewRequiredError(`blind inventory confidence below ${MIN_CONFIDENCE}`);
     const headlineAnchor = text(raw.headline_anchor);
     const nonArticleRole = text(raw.non_article_role);
     if (groupKind === 'article') {
       if (!headlineAnchor) throw new StructuralOutputError('article headline_anchor is missing');
-      const anchorFound = indices.some((index) => allowed.get(index)!.block_text.toLowerCase().includes(headlineAnchor.toLowerCase()));
-      if (!anchorFound) throw new StructuralOutputError(`headline_anchor is not present in its group: ${headlineAnchor}`);
+      if (!indices.some((index) => allowed.get(index)!.block_text.toLowerCase().includes(headlineAnchor.toLowerCase()))) {
+        throw new StructuralOutputError(`headline_anchor is not present in its group: ${headlineAnchor}`);
+      }
     } else if (!nonArticleRole) {
       throw new StructuralOutputError('non_article_role is missing');
     }
@@ -400,7 +347,6 @@ function parseInventoryGroups(value: unknown, blocks: OcrBlock[]) {
       reason: text(raw.reason).slice(0, 1200)
     });
   }
-
   if (used.size !== blocks.length) {
     const missing = blocks.map((block) => block.block_index).filter((index) => !used.has(index));
     throw new StructuralOutputError(`block partition incomplete; missing=${missing.join(',')}`);
@@ -409,96 +355,57 @@ function parseInventoryGroups(value: unknown, blocks: OcrBlock[]) {
 }
 
 async function existingBlindPassKinds(jobId: string) {
-  const { data, error } = await supabaseAdmin
-    .from('source_page_article_inventory_pass_runs_v1')
-    .select('pass_kind')
-    .eq('job_id', jobId);
+  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_pass_runs_v1').select('pass_kind').eq('job_id', jobId);
   if (error) throw error;
   return new Set((data || []).map((row) => text(row.pass_kind)).filter(Boolean));
 }
 
-async function runBlindPass(job: ClaimedInventoryJob, input: Awaited<ReturnType<typeof loadBlindInput>>, passKind: BlindPassKind, model: string) {
+async function runBlindPass(job: ClaimedInventoryJob, passKind: BlindPassKind, model: string) {
   await renewLease(job);
-  let lastStructuralError = '';
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const receipt = await callResponsesJson({
-      model,
-      instructions: blindInstructions(passKind),
-      userText: blindUserText(job, input.blocks, passKind, attempt === 2 ? lastStructuralError : undefined),
-      responseFormat: INVENTORY_RESPONSE_FORMAT,
-      image: input.image
-    });
-    try {
-      const groups = parseInventoryGroups(receipt.value, input.blocks);
-      const { data, error } = await supabaseAdmin.rpc('replace_source_page_article_inventory_pass_v1', {
-        p_job_id: job.id,
-        p_lease_token: job.lease_token,
-        p_pass_kind: passKind,
-        p_model: model,
-        p_provider_response_id: receipt.providerResponseId,
-        p_prompt_sha256: receipt.promptSha,
-        p_response_sha256: receipt.responseSha,
-        p_groups: groups
-      });
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      if (error instanceof ReviewRequiredError) throw error;
-      if (error instanceof StructuralOutputError && attempt === 1) {
-        lastStructuralError = error.message;
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new Error('Blind inventory pass exhausted repair attempt.');
-}
-
-async function runRequiredBlindPasses(job: ClaimedInventoryJob, input: Awaited<ReturnType<typeof loadBlindInput>>) {
-  const existing = await existingBlindPassKinds(job.id);
-  const models = blindModels(job);
-  const required: Array<[BlindPassKind, string]> = [
-    ['mapper', models.mapper],
-    ['critic', models.critic]
-  ];
-  if (job.requires_third_pass) required.push(['adjudicator', models.adjudicator]);
-  for (const [passKind, model] of required) {
-    if (!existing.has(passKind)) await runBlindPass(job, input, passKind, model);
-  }
+  const input = await loadBlindInput(job);
+  const receipt = await callResponsesJson({
+    model,
+    instructions: blindInstructions(passKind),
+    userText: blindUserText(job, input.blocks, passKind),
+    responseFormat: INVENTORY_RESPONSE_FORMAT,
+    image: input.image
+  });
+  const groups = parseInventoryGroups(receipt.value, input.blocks);
+  const { data, error } = await supabaseAdmin.rpc('replace_source_page_article_inventory_pass_v1', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token,
+    p_pass_kind: passKind,
+    p_model: model,
+    p_provider_response_id: receipt.providerResponseId,
+    p_prompt_sha256: receipt.promptSha,
+    p_response_sha256: receipt.responseSha,
+    p_groups: groups
+  });
+  if (error) throw error;
+  return data;
 }
 
 async function blindConsensusState(job: ClaimedInventoryJob) {
-  const { data, error } = await supabaseAdmin
-    .from('source_page_article_inventory_groups_v1')
-    .select('pass_kind,group_kind,group_fingerprint')
-    .eq('job_id', job.id);
+  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_groups_v1')
+    .select('pass_kind,group_kind,group_fingerprint').eq('job_id', job.id);
   if (error) throw error;
   const required = job.requires_third_pass ? ['mapper', 'critic', 'adjudicator'] : ['mapper', 'critic'];
   const signatures = new Map<string, string>();
   for (const passKind of required) {
-    const fingerprint = (data || [])
+    signatures.set(passKind, (data || [])
       .filter((row) => text(row.pass_kind) === passKind && text(row.group_kind) === 'article')
-      .map((row) => text(row.group_fingerprint))
-      .sort()
-      .join('|');
-    signatures.set(passKind, fingerprint);
+      .map((row) => text(row.group_fingerprint)).sort().join('|'));
   }
   const uniqueSignatures = new Set(signatures.values());
-  const mapperCount = signatures.get('mapper') ? signatures.get('mapper')!.split('|').filter(Boolean).length : 0;
-  return { agrees: uniqueSignatures.size === 1, articleCount: mapperCount };
+  const mapperSignature = signatures.get('mapper') || '';
+  return { agrees: uniqueSignatures.size === 1, articleCount: mapperSignature ? mapperSignature.split('|').filter(Boolean).length : 0 };
 }
 
 async function loadMappingInput(job: ClaimedInventoryJob) {
   const [{ data: groups, error: groupError }, { data: captures, error: captureError }, { data: candidates, error: candidateError }] = await Promise.all([
-    supabaseAdmin
-      .from('source_page_article_inventory_consensus_groups_v2')
-      .select('group_fingerprint,block_indices,headline_anchor,confidence,group_text')
-      .eq('job_id', job.id)
-      .order('group_fingerprint', { ascending: true }),
-    supabaseAdmin
-      .from('source_page_capture_map_v1')
-      .select('source_image_id')
-      .eq('page_identity_source_image_id', job.page_identity_source_image_id),
+    supabaseAdmin.from('source_page_article_inventory_consensus_groups_v2')
+      .select('group_fingerprint,block_indices,headline_anchor,confidence,group_text').eq('job_id', job.id).order('group_fingerprint', { ascending: true }),
+    supabaseAdmin.from('source_page_capture_map_v1').select('source_image_id').eq('page_identity_source_image_id', job.page_identity_source_image_id),
     supabaseAdmin.rpc('inventory_mapping_candidates_v2', { p_job_id: job.id })
   ]);
   if (groupError) throw groupError;
@@ -506,11 +413,8 @@ async function loadMappingInput(job: ClaimedInventoryJob) {
   if (candidateError) throw candidateError;
   const captureIds = Array.from(new Set((captures || []).map((row) => text(row.source_image_id)).filter(Boolean)));
   if (!captureIds.length) throw new Error('No source captures found for inventory mapping.');
-  const { data: articles, error: articleError } = await supabaseAdmin
-    .from('formal_corpus_articles_v1')
-    .select('id,headline,article_date,source_image_id')
-    .in('source_image_id', captureIds)
-    .order('id', { ascending: true });
+  const { data: articles, error: articleError } = await supabaseAdmin.from('formal_corpus_articles_v1')
+    .select('id,headline,article_date,source_image_id').in('source_image_id', captureIds).order('id', { ascending: true });
   if (articleError) throw articleError;
   return { groups: groups || [], articles: articles || [], candidates: Array.isArray(candidates) ? candidates : [] };
 }
@@ -530,14 +434,9 @@ function mappingInstructions(passKind: MappingPassKind) {
 
 function mappingUserText(job: ClaimedInventoryJob, input: Awaited<ReturnType<typeof loadMappingInput>>, passKind: MappingPassKind) {
   return JSON.stringify({
-    task: 'one_to_one_article_identity_mapping',
-    job_id: job.id,
-    pass_kind: passKind,
-    blind_groups: input.groups,
-    stored_articles: input.articles,
-    reciprocal_headline_candidates: input.candidates,
-    required_group_count: input.groups.length,
-    required_article_count: input.articles.length
+    task: 'one_to_one_article_identity_mapping', job_id: job.id, pass_kind: passKind,
+    blind_groups: input.groups, stored_articles: input.articles, reciprocal_headline_candidates: input.candidates,
+    required_group_count: input.groups.length, required_article_count: input.articles.length
   });
 }
 
@@ -555,46 +454,36 @@ function parseMappings(value: unknown, groupFingerprints: Set<string>, articleId
     const confidence = Number(raw.confidence);
     if (!groupFingerprints.has(groupFingerprint) || seenGroups.has(groupFingerprint)) throw new StructuralOutputError('invalid or duplicate group mapping');
     if (!articleIds.has(articleId) || seenArticles.has(articleId)) throw new StructuralOutputError('invalid or duplicate article mapping');
-    if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) {
-      throw new ReviewRequiredError(`article identity mapping confidence below ${MIN_CONFIDENCE}`);
-    }
+    if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) throw new ReviewRequiredError(`article identity mapping confidence below ${MIN_CONFIDENCE}`);
     seenGroups.add(groupFingerprint);
     seenArticles.add(articleId);
-    rows.push({
-      group_fingerprint: groupFingerprint,
-      article_id: articleId,
-      confidence,
-      rationale: text(raw.rationale).slice(0, 1200)
-    });
+    rows.push({ group_fingerprint: groupFingerprint, article_id: articleId, confidence, rationale: text(raw.rationale).slice(0, 1200) });
   }
-  if (seenGroups.size !== groupFingerprints.size || seenArticles.size !== articleIds.size) {
-    throw new StructuralOutputError('mapping is not bijective');
-  }
+  if (seenGroups.size !== groupFingerprints.size || seenArticles.size !== articleIds.size) throw new StructuralOutputError('mapping is not bijective');
   return rows;
 }
 
 async function existingMappingPassKinds(jobId: string) {
-  const { data, error } = await supabaseAdmin
-    .from('source_page_article_inventory_mapping_pass_runs_v2')
-    .select('pass_kind')
-    .eq('job_id', jobId);
+  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_mapping_pass_runs_v2').select('pass_kind').eq('job_id', jobId);
   if (error) throw error;
   return new Set((data || []).map((row) => text(row.pass_kind)).filter(Boolean));
 }
 
-async function runMappingPass(job: ClaimedInventoryJob, input: Awaited<ReturnType<typeof loadMappingInput>>, passKind: MappingPassKind, model: string) {
+async function runMappingPass(job: ClaimedInventoryJob, passKind: MappingPassKind, model: string) {
   await renewLease(job);
+  const input = await loadMappingInput(job);
+  if (input.groups.length !== job.existing_article_count || input.articles.length !== job.existing_article_count) {
+    throw new ReviewRequiredError('Blind group/article counts are not equal before identity mapping.');
+  }
   const receipt = await callResponsesJson({
     model,
     instructions: mappingInstructions(passKind),
     userText: mappingUserText(job, input, passKind),
     responseFormat: MAPPING_RESPONSE_FORMAT
   });
-  const rows = parseMappings(
-    receipt.value,
+  const rows = parseMappings(receipt.value,
     new Set(input.groups.map((row) => text(row.group_fingerprint)).filter(Boolean)),
-    new Set(input.articles.map((row) => text(row.id)).filter(Boolean))
-  );
+    new Set(input.articles.map((row) => text(row.id)).filter(Boolean)));
   const { data, error } = await supabaseAdmin.rpc('replace_inventory_mapping_pass_v2', {
     p_job_id: job.id,
     p_lease_token: job.lease_token,
@@ -609,26 +498,9 @@ async function runMappingPass(job: ClaimedInventoryJob, input: Awaited<ReturnTyp
   return data;
 }
 
-async function ensureMappingProof(job: ClaimedInventoryJob) {
-  const { data: auto, error: autoError } = await supabaseAdmin.rpc('resolve_inventory_mapping_auto_v2', { p_job_id: job.id });
-  if (autoError) throw autoError;
-  const unresolved = isRecord(auto) ? Number(auto.unresolved || 0) : job.existing_article_count;
-  if (unresolved <= 0) return;
-
-  const input = await loadMappingInput(job);
-  if (input.groups.length !== job.existing_article_count || input.articles.length !== job.existing_article_count) {
-    throw new ReviewRequiredError('Blind group/article counts are not equal before identity mapping.');
-  }
-  const existing = await existingMappingPassKinds(job.id);
-  const models = mappingModels();
-  if (!existing.has('mapper')) await runMappingPass(job, input, 'mapper', models.mapper);
-  if (!existing.has('critic')) await runMappingPass(job, input, 'critic', models.critic);
-}
-
 async function finalize(job: ClaimedInventoryJob) {
   const { data, error } = await supabaseAdmin.rpc('finalize_source_page_article_inventory_job_v1', {
-    p_job_id: job.id,
-    p_lease_token: job.lease_token
+    p_job_id: job.id, p_lease_token: job.lease_token
   });
   if (error) throw error;
   return data;
@@ -636,9 +508,7 @@ async function finalize(job: ClaimedInventoryJob) {
 
 async function markReview(job: ClaimedInventoryJob, reason: string) {
   const { data, error } = await supabaseAdmin.rpc('review_source_page_article_inventory_job_v1', {
-    p_job_id: job.id,
-    p_lease_token: job.lease_token,
-    p_reason: reason
+    p_job_id: job.id, p_lease_token: job.lease_token, p_reason: reason
   });
   if (error) throw error;
   return data;
@@ -646,14 +516,9 @@ async function markReview(job: ClaimedInventoryJob, reason: string) {
 
 async function persistFailure(job: ClaimedInventoryJob, error: unknown) {
   const message = errorMessage(error);
-  const retryable = !message.includes('is not configured')
-    && !message.includes('must be configured and distinct')
-    && !message.includes('freeze_stale');
-  const { data, error: persistenceError } = await supabaseAdmin.rpc('fail_source_page_article_inventory_job_v1', {
-    p_job_id: job.id,
-    p_lease_token: job.lease_token,
-    p_error_message: message,
-    p_retryable: retryable
+  const retryable = !message.includes('is not configured') && !message.includes('must be configured and distinct') && !message.includes('freeze_stale');
+  const { data, error: persistenceError } = await supabaseAdmin.rpc('fail_source_page_article_inventory_job_v2', {
+    p_job_id: job.id, p_lease_token: job.lease_token, p_error_message: message, p_retryable: retryable
   });
   if (persistenceError) throw persistenceError;
   return data;
@@ -671,62 +536,59 @@ export async function getArticleInventoryStatus() {
     const status = text(row.status) || 'unknown';
     counts[status] = (counts[status] || 0) + 1;
   }
-  return {
-    gate,
-    counts,
-    third_pass_jobs: (jobs || []).filter((row) => row.requires_third_pass === true).length
-  };
+  return { gate, counts, third_pass_jobs: (jobs || []).filter((row) => row.requires_third_pass === true).length };
 }
 
 export async function runArticleInventoryWorkerStep() {
   const job = await claimOneJob();
-  if (!job) return { claimed: 0, completed: 0, needs_review: 0, discovery_required: 0, failed: 0 };
+  if (!job) return { claimed: 0, stage: 'idle', completed: 0, needs_review: 0, discovery_required: 0, failed: 0 };
   try {
-    const blindInput = await loadBlindInput(job);
-    await runRequiredBlindPasses(job, blindInput);
+    const blindPasses = await existingBlindPassKinds(job.id);
+    const blind = blindModels(job);
+    if (!blindPasses.has('mapper')) {
+      await runBlindPass(job, 'mapper', blind.mapper);
+      return { claimed: 1, stage: 'blind_mapper', job_id: job.id, yield: await yieldJob(job, 'blind_mapper') };
+    }
+    if (!blindPasses.has('critic')) {
+      await runBlindPass(job, 'critic', blind.critic);
+      return { claimed: 1, stage: 'blind_critic', job_id: job.id, yield: await yieldJob(job, 'blind_critic') };
+    }
+    if (job.requires_third_pass && !blindPasses.has('adjudicator')) {
+      await runBlindPass(job, 'adjudicator', blind.adjudicator);
+      return { claimed: 1, stage: 'blind_adjudicator', job_id: job.id, yield: await yieldJob(job, 'blind_adjudicator') };
+    }
 
     const consensus = await blindConsensusState(job);
     if (!consensus.agrees || consensus.articleCount !== job.existing_article_count) {
       const result = await finalize(job);
-      const status = isRecord(result) ? text(result.status) : '';
-      return {
-        claimed: 1,
-        completed: status === 'completed' ? 1 : 0,
-        needs_review: status === 'needs_review' ? 1 : 0,
-        discovery_required: status === 'discovery_required' ? 1 : 0,
-        failed: 0,
-        job_id: job.id,
-        result
-      };
+      return { claimed: 1, stage: 'blind_finalize', job_id: job.id, result };
     }
 
-    await ensureMappingProof(job);
+    const { data: auto, error: autoError } = await supabaseAdmin.rpc('resolve_inventory_mapping_auto_v2', { p_job_id: job.id });
+    if (autoError) throw autoError;
+    const unresolved = isRecord(auto) ? Number(auto.unresolved || 0) : job.existing_article_count;
+    if (unresolved <= 0) {
+      const result = await finalize(job);
+      return { claimed: 1, stage: 'auto_mapping_finalize', job_id: job.id, result };
+    }
+
+    const mappingPasses = await existingMappingPassKinds(job.id);
+    const mapping = mappingModels();
+    if (!mappingPasses.has('mapper')) {
+      await runMappingPass(job, 'mapper', mapping.mapper);
+      return { claimed: 1, stage: 'mapping_mapper', job_id: job.id, yield: await yieldJob(job, 'mapping_mapper') };
+    }
+    if (!mappingPasses.has('critic')) {
+      await runMappingPass(job, 'critic', mapping.critic);
+      return { claimed: 1, stage: 'mapping_critic', job_id: job.id, yield: await yieldJob(job, 'mapping_critic') };
+    }
+
     const result = await finalize(job);
-    const status = isRecord(result) ? text(result.status) : '';
-    return {
-      claimed: 1,
-      completed: status === 'completed' ? 1 : 0,
-      needs_review: status === 'needs_review' ? 1 : 0,
-      discovery_required: status === 'discovery_required' ? 1 : 0,
-      failed: 0,
-      job_id: job.id,
-      result
-    };
+    return { claimed: 1, stage: 'mapping_finalize', job_id: job.id, result };
   } catch (error) {
     if (error instanceof ReviewRequiredError) {
-      const result = await markReview(job, error.message);
-      return { claimed: 1, completed: 0, needs_review: 1, discovery_required: 0, failed: 0, job_id: job.id, result };
+      return { claimed: 1, stage: 'needs_review', job_id: job.id, result: await markReview(job, error.message) };
     }
-    const result = await persistFailure(job, error);
-    return {
-      claimed: 1,
-      completed: 0,
-      needs_review: 0,
-      discovery_required: 0,
-      failed: 1,
-      job_id: job.id,
-      error: errorMessage(error),
-      result
-    };
+    return { claimed: 1, stage: 'failed', job_id: job.id, error: errorMessage(error), result: await persistFailure(job, error) };
   }
 }

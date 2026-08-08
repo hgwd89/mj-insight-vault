@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
+import { uploadOriginalImageDirect } from '@/lib/originalUploadClient';
 import {
   clearUploadDraft,
   fileToStoredDraftFile,
@@ -12,7 +13,7 @@ import {
   type UploadDraft
 } from '@/lib/uploadDraftStore';
 
-const ACTIVE_STATUSES = new Set(['圧縮中', '保存中', 'OCR中', '再試行中']);
+const ACTIVE_STATUSES = new Set(['原画像保存中', '圧縮中', '保存中', 'OCR中', '再試行中']);
 const FINISHED_STATUSES = new Set(['完了', 'OCR待ち', '失敗']);
 const MAX_ATTEMPTS = 3;
 const OCR_MAX_IMAGE_SIDE = 4200;
@@ -315,14 +316,21 @@ export function UploadFormStable() {
   }
 
   async function uploadImage(batchId: string, file: File, index: number) {
-    patchRow(index, { status: '圧縮中' });
+    patchRow(index, { status: '原画像保存中', note: `${(file.size / 1024 / 1024).toFixed(1)}MB / 原画像を無加工保存` });
+    const original = await uploadOriginalImageDirect({ password, batchId, file, index });
+
+    patchRow(index, { status: '圧縮中', note: '原画像保存済み / OCR用派生画像を生成中' });
     const out = await shrink(file);
     const form = new FormData();
     form.set('batch_id', batchId);
     form.set('index', String(index + 1));
     form.set('article_date', date.trim());
     form.set('file', out);
-    patchRow(index, { status: '保存中', note: `${(out.size / 1024 / 1024).toFixed(1)}MB / OCR高画質` });
+    form.set('original_storage_path', original.path);
+    form.set('original_file_name', original.originalFileName);
+    form.set('original_mime_type', original.originalMimeType);
+    form.set('original_size_bytes', String(original.originalSizeBytes));
+    patchRow(index, { status: '保存中', note: `原画像保存済み / OCR派生 ${(out.size / 1024 / 1024).toFixed(1)}MB` });
     const res = await fetch('/api/upload/image', { method: 'POST', headers: { 'x-app-password': password }, body: form });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || '保存に失敗しました');
@@ -359,7 +367,7 @@ export function UploadFormStable() {
     setBatchIdState('');
     setRecoverableDraft(null);
     setRows(targetFiles.map((f) => ({ name: f.name, status: '待機' })));
-    setMessage('まとめて処理中です。通常エラーは最大3回まで自動再試行します。API利用枠エラーは再試行せず停止します。');
+    setMessage('まとめて処理中です。原画像を無加工保存した後、OCR用派生画像を別生成します。通常エラーは最大3回まで自動再試行します。API利用枠エラーは再試行せず停止します。');
 
     let localBatchId = '';
     let saved = 0;
@@ -449,7 +457,7 @@ export function UploadFormStable() {
 
   return <div className="card p-5">
     <h1 className="text-xl font-black">MJ画像アップロード</h1>
-    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、OCRと記事候補化まで実行します。失敗した画像は画面に残るので、その分だけ再アップロードできます。選択中の画像と進行状態はブラウザ内に一時保存します。</p>
+    <p className="mt-2 text-sm leading-6 text-zinc-600">画像をまとめて選択し、原画像保存・OCR・記事候補化まで実行します。失敗した画像は画面に残るので、その分だけ再アップロードできます。選択中の画像と進行状態はブラウザ内に一時保存します。</p>
     <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
       <b>使い方</b><br />
       1. 紙面の日付が分かる場合は「記事日付」に入力<br />
@@ -457,7 +465,7 @@ export function UploadFormStable() {
       3. 同じファイル名がある場合は不要な方を外す<br />
       4. 「まとめてアップロードして記事化」を押す<br />
       5. 失敗した画像がある場合は、その画像だけが残るので再度アップロード<br />
-      <span className="text-zinc-500">OCRは最大辺{OCR_MAX_IMAGE_SIDE}px・JPEG品質{OCR_JPEG_QUALITY}の高画質設定で保存します。</span>
+      <span className="text-zinc-500">原画像は無加工で保存し、OCRには最大辺{OCR_MAX_IMAGE_SIDE}px・JPEG品質{OCR_JPEG_QUALITY}の派生画像を別途使用します。</span>
     </div>
 
     {recoverableDraft && <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">

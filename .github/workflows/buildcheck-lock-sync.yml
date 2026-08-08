@@ -1,0 +1,40 @@
+name: buildcheck package lock sync
+
+on:
+  push:
+    branches:
+      - audit/verified-pipeline-v10-buildcheck
+    paths:
+      - mj-insight-vault-mvp/mj-insight-vault/package.json
+      - .github/workflows/buildcheck-lock-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Regenerate package lock
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Commit lock if changed
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: |
+          if git diff --quiet -- package-lock.json; then
+            echo "package-lock.json already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "sync package lock for verified pipeline [skip ci]"
+          git push origin HEAD:${GITHUB_REF_NAME}

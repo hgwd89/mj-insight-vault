@@ -313,7 +313,7 @@ async function reviewJobCounts(runId: string) {
 
 export async function getVerifiedDuplicateAuditStatus() {
   const [{ data: gate, error: gateError }, run] = await Promise.all([
-    supabaseAdmin.from('formal_corpus_duplicate_gate_v6').select('*').maybeSingle(),
+    supabaseAdmin.from('source_grounded_duplicate_gate_v6').select('*').maybeSingle(),
     readLatestRun()
   ]);
   if (gateError) throw gateError;
@@ -333,7 +333,7 @@ export async function runVerifiedDuplicateAuditWorkerStep() {
   const population = await populateIfNeeded(current.run as JsonRecord);
   if (population) return { ...population, external_calls: 0 };
 
-  let run = current.run as JsonRecord;
+  const run = current.run as JsonRecord;
   if (text(run.status) === 'completed') {
     return {
       stage: 'already_completed',
@@ -360,10 +360,12 @@ export async function runVerifiedDuplicateAuditWorkerStep() {
     return { stage: 'finalized', run_id: text(run.id), result: data, external_calls: 0 };
   }
 
+  let externalCalls = 0;
   try {
     const input = await getReviewInput(job);
     const models = reviewModels();
     const model = job.active_pass_kind === 'reviewer' ? models.reviewer : models.critic;
+    externalCalls = 1;
     const receipt = await callResponsesJson({
       model,
       instructions: reviewInstructions(job.active_pass_kind),
@@ -379,7 +381,7 @@ export async function runVerifiedDuplicateAuditWorkerStep() {
       disposition: decision.disposition,
       confidence: decision.confidence,
       result: stored,
-      external_calls: 1
+      external_calls: externalCalls
     };
   } catch (error) {
     const result = await failJob(job, error);
@@ -390,7 +392,7 @@ export async function runVerifiedDuplicateAuditWorkerStep() {
       pass_kind: job.active_pass_kind,
       error: errorMessage(error),
       result,
-      external_calls: 1
+      external_calls: externalCalls
     };
   }
 }

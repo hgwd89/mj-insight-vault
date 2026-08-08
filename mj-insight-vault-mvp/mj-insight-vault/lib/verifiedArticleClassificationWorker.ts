@@ -6,6 +6,13 @@ type JsonRecord = Record<string, unknown>;
 type ClassificationPassKind = 'classifier' | 'critic';
 
 class StructuralOutputError extends Error {}
+class ProviderError extends Error {
+  retryable: boolean;
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.retryable = retryable;
+  }
+}
 
 const CALL_TIMEOUT_MS = 150_000;
 
@@ -84,7 +91,7 @@ function classificationModels() {
   const fallbackCritic = classifier === 'gpt-4o' ? 'gpt-4.1' : 'gpt-4o';
   const critic = process.env.OPENAI_CLASSIFICATION_CRITIC_MODEL?.trim() || fallbackCritic;
   if (!classifier || !critic || classifier === critic) {
-    throw new Error('Classification classifier and critic models must be configured and distinct.');
+    throw new StructuralOutputError('Classification classifier and critic models must be configured and distinct.');
   }
   return { classifier, critic };
 }
@@ -119,7 +126,7 @@ function userText(input: { articleId: string; verifiedText: string; catalog: unk
 
 async function callResponsesJson(input: { model: string; instructions: string; userText: string }) {
   const apiKey = getOpenAIKey();
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
+  if (!apiKey) throw new StructuralOutputError('OPENAI_API_KEY is not configured.');
   const promptSha = sha256([input.model, input.instructions, input.userText].join('\n---\n'));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
@@ -138,17 +145,37 @@ async function callResponsesJson(input: { model: string; instructions: string; u
       })
     });
     const raw = await res.text();
-    if (!res.ok) throw new Error(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${raw.slice(0, 2000)}`);
-    const responseJson = JSON.parse(raw) as JsonRecord;
+    if (!res.ok) {
+      const retryable = res.status === 408 || res.status === 409 || res.status === 429 || res.status >= 500;
+      throw new ProviderError(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${raw.slice(0, 2000)}`, retryable);
+    }
+    let responseJson: JsonRecord;
+    try {
+      responseJson = JSON.parse(raw) as JsonRecord;
+    } catch {
+      throw new ProviderError('OpenAI classification response JSON is malformed.', true);
+    }
     const providerResponseId = text(responseJson.id);
     const outputText = extractResponseText(responseJson);
-    if (!providerResponseId || !outputText) throw new Error('OpenAI classification receipt or output_text is missing.');
+    if (!providerResponseId || !outputText) throw new ProviderError('OpenAI classification receipt or output_text is missing.', true);
+    let value: unknown;
+    try {
+      value = JSON.parse(outputText) as unknown;
+    } catch {
+      throw new StructuralOutputError('OpenAI classification structured output is invalid JSON.');
+    }
     return {
-      value: JSON.parse(outputText) as unknown,
+      value,
       providerResponseId,
       promptSha,
       responseSha: sha256(raw)
     };
+  } catch (error) {
+    if (error instanceof ProviderError || error instanceof StructuralOutputError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new ProviderError('OpenAI classification request timed out.', true);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -220,12 +247,12 @@ async function claimOneJob() {
     passKind: text(row.active_pass_kind) as ClassificationPassKind,
     leaseToken: text(row.lease_token)
   };
-  if (!job.id || !job.articleId || !job.leaseToken || !['classifier', 'critic'].includes(job.passKind)) throw new Error('Invalid claimed classification job.');
+  if (!job.id || !job.articleId || !job.leaseToken || !['classifier', 'critic'].includes(job.passKind)) throw new StructuralOutputError('Invalid claimed classification job.');
   return job;
 }
 
 async function getInput(job: Awaited<ReturnType<typeof claimOneJob>>) {
-  if (!job) throw new Error('Classification job is missing.');
+  if (!job) throw new StructuralOutputError('Classification job is missing.');
   const { data, error } = await supabaseAdmin.rpc('get_article_classification_input_v6', { p_job_id: job.id, p_lease_token: job.leaseToken });
   if (error) throw error;
   if (!isRecord(data) || !Array.isArray(data.category_catalog)) throw new StructuralOutputError('classification input is malformed');
@@ -258,14 +285,7 @@ async function storePass(job: NonNullable<Awaited<ReturnType<typeof claimOneJob>
 
 async function failJob(job: NonNullable<Awaited<ReturnType<typeof claimOneJob>>>, error: unknown) {
   const message = errorMessage(error);
-  const retryable = !(error instanceof StructuralOutputError)
-    && !message.includes('is not configured')
-    && !message.includes('must be configured and distinct')
-    && !message.includes('classification_v6_input_stale')
-    && !message.includes('classification_v6_membership_evidence_invalid')
-    && !message.includes('classification_v6_profile_anchor_not_verified')
-    && !message.includes('classification_v6_primary_membership_invalid')
-    && !message.includes('classification_v6_unknown_category');
+  const retryable = error instanceof ProviderError ? error.retryable : false;
   const { data, error: persistenceError } = await supabaseAdmin.rpc('fail_article_classification_job_v6', {
     p_job_id: job.id,
     p_lease_token: job.leaseToken,

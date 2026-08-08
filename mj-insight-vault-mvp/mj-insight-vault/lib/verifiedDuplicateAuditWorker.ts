@@ -18,6 +18,13 @@ type ClaimedReviewJob = {
 };
 
 class StructuralOutputError extends Error {}
+class ProviderError extends Error {
+  retryable: boolean;
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.retryable = retryable;
+  }
+}
 
 const CALL_TIMEOUT_MS = 150_000;
 const MIN_DECISION_CONFIDENCE = 0.85;
@@ -76,7 +83,7 @@ function reviewModels() {
   const fallbackCritic = reviewer === 'gpt-4o' ? 'gpt-4.1' : 'gpt-4o';
   const critic = process.env.OPENAI_DUPLICATE_CRITIC_MODEL?.trim() || fallbackCritic;
   if (!reviewer || !critic || reviewer === critic) {
-    throw new Error('Duplicate reviewer and critic models must be configured and distinct.');
+    throw new StructuralOutputError('Duplicate reviewer and critic models must be configured and distinct.');
   }
   return { reviewer, critic };
 }
@@ -117,7 +124,7 @@ async function callResponsesJson(input: {
   userText: string;
 }) {
   const apiKey = getOpenAIKey();
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
+  if (!apiKey) throw new StructuralOutputError('OPENAI_API_KEY is not configured.');
 
   const promptSha = sha256([input.model, input.instructions, input.userText].join('\n---\n'));
   const controller = new AbortController();
@@ -140,17 +147,37 @@ async function callResponsesJson(input: {
       })
     });
     const raw = await res.text();
-    if (!res.ok) throw new Error(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${raw.slice(0, 2000)}`);
-    const responseJson = JSON.parse(raw) as JsonRecord;
+    if (!res.ok) {
+      const retryable = res.status === 408 || res.status === 409 || res.status === 429 || res.status >= 500;
+      throw new ProviderError(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${raw.slice(0, 2000)}`, retryable);
+    }
+    let responseJson: JsonRecord;
+    try {
+      responseJson = JSON.parse(raw) as JsonRecord;
+    } catch {
+      throw new ProviderError('OpenAI duplicate review response JSON is malformed.', true);
+    }
     const providerResponseId = text(responseJson.id);
     const outputText = extractResponseText(responseJson);
-    if (!providerResponseId || !outputText) throw new Error('OpenAI duplicate review receipt or output_text is missing.');
+    if (!providerResponseId || !outputText) throw new ProviderError('OpenAI duplicate review receipt or output_text is missing.', true);
+    let value: unknown;
+    try {
+      value = JSON.parse(outputText) as unknown;
+    } catch {
+      throw new StructuralOutputError('OpenAI duplicate review structured output is invalid JSON.');
+    }
     return {
-      value: JSON.parse(outputText) as unknown,
+      value,
       providerResponseId,
       promptSha,
       responseSha: sha256(raw)
     };
+  } catch (error) {
+    if (error instanceof ProviderError || error instanceof StructuralOutputError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new ProviderError('OpenAI duplicate review request timed out.', true);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -205,7 +232,7 @@ async function ensureCurrentRun() {
   const { data: runId, error: createError } = await supabaseAdmin.rpc('create_source_grounded_duplicate_audit_run_v6');
   if (createError) throw createError;
   const id = text(runId);
-  if (!id) throw new Error('Duplicate audit run creation returned no id.');
+  if (!id) throw new StructuralOutputError('Duplicate audit run creation returned no id.');
   const { data: run, error: runError } = await supabaseAdmin
     .from('source_grounded_duplicate_audit_runs_v5')
     .select('*')
@@ -239,7 +266,7 @@ async function claimOneReviewJob() {
     lease_token: text(row.lease_token)
   };
   if (!job.id || !job.run_id || !job.article_id_a || !job.article_id_b || !job.lease_token || !['reviewer', 'critic'].includes(job.active_pass_kind)) {
-    throw new Error('Invalid claimed duplicate review job.');
+    throw new StructuralOutputError('Invalid claimed duplicate review job.');
   }
   return job;
 }
@@ -282,11 +309,7 @@ async function storeDecision(job: ClaimedReviewJob, model: string, receipt: Awai
 
 async function failJob(job: ClaimedReviewJob, error: unknown) {
   const message = errorMessage(error);
-  const retryable = !(error instanceof StructuralOutputError)
-    && !message.includes('is not configured')
-    && !message.includes('must be configured and distinct')
-    && !message.includes('input_stale')
-    && !message.includes('verified_text_missing');
+  const retryable = error instanceof ProviderError ? error.retryable : false;
   const { data, error: persistenceError } = await supabaseAdmin.rpc('fail_source_grounded_duplicate_review_job_v7', {
     p_job_id: job.id,
     p_lease_token: job.lease_token,
@@ -346,7 +369,7 @@ export async function runVerifiedDuplicateAuditWorkerStep() {
     };
   }
   if (text(run.status) !== 'reviewing') {
-    throw new Error(`Duplicate audit run is in unexpected status: ${text(run.status)}`);
+    throw new StructuralOutputError(`Duplicate audit run is in unexpected status: ${text(run.status)}`);
   }
 
   const job = await claimOneReviewJob();

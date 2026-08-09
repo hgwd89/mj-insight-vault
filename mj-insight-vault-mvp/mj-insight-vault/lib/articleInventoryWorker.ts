@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
-import { getOpenAIKey, TEXT_MODEL, VISION_MODEL } from '@/lib/openai';
+import { supabaseAdmin, STORAGE_BUCKET } from './supabaseAdmin';
+import { getOpenAIKey, TEXT_MODEL, VISION_MODEL } from './openai';
 
 type JsonRecord = Record<string, unknown>;
 type BlindPassKind = 'mapper' | 'critic' | 'adjudicator';
@@ -40,23 +40,36 @@ type InventoryGroup = {
   reason: string;
 };
 
-type MappingRow = {
-  group_fingerprint: string;
+type ArticleCandidate = {
+  candidate_key: string;
+  article_ordinal: number;
+  headline_anchor: string;
+  group_block_indices: number[];
+};
+
+type FrozenArticle = {
   article_id: string;
+  article_ordinal: number;
+  title: string;
+  body: string;
+  source_month: string;
+};
+
+type MappingRow = {
+  candidate_key: string;
+  article_id: string;
+  decision: 'match';
   confidence: number;
-  rationale: string;
+  reason: string;
 };
 
 class ReviewRequiredError extends Error {}
-class StructuralOutputError extends Error {}
 
-const CALL_TIMEOUT_MS = 150_000;
-const LEASE_SECONDS = 360;
-const MIN_CONFIDENCE = 0.8;
+const LEASE_SECONDS = 240;
+const REVIEW_ATTEMPT_LIMIT = 2;
 
-const INVENTORY_RESPONSE_FORMAT = {
-  type: 'json_schema',
-  name: 'mj_blind_page_article_inventory',
+const blindSchema = {
+  name: 'blind_article_inventory',
   strict: true,
   schema: {
     type: 'object',
@@ -84,9 +97,8 @@ const INVENTORY_RESPONSE_FORMAT = {
   }
 } as const;
 
-const MAPPING_RESPONSE_FORMAT = {
-  type: 'json_schema',
-  name: 'mj_inventory_article_mapping',
+const mappingSchema = {
+  name: 'inventory_article_mapping',
   strict: true,
   schema: {
     type: 'object',
@@ -95,16 +107,16 @@ const MAPPING_RESPONSE_FORMAT = {
     properties: {
       mappings: {
         type: 'array',
-        minItems: 1,
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['group_fingerprint', 'article_id', 'confidence', 'rationale'],
+          required: ['candidate_key', 'article_id', 'decision', 'confidence', 'reason'],
           properties: {
-            group_fingerprint: { type: 'string' },
+            candidate_key: { type: 'string' },
             article_id: { type: 'string' },
+            decision: { type: 'string', enum: ['match'] },
             confidence: { type: 'number', minimum: 0, maximum: 1 },
-            rationale: { type: 'string' }
+            reason: { type: 'string' }
           }
         }
       }
@@ -112,485 +124,467 @@ const MAPPING_RESPONSE_FORMAT = {
   }
 } as const;
 
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function text(value: unknown) {
-  return value === null || value === undefined ? '' : String(value).trim();
-}
-
-function sha256(value: string | Buffer) {
+function sha256(value: string) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (isRecord(error)) return text(error.message || error.error || error.details || error);
-  return text(error) || 'article inventory worker failed';
+function asRecord(value: unknown): JsonRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected object response.');
+  return value as JsonRecord;
 }
 
-function extractResponseText(responseJson: unknown) {
-  const json = responseJson as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
-  if (typeof json.output_text === 'string' && json.output_text.trim()) return json.output_text.trim();
-  const parts: string[] = [];
-  for (const item of json.output || []) {
-    for (const content of item.content || []) {
-      if (typeof content.text === 'string' && content.text.trim()) parts.push(content.text.trim());
+function asString(value: unknown, field: string) {
+  if (typeof value !== 'string') throw new Error(`Expected string: ${field}`);
+  return value;
+}
+
+function asNumber(value: unknown, field: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`Expected finite number: ${field}`);
+  return value;
+}
+
+function asArray(value: unknown, field: string) {
+  if (!Array.isArray(value)) throw new Error(`Expected array: ${field}`);
+  return value;
+}
+
+function requireDistinctModels(models: string[], context: string) {
+  if (new Set(models).size !== models.length) {
+    throw new ReviewRequiredError(`${context}: independent_passes_require_distinct_models`);
+  }
+}
+
+function parseBlindGroups(parsed: JsonRecord, blocks: OcrBlock[]): InventoryGroup[] {
+  const rows = asArray(parsed.groups, 'groups');
+  if (rows.length === 0) throw new ReviewRequiredError('Blind inventory returned zero groups.');
+  const blockMap = new Map(blocks.map((block) => [block.block_index, block]));
+  const seen = new Set<number>();
+  const groups: InventoryGroup[] = rows.map((raw, index) => {
+    const item = asRecord(raw);
+    const groupKind = asString(item.group_kind, `groups[${index}].group_kind`);
+    if (groupKind !== 'article' && groupKind !== 'non_article') throw new Error('Invalid group_kind.');
+    const indices = asArray(item.block_indices, `groups[${index}].block_indices`).map((value) => {
+      const n = asNumber(value, 'block_index');
+      if (!Number.isInteger(n)) throw new Error('block_index must be integer.');
+      if (!blockMap.has(n)) throw new ReviewRequiredError(`Unknown block index ${n}.`);
+      if (seen.has(n)) throw new ReviewRequiredError(`Block ${n} was assigned to multiple groups.`);
+      seen.add(n);
+      return n;
+    });
+    if (indices.length === 0 || new Set(indices).size !== indices.length) throw new ReviewRequiredError('Invalid group block partition.');
+    const headlineAnchor = asString(item.headline_anchor, 'headline_anchor').trim();
+    const nonArticleRole = asString(item.non_article_role, 'non_article_role').trim();
+    const confidence = asNumber(item.confidence, 'confidence');
+    const reason = asString(item.reason, 'reason').trim();
+    if (confidence < 0.8) throw new ReviewRequiredError(`Low-confidence blind inventory group: ${confidence}.`);
+    if (groupKind === 'article') {
+      if (!headlineAnchor) throw new ReviewRequiredError('Article group missing headline_anchor.');
+      const normalizedAnchor = headlineAnchor.replace(/\s+/g, '');
+      const anchorPresent = indices.some((blockIndex) =>
+        (blockMap.get(blockIndex)?.block_text || '').replace(/\s+/g, '').includes(normalizedAnchor)
+      );
+      if (!anchorPresent) throw new ReviewRequiredError('Article headline_anchor is not a substring of its OCR blocks.');
+    } else if (!nonArticleRole) {
+      throw new ReviewRequiredError('Non-article group missing role.');
+    }
+    return {
+      group_kind: groupKind,
+      block_indices: indices,
+      headline_anchor: headlineAnchor,
+      non_article_role: nonArticleRole,
+      confidence,
+      reason
+    };
+  });
+  if (seen.size !== blocks.length) {
+    const missing = blocks.filter((block) => !seen.has(block.block_index)).map((block) => block.block_index);
+    throw new ReviewRequiredError(`Blind inventory omitted blocks: ${missing.slice(0, 20).join(',')}`);
+  }
+  return groups;
+}
+
+function parseMappings(parsed: JsonRecord, candidates: ArticleCandidate[], articles: FrozenArticle[]): MappingRow[] {
+  const rows = asArray(parsed.mappings, 'mappings');
+  const candidateKeys = new Set(candidates.map((candidate) => candidate.candidate_key));
+  const articleIds = new Set(articles.map((article) => article.article_id));
+  const seenCandidates = new Set<string>();
+  const seenArticles = new Set<string>();
+  const mappings = rows.map((raw, index) => {
+    const item = asRecord(raw);
+    const candidateKey = asString(item.candidate_key, `mappings[${index}].candidate_key`);
+    const articleId = asString(item.article_id, `mappings[${index}].article_id`);
+    const decision = asString(item.decision, `mappings[${index}].decision`);
+    const confidence = asNumber(item.confidence, `mappings[${index}].confidence`);
+    const reason = asString(item.reason, `mappings[${index}].reason`).trim();
+    if (decision !== 'match') throw new ReviewRequiredError('Mapping pass returned a non-match decision.');
+    if (!candidateKeys.has(candidateKey) || !articleIds.has(articleId)) throw new ReviewRequiredError('Mapping pass referenced unknown identities.');
+    if (confidence < 0.8) throw new ReviewRequiredError(`Low-confidence mapping: ${confidence}.`);
+    if (seenCandidates.has(candidateKey) || seenArticles.has(articleId)) throw new ReviewRequiredError('Mapping pass is not bijective.');
+    seenCandidates.add(candidateKey);
+    seenArticles.add(articleId);
+    return { candidate_key: candidateKey, article_id: articleId, decision: 'match' as const, confidence, reason };
+  });
+  if (mappings.length !== candidates.length || mappings.length !== articles.length) {
+    throw new ReviewRequiredError('Mapping pass did not cover the full candidate/article bijection.');
+  }
+  return mappings;
+}
+
+function responseOutputText(payload: JsonRecord) {
+  if (typeof payload.output_text === 'string' && payload.output_text.trim()) return payload.output_text;
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  for (const itemRaw of output) {
+    const item = itemRaw && typeof itemRaw === 'object' ? (itemRaw as JsonRecord) : {};
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const partRaw of content) {
+      const part = partRaw && typeof partRaw === 'object' ? (partRaw as JsonRecord) : {};
+      if (typeof part.text === 'string' && part.text.trim()) return part.text;
     }
   }
-  return parts.join('\n').trim();
+  throw new Error('OpenAI response missing output text.');
 }
 
-function blindModels(job: ClaimedInventoryJob) {
-  const mapper = process.env.OPENAI_INVENTORY_MAPPER_MODEL?.trim() || VISION_MODEL;
-  const critic = process.env.OPENAI_INVENTORY_CRITIC_MODEL?.trim() || 'gpt-4o';
-  const adjudicator = process.env.OPENAI_INVENTORY_ADJUDICATOR_MODEL?.trim() || 'gpt-4o-mini';
-  if (!mapper || !critic || mapper === critic) throw new Error('Inventory mapper and critic models must be configured and distinct.');
-  if (job.requires_third_pass && (!adjudicator || adjudicator === mapper || adjudicator === critic)) {
-    throw new Error('Inventory adjudicator model must be configured and distinct for third-pass pages.');
-  }
-  return { mapper, critic, adjudicator };
-}
-
-function mappingModels() {
-  const mapper = process.env.OPENAI_INVENTORY_MAPPING_MAPPER_MODEL?.trim() || TEXT_MODEL;
-  const critic = process.env.OPENAI_INVENTORY_MAPPING_CRITIC_MODEL?.trim() || (mapper === 'gpt-4o' ? 'gpt-4.1' : 'gpt-4o');
-  if (!mapper || !critic || mapper === critic) throw new Error('Inventory mapping mapper and critic models must be configured and distinct.');
-  return { mapper, critic };
-}
-
-async function callResponsesJson(input: {
+async function callStructured(args: {
   model: string;
-  instructions: string;
-  userText: string;
-  responseFormat: typeof INVENTORY_RESPONSE_FORMAT | typeof MAPPING_RESPONSE_FORMAT;
-  image?: { buffer: Buffer; mimeType: string };
+  system: string;
+  user: string;
+  schema: typeof blindSchema | typeof mappingSchema;
 }) {
   const apiKey = getOpenAIKey();
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
-  const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: input.userText }];
-  if (input.image) {
-    content.push({
-      type: 'input_image',
-      image_url: `data:${input.image.mimeType || 'image/jpeg'};base64,${input.image.buffer.toString('base64')}`,
-      detail: 'high'
-    });
-  }
-  const promptSha = sha256([input.model, input.instructions, input.userText, input.image ? `image_sha256=${sha256(input.image.buffer)}` : ''].join('\n---\n'));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
-  try {
-    const res = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: input.model,
-        store: false,
-        max_output_tokens: 12000,
-        instructions: input.instructions,
-        input: [{ role: 'user', content }],
-        text: { format: input.responseFormat }
-      })
-    });
-    const raw = await res.text();
-    if (!res.ok) throw new Error(`OpenAI Responses API failed: ${res.status} ${res.statusText} ${raw.slice(0, 2000)}`);
-    const responseJson = JSON.parse(raw) as JsonRecord;
-    const providerResponseId = text(responseJson.id);
-    const outputText = extractResponseText(responseJson);
-    if (!providerResponseId || !outputText) throw new Error('OpenAI response receipt or output_text is missing.');
-    return { value: JSON.parse(outputText) as unknown, providerResponseId, promptSha, responseSha: sha256(raw) };
-  } finally {
-    clearTimeout(timer);
-  }
+  const body = {
+    model: args.model,
+    store: false,
+    max_output_tokens: 12000,
+    input: [
+      { role: 'system', content: [{ type: 'input_text', text: args.system }] },
+      { role: 'user', content: [{ type: 'input_text', text: args.user }] }
+    ],
+    text: { format: { type: 'json_schema', ...args.schema } }
+  };
+  const promptSha256 = sha256(JSON.stringify(body));
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(150000)
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}: ${raw.slice(0, 500)}`);
+  const payload = JSON.parse(raw) as JsonRecord;
+  const providerResponseId = asString(payload.id, 'response.id');
+  if (!/^resp_[A-Za-z0-9_-]{16,}$/.test(providerResponseId)) throw new Error('OpenAI response id is not a real provider receipt.');
+  const outputText = responseOutputText(payload);
+  const parsed = JSON.parse(outputText) as JsonRecord;
+  return { parsed, raw, promptSha256, responseSha256: sha256(raw), providerResponseId };
 }
 
 async function claimOneJob(jobId?: string) {
   const claimRpc = jobId ? 'claim_source_page_article_inventory_job_smoke_v1' : 'claim_source_page_article_inventory_job_v2';
   const claimArgs = jobId ? { p_job_id: jobId, p_lease_seconds: LEASE_SECONDS } : { p_lease_seconds: LEASE_SECONDS };
   const { data, error } = await supabaseAdmin.rpc(claimRpc, claimArgs);
-  if (error) throw error;
-  const row = Array.isArray(data) && isRecord(data[0]) ? data[0] : null;
-  if (!row) return null;
-  const job: ClaimedInventoryJob = {
-    id: text(row.id),
-    page_identity_source_image_id: text(row.page_identity_source_image_id),
-    inventory_source_image_id: text(row.inventory_source_image_id),
-    freeze_receipt_id: text(row.freeze_receipt_id),
-    source_ocr_json_sha256: text(row.source_ocr_json_sha256),
-    block_count: Number(row.block_count || 0),
-    existing_article_count: Number(row.existing_article_count || 0),
-    requires_third_pass: row.requires_third_pass === true,
-    inventory_version: text(row.inventory_version),
-    attempt_count: Number(row.attempt_count || 0),
-    lease_token: text(row.lease_token)
-  };
-  if (!job.id || !job.inventory_source_image_id || !job.lease_token || !job.source_ocr_json_sha256) throw new Error('Invalid claimed inventory job.');
-  return job;
+  if (error) throw new Error(error.message);
+  return ((Array.isArray(data) ? data[0] : data) || null) as ClaimedInventoryJob | null;
 }
 
-async function renewLease(job: ClaimedInventoryJob) {
-  const { error } = await supabaseAdmin.rpc('renew_source_page_article_inventory_job_lease_v1', {
+async function loadBlocks(job: ClaimedInventoryJob) {
+  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_blocks_v1')
+    .select('block_index,block_text,x_min,y_min,x_max,y_max,ocr_confidence,source_ocr_json_sha256')
+    .eq('job_id', job.id)
+    .order('block_index', { ascending: true });
+  if (error) throw new Error(error.message);
+  const blocks = (data || []) as OcrBlock[];
+  if (blocks.length !== job.block_count) throw new ReviewRequiredError(`Inventory block count mismatch: ${blocks.length} != ${job.block_count}.`);
+  if (blocks.some((block) => block.source_ocr_json_sha256 !== job.source_ocr_json_sha256)) {
+    throw new ReviewRequiredError('Inventory block provenance drift detected.');
+  }
+  return blocks;
+}
+
+async function listPassKinds(jobId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_pass_runs_v1')
+    .select('pass_kind')
+    .eq('job_id', jobId);
+  if (error) throw new Error(error.message);
+  return new Set((data || []).map((row) => String(row.pass_kind)));
+}
+
+async function persistBlindPass(job: ClaimedInventoryJob, passKind: BlindPassKind, model: string, receipt: Awaited<ReturnType<typeof callStructured>>, groups: InventoryGroup[]) {
+  const { data, error } = await supabaseAdmin.rpc('record_source_page_article_inventory_pass_v1', {
     p_job_id: job.id,
     p_lease_token: job.lease_token,
-    p_lease_seconds: LEASE_SECONDS
+    p_pass_kind: passKind,
+    p_model: model,
+    p_provider_response_id: receipt.providerResponseId,
+    p_prompt_sha256: receipt.promptSha256,
+    p_response_sha256: receipt.responseSha256,
+    p_groups: groups.map((group) => ({
+      group_kind: group.group_kind,
+      block_indices: group.block_indices,
+      headline_anchor: group.headline_anchor,
+      non_article_role: group.non_article_role,
+      confidence: group.confidence,
+      reason: group.reason
+    }))
   });
-  if (error) throw error;
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+async function buildBlindPrompt(job: ClaimedInventoryJob, blocks: OcrBlock[], passKind: BlindPassKind) {
+  const system = [
+    'You are a blind page-level article inventory auditor.',
+    'Use only the OCR blocks supplied in this request.',
+    'Do not use the existing article table, filenames, upload batch names, or prior pass outputs.',
+    'Partition every OCR block exactly once into article or non_article groups.',
+    'Article groups must represent distinct editorial articles and include a verbatim headline substring from one of their own OCR blocks.',
+    'Non-article groups include mastheads, folios, page labels, ads, navigation, decorative text, and other non-editorial material.',
+    'Confidence below 0.80 is not acceptable for formal inventory; if uncertain, still return your best partition with calibrated confidence.',
+    `This is independent pass ${passKind}.`
+  ].join(' ');
+  const user = JSON.stringify({
+    job: {
+      page_identity_source_image_id: job.page_identity_source_image_id,
+      source_ocr_json_sha256: job.source_ocr_json_sha256,
+      block_count: job.block_count
+    },
+    blocks
+  });
+  return { system, user };
+}
+
+async function ensureConsensus(job: ClaimedInventoryJob) {
+  const { data, error } = await supabaseAdmin.rpc('build_source_page_article_inventory_consensus_v1', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token
+  });
+  if (error) throw new ReviewRequiredError(error.message);
+  return data;
+}
+
+async function loadCandidates(jobId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_consensus_groups_v1')
+    .select('candidate_key,article_ordinal,headline_anchor,block_indices')
+    .eq('job_id', jobId)
+    .eq('group_kind', 'article')
+    .order('article_ordinal', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []).map((row) => ({
+    candidate_key: String(row.candidate_key),
+    article_ordinal: Number(row.article_ordinal),
+    headline_anchor: String(row.headline_anchor || ''),
+    group_block_indices: Array.isArray(row.block_indices) ? row.block_indices.map(Number) : []
+  })) as ArticleCandidate[];
+}
+
+async function loadFrozenArticles(job: ClaimedInventoryJob) {
+  const { data, error } = await supabaseAdmin
+    .from('articles')
+    .select('id,article_ordinal,title,body,source_month')
+    .eq('source_image_id', job.page_identity_source_image_id)
+    .eq('is_formal', true)
+    .order('article_ordinal', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []).map((row) => ({
+    article_id: String(row.id),
+    article_ordinal: Number(row.article_ordinal),
+    title: String(row.title || ''),
+    body: String(row.body || ''),
+    source_month: String(row.source_month || '')
+  })) as FrozenArticle[];
+}
+
+async function tryAutoResolve(job: ClaimedInventoryJob) {
+  const { data, error } = await supabaseAdmin.rpc('resolve_inventory_mapping_auto_v2', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token
+  });
+  if (error) throw new ReviewRequiredError(error.message);
+  return asRecord(data);
+}
+
+async function listMappingPassKinds(jobId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_mapping_pass_runs_v2')
+    .select('pass_kind')
+    .eq('job_id', jobId);
+  if (error) throw new Error(error.message);
+  return new Set((data || []).map((row) => String(row.pass_kind)));
+}
+
+async function buildMappingPrompt(job: ClaimedInventoryJob, candidates: ArticleCandidate[], articles: FrozenArticle[], passKind: MappingPassKind) {
+  const blocks = await loadBlocks(job);
+  const blockMap = new Map(blocks.map((block) => [block.block_index, block.block_text]));
+  const candidatePayload = candidates.map((candidate) => ({
+    candidate_key: candidate.candidate_key,
+    article_ordinal: candidate.article_ordinal,
+    headline_anchor: candidate.headline_anchor,
+    ocr_text: candidate.group_block_indices.map((index) => blockMap.get(index) || '').join('\n').slice(0, 18000)
+  }));
+  const articlePayload = articles.map((article) => ({
+    article_id: article.article_id,
+    article_ordinal: article.article_ordinal,
+    title: article.title,
+    body: article.body.slice(0, 18000),
+    source_month: article.source_month
+  }));
+  const system = [
+    'You are an independent article identity mapper.',
+    'Match each blind inventory candidate to exactly one frozen formal article and each frozen article to exactly one candidate.',
+    'Use OCR text/headline evidence and frozen article title/body only.',
+    'Do not infer from filenames, upload order, UUID shape, or prior mapping pass outputs.',
+    'Return only confident one-to-one matches. Confidence below 0.80 is not acceptable.',
+    `This is independent mapping pass ${passKind}.`
+  ].join(' ');
+  return { system, user: JSON.stringify({ candidates: candidatePayload, frozen_articles: articlePayload }) };
+}
+
+async function persistMappingPass(job: ClaimedInventoryJob, passKind: MappingPassKind, model: string, receipt: Awaited<ReturnType<typeof callStructured>>, mappings: MappingRow[]) {
+  const { data, error } = await supabaseAdmin.rpc('record_source_page_article_inventory_mapping_pass_v2', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token,
+    p_pass_kind: passKind,
+    p_model: model,
+    p_provider_response_id: receipt.providerResponseId,
+    p_prompt_sha256: receipt.promptSha256,
+    p_response_sha256: receipt.responseSha256,
+    p_mappings: mappings
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+async function reconcileMapping(job: ClaimedInventoryJob) {
+  const { data, error } = await supabaseAdmin.rpc('reconcile_source_page_article_inventory_mapping_v2', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token
+  });
+  if (error) throw new ReviewRequiredError(error.message);
+  return data;
+}
+
+async function finalize(job: ClaimedInventoryJob) {
+  const { data, error } = await supabaseAdmin.rpc('finalize_source_page_article_inventory_job_v1', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token
+  });
+  if (error) throw new ReviewRequiredError(error.message);
+  return data;
 }
 
 async function yieldJob(job: ClaimedInventoryJob, stage: string) {
   const { data, error } = await supabaseAdmin.rpc('yield_source_page_article_inventory_job_v2', {
     p_job_id: job.id,
     p_lease_token: job.lease_token,
-    p_stage: stage
+    p_completed_stage: stage
   });
-  if (error) throw error;
+  if (error) throw new Error(error.message);
   return data;
 }
 
-async function loadBlindInput(job: ClaimedInventoryJob) {
-  const [{ data: source, error: sourceError }, { data: blocks, error: blockError }] = await Promise.all([
-    supabaseAdmin.from('source_images').select('id,storage_path,mime_type,width,height,publication_date').eq('id', job.inventory_source_image_id).single(),
-    supabaseAdmin.from('source_ocr_blocks_v1')
-      .select('block_index,block_text,x_min,y_min,x_max,y_max,ocr_confidence,source_ocr_json_sha256')
-      .eq('source_image_id', job.inventory_source_image_id).eq('page_index', 0).order('block_index', { ascending: true })
-  ]);
-  if (sourceError) throw sourceError;
-  if (blockError) throw blockError;
-  if (!source?.storage_path) throw new Error(`Inventory source image is missing: ${job.inventory_source_image_id}`);
-  const typedBlocks = (blocks || []).map((row) => ({
-    block_index: Number(row.block_index), block_text: text(row.block_text),
-    x_min: Number(row.x_min || 0), y_min: Number(row.y_min || 0), x_max: Number(row.x_max || 0), y_max: Number(row.y_max || 0),
-    ocr_confidence: Number(row.ocr_confidence || 0), source_ocr_json_sha256: text(row.source_ocr_json_sha256)
-  })) as OcrBlock[];
-  if (typedBlocks.length !== job.block_count) throw new Error(`Inventory block count changed: expected=${job.block_count} actual=${typedBlocks.length}`);
-  if (typedBlocks.some((block) => block.source_ocr_json_sha256 !== job.source_ocr_json_sha256)) throw new Error('Inventory OCR block hash no longer matches the frozen job.');
-  const download = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(source.storage_path);
-  if (download.error) throw download.error;
-  if (!download.data) throw new Error('Inventory source image download returned no data.');
-  return { source, blocks: typedBlocks, image: { buffer: Buffer.from(await download.data.arrayBuffer()), mimeType: text(source.mime_type) || 'image/jpeg' } };
-}
-
-function blocksForPrompt(blocks: OcrBlock[]) {
-  return blocks.map((block) => [
-    `[BLOCK ${block.block_index}] bbox=(${block.x_min},${block.y_min})-(${block.x_max},${block.y_max}) confidence=${block.ocr_confidence.toFixed(4)}`,
-    block.block_text
-  ].join('\n')).join('\n\n');
-}
-
-function blindInstructions(passKind: BlindPassKind) {
-  const role = passKind === 'mapper'
-    ? 'You are the first blind newspaper-page inventory analyst.'
-    : passKind === 'critic'
-      ? 'You are an independent second blind newspaper-page inventory analyst. Do not assume another analyst exists.'
-      : 'You are an independent adjudication analyst for a high-risk newspaper page. Make your own blind inventory from the raw page.';
-  return [
-    role,
-    'The goal is exhaustive article discovery, not summarization and not thematic analysis.',
-    'You are NOT given the existing article registry. Do not infer or guess how many articles the database already contains.',
-    'Use the page image and OCR block coordinates together.',
-    'Partition EVERY supplied OCR block exactly once. There is no maximum article count.',
-    'An article group is one coherent editorial article, including attached subheadline, body, figure/table/caption blocks when visually part of that article.',
-    'Do not merge neighboring articles merely because they discuss a similar topic.',
-    'Do not split a single multi-column article merely because its OCR blocks are separated.',
-    'Ads, mastheads, page furniture, standalone navigation, unrelated captions, and other non-editorial material must be non_article groups.',
-    'For every article group, headline_anchor must be an exact contiguous substring from one OCR block in that group.',
-    'If any grouping is genuinely uncertain, report confidence below 0.80; the pipeline will stop for review rather than forcing a result.',
-    'Return only the requested JSON.'
-  ].join('\n');
-}
-
-function blindUserText(job: ClaimedInventoryJob, blocks: OcrBlock[], passKind: BlindPassKind) {
-  return [
-    `inventory_version=${job.inventory_version}`,
-    `pass_kind=${passKind}`,
-    `source_ocr_json_sha256=${job.source_ocr_json_sha256}`,
-    `expected_block_count=${job.block_count}`,
-    '', 'OCR BLOCKS:', blocksForPrompt(blocks)
-  ].join('\n');
-}
-
-function parseInventoryGroups(value: unknown, blocks: OcrBlock[]) {
-  const root = isRecord(value) ? value : {};
-  if (!Array.isArray(root.groups) || root.groups.length === 0) throw new StructuralOutputError('groups array is missing');
-  const allowed = new Map(blocks.map((block) => [block.block_index, block]));
-  const used = new Set<number>();
-  const groups: InventoryGroup[] = [];
-  for (const raw of root.groups) {
-    if (!isRecord(raw)) throw new StructuralOutputError('group is not an object');
-    const groupKind = text(raw.group_kind);
-    if (groupKind !== 'article' && groupKind !== 'non_article') throw new StructuralOutputError('invalid group_kind');
-    if (!Array.isArray(raw.block_indices) || raw.block_indices.length === 0) throw new StructuralOutputError('empty block_indices');
-    const indices = Array.from(new Set(raw.block_indices.map(Number))).sort((a, b) => a - b);
-    if (indices.some((index) => !Number.isInteger(index) || !allowed.has(index))) throw new StructuralOutputError('unknown block index');
-    for (const index of indices) {
-      if (used.has(index)) throw new StructuralOutputError(`block ${index} assigned more than once`);
-      used.add(index);
-    }
-    const confidence = Number(raw.confidence);
-    if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) throw new ReviewRequiredError(`blind inventory confidence below ${MIN_CONFIDENCE}`);
-    const headlineAnchor = text(raw.headline_anchor);
-    const nonArticleRole = text(raw.non_article_role);
-    if (groupKind === 'article') {
-      if (!headlineAnchor) throw new StructuralOutputError('article headline_anchor is missing');
-      if (!indices.some((index) => allowed.get(index)!.block_text.toLowerCase().includes(headlineAnchor.toLowerCase()))) {
-        throw new StructuralOutputError(`headline_anchor is not present in its group: ${headlineAnchor}`);
-      }
-    } else if (!nonArticleRole) {
-      throw new StructuralOutputError('non_article_role is missing');
-    }
-    groups.push({
-      group_kind: groupKind,
-      block_indices: indices,
-      headline_anchor: groupKind === 'article' ? headlineAnchor : '',
-      non_article_role: groupKind === 'non_article' ? nonArticleRole : '',
-      confidence,
-      reason: text(raw.reason).slice(0, 1200)
-    });
-  }
-  if (used.size !== blocks.length) {
-    const missing = blocks.map((block) => block.block_index).filter((index) => !used.has(index));
-    throw new StructuralOutputError(`block partition incomplete; missing=${missing.join(',')}`);
-  }
-  return groups;
-}
-
-async function existingBlindPassKinds(jobId: string) {
-  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_pass_runs_v1').select('pass_kind').eq('job_id', jobId);
-  if (error) throw error;
-  return new Set((data || []).map((row) => text(row.pass_kind)).filter(Boolean));
-}
-
-async function runBlindPass(job: ClaimedInventoryJob, passKind: BlindPassKind, model: string) {
-  await renewLease(job);
-  const input = await loadBlindInput(job);
-  const receipt = await callResponsesJson({
-    model,
-    instructions: blindInstructions(passKind),
-    userText: blindUserText(job, input.blocks, passKind),
-    responseFormat: INVENTORY_RESPONSE_FORMAT,
-    image: input.image
-  });
-  const groups = parseInventoryGroups(receipt.value, input.blocks);
-  const { data, error } = await supabaseAdmin.rpc('replace_source_page_article_inventory_pass_v1', {
+async function failJob(job: ClaimedInventoryJob, message: string) {
+  const { data, error } = await supabaseAdmin.rpc('fail_source_page_article_inventory_job_v2', {
     p_job_id: job.id,
     p_lease_token: job.lease_token,
-    p_pass_kind: passKind,
-    p_model: model,
-    p_provider_response_id: receipt.providerResponseId,
-    p_prompt_sha256: receipt.promptSha,
-    p_response_sha256: receipt.responseSha,
-    p_groups: groups
+    p_error_message: message.slice(0, 2000)
   });
-  if (error) throw error;
+  if (error) throw new Error(`${message}; fail rpc: ${error.message}`);
   return data;
 }
 
-async function blindConsensusState(job: ClaimedInventoryJob) {
-  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_groups_v1')
-    .select('pass_kind,group_kind,group_fingerprint').eq('job_id', job.id);
-  if (error) throw error;
-  const required = job.requires_third_pass ? ['mapper', 'critic', 'adjudicator'] : ['mapper', 'critic'];
-  const signatures = new Map<string, string>();
-  for (const passKind of required) {
-    signatures.set(passKind, (data || [])
-      .filter((row) => text(row.pass_kind) === passKind && text(row.group_kind) === 'article')
-      .map((row) => text(row.group_fingerprint)).sort().join('|'));
-  }
-  const uniqueSignatures = new Set(signatures.values());
-  const mapperSignature = signatures.get('mapper') || '';
-  return { agrees: uniqueSignatures.size === 1, articleCount: mapperSignature ? mapperSignature.split('|').filter(Boolean).length : 0 };
-}
-
-async function loadMappingInput(job: ClaimedInventoryJob) {
-  const [{ data: groups, error: groupError }, { data: captures, error: captureError }, { data: candidates, error: candidateError }] = await Promise.all([
-    supabaseAdmin.from('source_page_article_inventory_consensus_groups_v2')
-      .select('group_fingerprint,block_indices,headline_anchor,confidence,group_text').eq('job_id', job.id).order('group_fingerprint', { ascending: true }),
-    supabaseAdmin.from('source_page_capture_map_v1').select('source_image_id').eq('page_identity_source_image_id', job.page_identity_source_image_id),
-    supabaseAdmin.rpc('inventory_mapping_candidates_v2', { p_job_id: job.id })
-  ]);
-  if (groupError) throw groupError;
-  if (captureError) throw captureError;
-  if (candidateError) throw candidateError;
-  const captureIds = Array.from(new Set((captures || []).map((row) => text(row.source_image_id)).filter(Boolean)));
-  if (!captureIds.length) throw new Error('No source captures found for inventory mapping.');
-  const { data: articles, error: articleError } = await supabaseAdmin.from('formal_corpus_articles_v1')
-    .select('id,headline,article_date,source_image_id').in('source_image_id', captureIds).order('id', { ascending: true });
-  if (articleError) throw articleError;
-  return { groups: groups || [], articles: articles || [], candidates: Array.isArray(candidates) ? candidates : [] };
-}
-
-function mappingInstructions(passKind: MappingPassKind) {
-  return [
-    passKind === 'mapper'
-      ? 'You map blind-discovered newspaper article groups to the already stored article records on the same page.'
-      : 'You are an independent critic mapping blind-discovered newspaper article groups to stored article records on the same page.',
-    'This is identity resolution only. Do not change the article inventory and do not make analytical claims.',
-    'Produce a complete one-to-one bijection: every group exactly once and every supplied article exactly once.',
-    'Use OCR group text, headline anchors, stored headlines/dates, and candidate similarity only as matching evidence.',
-    'Do not force uncertainty. If any mapping is not at least 0.80 confident, return the honest lower confidence; the pipeline will stop for review.',
-    'Return only the requested JSON.'
-  ].join('\n');
-}
-
-function mappingUserText(job: ClaimedInventoryJob, input: Awaited<ReturnType<typeof loadMappingInput>>, passKind: MappingPassKind) {
-  return JSON.stringify({
-    task: 'one_to_one_article_identity_mapping', job_id: job.id, pass_kind: passKind,
-    blind_groups: input.groups, stored_articles: input.articles, reciprocal_headline_candidates: input.candidates,
-    required_group_count: input.groups.length, required_article_count: input.articles.length
-  });
-}
-
-function parseMappings(value: unknown, groupFingerprints: Set<string>, articleIds: Set<string>) {
-  const root = isRecord(value) ? value : {};
-  if (!Array.isArray(root.mappings)) throw new StructuralOutputError('mappings array missing');
-  if (root.mappings.length !== groupFingerprints.size) throw new StructuralOutputError('mapping row count mismatch');
-  const seenGroups = new Set<string>();
-  const seenArticles = new Set<string>();
-  const rows: MappingRow[] = [];
-  for (const raw of root.mappings) {
-    if (!isRecord(raw)) throw new StructuralOutputError('mapping row is not an object');
-    const groupFingerprint = text(raw.group_fingerprint);
-    const articleId = text(raw.article_id);
-    const confidence = Number(raw.confidence);
-    if (!groupFingerprints.has(groupFingerprint) || seenGroups.has(groupFingerprint)) throw new StructuralOutputError('invalid or duplicate group mapping');
-    if (!articleIds.has(articleId) || seenArticles.has(articleId)) throw new StructuralOutputError('invalid or duplicate article mapping');
-    if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) throw new ReviewRequiredError(`article identity mapping confidence below ${MIN_CONFIDENCE}`);
-    seenGroups.add(groupFingerprint);
-    seenArticles.add(articleId);
-    rows.push({ group_fingerprint: groupFingerprint, article_id: articleId, confidence, rationale: text(raw.rationale).slice(0, 1200) });
-  }
-  if (seenGroups.size !== groupFingerprints.size || seenArticles.size !== articleIds.size) throw new StructuralOutputError('mapping is not bijective');
-  return rows;
-}
-
-async function existingMappingPassKinds(jobId: string) {
-  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_mapping_pass_runs_v2').select('pass_kind').eq('job_id', jobId);
-  if (error) throw error;
-  return new Set((data || []).map((row) => text(row.pass_kind)).filter(Boolean));
-}
-
-async function runMappingPass(job: ClaimedInventoryJob, passKind: MappingPassKind, model: string) {
-  await renewLease(job);
-  const input = await loadMappingInput(job);
-  if (input.groups.length !== job.existing_article_count || input.articles.length !== job.existing_article_count) {
-    throw new ReviewRequiredError('Blind group/article counts are not equal before identity mapping.');
-  }
-  const receipt = await callResponsesJson({
-    model,
-    instructions: mappingInstructions(passKind),
-    userText: mappingUserText(job, input, passKind),
-    responseFormat: MAPPING_RESPONSE_FORMAT
-  });
-  const rows = parseMappings(receipt.value,
-    new Set(input.groups.map((row) => text(row.group_fingerprint)).filter(Boolean)),
-    new Set(input.articles.map((row) => text(row.id)).filter(Boolean)));
-  const { data, error } = await supabaseAdmin.rpc('replace_inventory_mapping_pass_v2', {
+async function reviewJob(job: ClaimedInventoryJob, message: string) {
+  const { data, error } = await supabaseAdmin.rpc('review_source_page_article_inventory_job_v2', {
     p_job_id: job.id,
     p_lease_token: job.lease_token,
-    p_pass_kind: passKind,
-    p_model: model,
-    p_provider_response_id: receipt.providerResponseId,
-    p_prompt_sha256: receipt.promptSha,
-    p_response_sha256: receipt.responseSha,
-    p_mappings: rows
+    p_error_message: message.slice(0, 2000),
+    p_review_attempt_limit: REVIEW_ATTEMPT_LIMIT
   });
-  if (error) throw error;
+  if (error) throw new Error(`${message}; review rpc: ${error.message}`);
   return data;
-}
-
-async function finalize(job: ClaimedInventoryJob) {
-  const { data, error } = await supabaseAdmin.rpc('finalize_source_page_article_inventory_job_v1', {
-    p_job_id: job.id, p_lease_token: job.lease_token
-  });
-  if (error) throw error;
-  return data;
-}
-
-async function markReview(job: ClaimedInventoryJob, reason: string) {
-  const { data, error } = await supabaseAdmin.rpc('review_source_page_article_inventory_job_v1', {
-    p_job_id: job.id, p_lease_token: job.lease_token, p_reason: reason
-  });
-  if (error) throw error;
-  return data;
-}
-
-async function persistFailure(job: ClaimedInventoryJob, error: unknown) {
-  const message = errorMessage(error);
-  const retryable = !message.includes('is not configured') && !message.includes('must be configured and distinct') && !message.includes('freeze_stale');
-  const { data, error: persistenceError } = await supabaseAdmin.rpc('fail_source_page_article_inventory_job_v2', {
-    p_job_id: job.id, p_lease_token: job.lease_token, p_error_message: message, p_retryable: retryable
-  });
-  if (persistenceError) throw persistenceError;
-  return data;
-}
-
-export async function getArticleInventoryStatus() {
-  const [{ data: gate, error: gateError }, { data: jobs, error: jobsError }] = await Promise.all([
-    supabaseAdmin.from('source_page_article_inventory_gate_v1').select('*').maybeSingle(),
-    supabaseAdmin.from('source_page_article_inventory_jobs_v1').select('status,requires_third_pass')
-  ]);
-  if (gateError) throw gateError;
-  if (jobsError) throw jobsError;
-  const counts: Record<string, number> = {};
-  for (const row of jobs || []) {
-    const status = text(row.status) || 'unknown';
-    counts[status] = (counts[status] || 0) + 1;
-  }
-  return { gate, counts, third_pass_jobs: (jobs || []).filter((row) => row.requires_third_pass === true).length };
 }
 
 export async function runArticleInventoryWorkerStep(jobId?: string) {
   const job = await claimOneJob(jobId);
-  if (!job) return { claimed: 0, stage: 'idle', completed: 0, needs_review: 0, discovery_required: 0, failed: 0 };
+  if (!job) return { claimed: 0 };
+
   try {
-    const blindPasses = await existingBlindPassKinds(job.id);
-    const blind = blindModels(job);
-    if (!blindPasses.has('mapper')) {
-      await runBlindPass(job, 'mapper', blind.mapper);
+    const mapperModel = process.env.OPENAI_INVENTORY_MAPPER_MODEL || VISION_MODEL;
+    const criticModel = process.env.OPENAI_INVENTORY_CRITIC_MODEL || 'gpt-4o';
+    const adjudicatorModel = process.env.OPENAI_INVENTORY_ADJUDICATOR_MODEL || 'gpt-4o-mini';
+    const mappingMapperModel = process.env.OPENAI_INVENTORY_MAPPING_MAPPER_MODEL || TEXT_MODEL;
+    const mappingCriticModel = process.env.OPENAI_INVENTORY_MAPPING_CRITIC_MODEL || 'gpt-4o';
+    requireDistinctModels([mapperModel, criticModel], 'blind inventory');
+    if (job.requires_third_pass) requireDistinctModels([mapperModel, criticModel, adjudicatorModel], 'blind inventory third pass');
+    requireDistinctModels([mappingMapperModel, mappingCriticModel], 'article mapping');
+
+    const blocks = await loadBlocks(job);
+    const passKinds = await listPassKinds(job.id);
+    if (!passKinds.has('mapper')) {
+      const prompt = await buildBlindPrompt(job, blocks, 'mapper');
+      const receipt = await callStructured({ model: mapperModel, ...prompt, schema: blindSchema });
+      const groups = parseBlindGroups(receipt.parsed, blocks);
+      await persistBlindPass(job, 'mapper', mapperModel, receipt, groups);
       return { claimed: 1, stage: 'blind_mapper', job_id: job.id, yield: await yieldJob(job, 'blind_mapper') };
     }
-    if (!blindPasses.has('critic')) {
-      await runBlindPass(job, 'critic', blind.critic);
+    if (!passKinds.has('critic')) {
+      const prompt = await buildBlindPrompt(job, blocks, 'critic');
+      const receipt = await callStructured({ model: criticModel, ...prompt, schema: blindSchema });
+      const groups = parseBlindGroups(receipt.parsed, blocks);
+      await persistBlindPass(job, 'critic', criticModel, receipt, groups);
       return { claimed: 1, stage: 'blind_critic', job_id: job.id, yield: await yieldJob(job, 'blind_critic') };
     }
-    if (job.requires_third_pass && !blindPasses.has('adjudicator')) {
-      await runBlindPass(job, 'adjudicator', blind.adjudicator);
+    if (job.requires_third_pass && !passKinds.has('adjudicator')) {
+      const prompt = await buildBlindPrompt(job, blocks, 'adjudicator');
+      const receipt = await callStructured({ model: adjudicatorModel, ...prompt, schema: blindSchema });
+      const groups = parseBlindGroups(receipt.parsed, blocks);
+      await persistBlindPass(job, 'adjudicator', adjudicatorModel, receipt, groups);
       return { claimed: 1, stage: 'blind_adjudicator', job_id: job.id, yield: await yieldJob(job, 'blind_adjudicator') };
     }
 
-    const consensus = await blindConsensusState(job);
-    if (!consensus.agrees || consensus.articleCount !== job.existing_article_count) {
-      const result = await finalize(job);
-      return { claimed: 1, stage: 'blind_finalize', job_id: job.id, result };
+    await ensureConsensus(job);
+    const candidates = await loadCandidates(job.id);
+    const articles = await loadFrozenArticles(job);
+    if (candidates.length !== articles.length || candidates.length !== job.existing_article_count) {
+      throw new ReviewRequiredError(`Consensus candidate count ${candidates.length} does not equal frozen article count ${articles.length}.`);
     }
 
-    const { data: auto, error: autoError } = await supabaseAdmin.rpc('resolve_inventory_mapping_auto_v2', { p_job_id: job.id });
-    if (autoError) throw autoError;
-    const unresolved = isRecord(auto) ? Number(auto.unresolved || 0) : job.existing_article_count;
-    if (unresolved <= 0) {
-      const result = await finalize(job);
-      return { claimed: 1, stage: 'auto_mapping_finalize', job_id: job.id, result };
+    const auto = await tryAutoResolve(job);
+    if (auto.status === 'resolved') {
+      return { claimed: 1, stage: 'auto_map_finalize', job_id: job.id, result: await finalize(job) };
     }
 
-    const mappingPasses = await existingMappingPassKinds(job.id);
-    const mapping = mappingModels();
-    if (!mappingPasses.has('mapper')) {
-      await runMappingPass(job, 'mapper', mapping.mapper);
+    const mappingPassKinds = await listMappingPassKinds(job.id);
+    if (!mappingPassKinds.has('mapper')) {
+      const prompt = await buildMappingPrompt(job, candidates, articles, 'mapper');
+      const receipt = await callStructured({ model: mappingMapperModel, ...prompt, schema: mappingSchema });
+      const mappings = parseMappings(receipt.parsed, candidates, articles);
+      await persistMappingPass(job, 'mapper', mappingMapperModel, receipt, mappings);
       return { claimed: 1, stage: 'mapping_mapper', job_id: job.id, yield: await yieldJob(job, 'mapping_mapper') };
     }
-    if (!mappingPasses.has('critic')) {
-      await runMappingPass(job, 'critic', mapping.critic);
+    if (!mappingPassKinds.has('critic')) {
+      const prompt = await buildMappingPrompt(job, candidates, articles, 'critic');
+      const receipt = await callStructured({ model: mappingCriticModel, ...prompt, schema: mappingSchema });
+      const mappings = parseMappings(receipt.parsed, candidates, articles);
+      await persistMappingPass(job, 'critic', mappingCriticModel, receipt, mappings);
       return { claimed: 1, stage: 'mapping_critic', job_id: job.id, yield: await yieldJob(job, 'mapping_critic') };
     }
 
-    const result = await finalize(job);
-    return { claimed: 1, stage: 'mapping_finalize', job_id: job.id, result };
+    await reconcileMapping(job);
+    return { claimed: 1, stage: 'mapping_finalize', job_id: job.id, result: await finalize(job) };
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown inventory worker error';
     if (error instanceof ReviewRequiredError) {
-      return { claimed: 1, stage: 'needs_review', job_id: job.id, result: await markReview(job, error.message) };
+      return { claimed: 1, stage: 'review_required', job_id: job.id, error: message, result: await reviewJob(job, message) };
     }
-    return { claimed: 1, stage: 'failed', job_id: job.id, error: errorMessage(error), result: await persistFailure(job, error) };
+    return { claimed: 1, stage: 'failed', job_id: job.id, error: message, result: await failJob(job, message) };
   }
+}
+
+export async function getArticleInventoryStatus() {
+  const { data, error } = await supabaseAdmin.from('source_page_article_inventory_gate_v1').select('*').single();
+  if (error) throw new Error(error.message);
+  return data;
 }

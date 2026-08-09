@@ -1,0 +1,80 @@
+name: Inventory smoke one step
+
+on:
+  push:
+    branches:
+      - audit/verified-pipeline-v10-buildcheck
+    paths:
+      - '.github/workflows/inventory-smoke-one-step.yml'
+
+permissions:
+  contents: read
+
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  VERCEL_GIT_COMMIT_REF: audit/verified-pipeline-v10-buildcheck
+  SMOKE_JOB_ID: 0b5b56fe-1e64-4cff-8432-eb48e9688e55
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run exactly one targeted inventory worker step
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run dev -- -H 127.0.0.1 -p 3000 >/tmp/inventory-next.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -sS -o /dev/null http://127.0.0.1:3000/; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo 'Next.js localhost did not start' >&2
+            tail -100 /tmp/inventory-next.log >&2 || true
+            exit 1
+          fi
+
+          curl --fail-with-body --silent --show-error \
+            "http://127.0.0.1:3000/api/buildcheck/inventory-step?job_id=${SMOKE_JOB_ID}" \
+            -o /tmp/inventory-response.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/inventory-response.json').read_text())
+          step = data.get('step') or {}
+          summary = {
+              'claimed': step.get('claimed'),
+              'stage': step.get('stage'),
+              'job_id': step.get('job_id'),
+              'yield_status': (step.get('yield') or {}).get('status'),
+              'completed_stage': (step.get('yield') or {}).get('completed_stage'),
+          }
+          print(json.dumps(summary, separators=(',', ':')))
+          if step.get('job_id') != '0b5b56fe-1e64-4cff-8432-eb48e9688e55':
+              raise SystemExit('unexpected job id')
+          if step.get('stage') != 'blind_critic':
+              raise SystemExit(f"unexpected stage: {step.get('stage')}")
+          if (step.get('yield') or {}).get('status') != 'queued':
+              raise SystemExit('critic step did not yield queued')
+          PY

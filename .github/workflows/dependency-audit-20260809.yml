@@ -1,0 +1,49 @@
+name: dependency-audit-20260809
+
+on:
+  push:
+    branches:
+      - chore/canonical-verify-v2-20260809
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Install dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+      - name: Summarize full npm audit
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --json > /tmp/audit-full.json || true
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/audit-full.json'))
+          print('FULL_METADATA', json.dumps(d.get('metadata',{}), ensure_ascii=False, sort_keys=True))
+          for name,v in sorted((d.get('vulnerabilities') or {}).items()):
+              print('FULL_VULN', name, 'severity='+str(v.get('severity')), 'direct='+str(v.get('isDirect')), 'range='+str(v.get('range')), 'fix='+json.dumps(v.get('fixAvailable'), sort_keys=True))
+          PY
+      - name: Summarize production-only npm audit
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev --json > /tmp/audit-prod.json || true
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/audit-prod.json'))
+          print('PROD_METADATA', json.dumps(d.get('metadata',{}), ensure_ascii=False, sort_keys=True))
+          for name,v in sorted((d.get('vulnerabilities') or {}).items()):
+              print('PROD_VULN', name, 'severity='+str(v.get('severity')), 'direct='+str(v.get('isDirect')), 'range='+str(v.get('range')), 'fix='+json.dumps(v.get('fixAvailable'), sort_keys=True))
+          PY

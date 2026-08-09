@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
-const EXPECTED_NONCE_SHA256 = '1cb0cc52eb1d84c6de826c87886ed48556edf53a0000330dde81c525bdf5204d';
+const EXPECTED_NONCE_SHA256 = 'a1a9193f8477327115f6b89946de7898280e61bcb867ec9d2c8d69168b8feecd';
 
 function authorized(req: Request) {
   if (process.env.VERCEL_ENV !== 'preview') return false;

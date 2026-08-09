@@ -15,7 +15,7 @@ env:
   SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
   NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
   SMOKE_JOB_ID: 0b5b56fe-1e64-4cff-8432-eb48e9688e55
-  SMOKE_RUN_REV: '4'
+  SMOKE_RUN_REV: '5'
 
 jobs:
   run:
@@ -27,16 +27,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
       - name: Install dependencies
         run: npm ci
-      - name: Import inventory worker with diagnostic annotation
-        shell: bash
-        run: |
-          set -euo pipefail
-          npx --yes tsx@4.20.3 -e "import('./lib/articleInventoryWorker.ts').then(()=>console.log('worker_import=ok')).catch(e=>{const raw=String(e?.stack||e);const msg=raw.replace(/%/g,'%25').replace(/\r/g,'%0D').replace(/\n/g,'%0A');console.log('::error title=inventory_import::'+msg);process.exit(1)})"
+      - name: Import inventory worker
+        run: npx --yes tsx@4.20.3 -e "import('./lib/articleInventoryWorker.ts').then(() => console.log('worker_import=ok'))"
       - name: Run exactly one targeted inventory critic step
         shell: bash
         run: |

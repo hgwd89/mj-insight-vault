@@ -1,0 +1,83 @@
+name: canonical-verify
+
+on:
+  push:
+    branches:
+      - chore/canonical-verify-20260809
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Verify exact 310 migration paths and blob SHAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            -X POST 'https://wqbjtvepnavkqdshppau.supabase.co/rest/v1/rpc/_mj_git_manifest_6f2c91b8' \
+            -H 'apikey: sb_publishable_Y0eb0AT-U8M0Ho-_LMEtCQ_gUMBLyD7' \
+            -H 'Content-Type: application/json' \
+            --data '{}' > /tmp/canonical_manifest.json
+          python3 - <<'PY'
+          import glob, json, subprocess, sys
+          with open('/tmp/canonical_manifest.json', encoding='utf-8') as f:
+              rows = json.load(f)
+          if not isinstance(rows, list):
+              raise SystemExit(f'manifest not list: {type(rows)}')
+          if len(rows) != 310:
+              raise SystemExit(f'canonical manifest count {len(rows)} != 310')
+          expected = {r['path']: r['sha'] for r in rows}
+          if len(expected) != 310:
+              raise SystemExit(f'canonical unique paths {len(expected)} != 310')
+          actual_paths = sorted(glob.glob('supabase/migrations/*.sql'))
+          expected_paths = sorted(expected)
+          missing = sorted(set(expected_paths) - set(actual_paths))
+          extra = sorted(set(actual_paths) - set(expected_paths))
+          if missing or extra:
+              print('MISSING', *missing, sep='\n  ', file=sys.stderr)
+              print('EXTRA', *extra, sep='\n  ', file=sys.stderr)
+              raise SystemExit('migration path set mismatch')
+          mismatches = []
+          for path in actual_paths:
+              actual_sha = subprocess.check_output(['git','hash-object',path], text=True).strip()
+              if actual_sha != expected[path]:
+                  mismatches.append((path, expected[path], actual_sha))
+          if mismatches:
+              for path, exp, got in mismatches:
+                  print(f'SHA_MISMATCH {path} expected={exp} actual={got}', file=sys.stderr)
+              raise SystemExit(f'{len(mismatches)} migration SHA mismatches')
+          print('MIGRATIONS_OK 310/310')
+          PY
+      - name: Inventory verified worker and route bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== verifiedAnalysisWorkerV8 references ==='
+          git grep -n -E 'verifiedAnalysisWorkerV8|VerifiedAnalysisWorkerV8|verified-analysis-worker' -- ':!supabase/migrations/*' || true
+          echo '=== candidate route files mentioning verified pipeline ==='
+          git grep -l -E 'verifiedAnalysisWorkerV8|runVerifiedAnalysis|verified pipeline|verified_pipeline' -- 'mj-insight-vault-mvp/mj-insight-vault/app/api/**/route.ts' || true
+          echo '=== all app/api route.ts count ==='
+          find mj-insight-vault-mvp/mj-insight-vault/app/api -type f -name route.ts | sort | wc -l
+      - name: Install dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+      - name: Regression tests
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run test:local
+      - name: Lint
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run lint
+      - name: Production build
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run build

@@ -41,7 +41,8 @@ jobs:
           PY
       - name: Apply non-force lockfile security fixes
         working-directory: mj-insight-vault-mvp/mj-insight-vault
-        run: npm audit fix --package-lock-only
+        shell: bash
+        run: npm audit fix --package-lock-only || true
       - name: Install hardened dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm ci

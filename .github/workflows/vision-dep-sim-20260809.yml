@@ -24,9 +24,17 @@ jobs:
         run: |
           set -euo pipefail
           echo "VISION_LATEST $(npm view @google-cloud/vision version)"
-          echo "VISION_BASELINE $(node -e \"console.log(require('./package-lock.json').packages['node_modules/@google-cloud/vision']?.version || 'missing')\")"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('package-lock.json'))
+          print('VISION_BASELINE',d.get('packages',{}).get('node_modules/@google-cloud/vision',{}).get('version','missing'))
+          PY
           npm install @google-cloud/vision@latest --package-lock-only --ignore-scripts
-          echo "VISION_SIMULATED $(node -e \"console.log(require('./package-lock.json').packages['node_modules/@google-cloud/vision']?.version || 'missing')\")"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('package-lock.json'))
+          print('VISION_SIMULATED',d.get('packages',{}).get('node_modules/@google-cloud/vision',{}).get('version','missing'))
+          PY
       - name: Install simulated dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm ci
@@ -55,5 +63,4 @@ jobs:
       - name: Show package changes
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         shell: bash
-        run: |
-          git diff -- package.json package-lock.json || true
+        run: git diff -- package.json package-lock.json || true

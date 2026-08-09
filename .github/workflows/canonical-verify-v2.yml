@@ -1,0 +1,62 @@
+name: canonical-verify-v2
+
+on:
+  push:
+    branches:
+      - chore/canonical-verify-v2-20260809
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Assert canonical migration set shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
+          test "$count" = '310' || { echo "migration count=$count, expected 310" >&2; exit 1; }
+          echo 'MIGRATION_PATH_COUNT_OK 310'
+          test -f supabase/migrations/20260807082437_prepare_aaaa_formal_contract_v4.sql
+          test -f supabase/migrations/20260807153628_add_all_seed_candidate_synthesis_and_mapping_v5.sql
+          test -f supabase/migrations/20260809010902_bind_verified_reports_to_user_query_and_chat_v15.sql
+          test "$(git hash-object supabase/migrations/20260807082437_prepare_aaaa_formal_contract_v4.sql)" = '2bb2870f6e93b6515082050d2c7c146deaef5988'
+          test "$(git hash-object supabase/migrations/20260807153628_add_all_seed_candidate_synthesis_and_mapping_v5.sql)" = '88ac8fef35848e334b66b3fd91d5d1ffb82c8367'
+          test "$(git hash-object supabase/migrations/20260809010902_bind_verified_reports_to_user_query_and_chat_v15.sql)" = '23620da2b3b253b3c1a5f9b42b794d3d835ade63'
+          echo 'KNOWN_HOLE_SHAS_OK 3/3'
+      - name: Inventory verified worker and six route bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== worker-like files ==='
+          find mj-insight-vault-mvp/mj-insight-vault -type f \( -iname '*verified*worker*' -o -iname '*analysis*worker*' \) | sort || true
+          echo '=== exact symbol references ==='
+          git grep -n -E 'verifiedAnalysisWorkerV8|VerifiedAnalysisWorkerV8|runVerifiedAnalysisWorkerV8' -- 'mj-insight-vault-mvp/mj-insight-vault/**' || true
+          echo '=== files referencing exact symbol ==='
+          git grep -l -E 'verifiedAnalysisWorkerV8|VerifiedAnalysisWorkerV8|runVerifiedAnalysisWorkerV8' -- 'mj-insight-vault-mvp/mj-insight-vault/**' | sort || true
+          echo '=== route files referencing verified pipeline terms ==='
+          git grep -l -E 'verifiedAnalysisWorkerV8|runVerifiedAnalysis|verified[_ -]pipeline|verified analysis' -- 'mj-insight-vault-mvp/mj-insight-vault/app/api/**/route.ts' | sort || true
+          echo '=== all app/api routes ==='
+          find mj-insight-vault-mvp/mj-insight-vault/app/api -type f -name route.ts | sort
+      - name: Install dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+      - name: Regression tests
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run test:local
+      - name: Lint
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run lint
+      - name: Production build
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run build

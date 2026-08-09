@@ -1,0 +1,39 @@
+name: Fix inventory Responses schema
+
+on:
+  push:
+    branches:
+      - audit/verified-pipeline-v10-buildcheck
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/verified-pipeline-v10-buildcheck
+          fetch-depth: 0
+      - name: Remove unsupported uniqueItems keyword
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorker.ts')
+          s = p.read_text()
+          old = "block_indices: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'integer', minimum: 0 } },"
+          new = "block_indices: { type: 'array', minItems: 1, items: { type: 'integer', minimum: 0 } },"
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one schema target, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorker.ts
+          git diff --cached --check
+          git commit -m 'fix inventory Responses JSON schema [schema-fix-done]'
+          git push origin HEAD:audit/verified-pipeline-v10-buildcheck

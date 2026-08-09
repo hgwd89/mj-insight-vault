@@ -72,7 +72,7 @@ const INVENTORY_RESPONSE_FORMAT = {
           required: ['group_kind', 'block_indices', 'headline_anchor', 'non_article_role', 'confidence', 'reason'],
           properties: {
             group_kind: { type: 'string', enum: ['article', 'non_article'] },
-            block_indices: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'integer', minimum: 0 } },
+            block_indices: { type: 'array', minItems: 1, items: { type: 'integer', minimum: 0 } },
             headline_anchor: { type: 'string' },
             non_article_role: { type: 'string' },
             confidence: { type: 'number', minimum: 0, maximum: 1 },

@@ -1,0 +1,67 @@
+name: next16-sim-20260809
+
+on:
+  push:
+    branches:
+      - chore/next16-sim-20260809
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Simulate Next 16.3.0 lock/package update
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp package.json /tmp/package.before.json
+          cp package-lock.json /tmp/package-lock.before.json
+          npm install next@16.3.0 --package-lock-only --ignore-scripts
+          node -e "const p=require('./package.json'); console.log('SIM_NEXT_VERSION_SPEC',p.dependencies.next)"
+          python3 - <<'PY'
+          import json
+          a=json.load(open('/tmp/package-lock.before.json'))
+          b=json.load(open('package-lock.json'))
+          ap=a.get('packages',{}); bp=b.get('packages',{})
+          changed=[]
+          for k in sorted(set(ap)|set(bp)):
+              av=(ap.get(k) or {}).get('version'); bv=(bp.get(k) or {}).get('version')
+              if av != bv: changed.append((k,av,bv))
+          print('SIM_LOCK_VERSION_CHANGES',len(changed))
+          for k,av,bv in changed:
+              print('SIM_LOCK_CHANGE',k or '<root>',str(av),'->',str(bv))
+          PY
+      - name: Install simulated dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+      - name: Regression tests under Next 16
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run test:local
+      - name: Zero-warning lint under Next 16
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run lint -- --max-warnings=0
+      - name: Production build under Next 16
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run build
+      - name: Audit after Next 16 simulation
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev --json > /tmp/audit.json || true
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/audit.json'))
+          print('SIM_NEXT16_PROD_AUDIT',json.dumps(d.get('metadata',{}).get('vulnerabilities',{}),sort_keys=True))
+          for n,v in sorted((d.get('vulnerabilities') or {}).items()):
+              print('SIM_NEXT16_VULN',n,'severity='+str(v.get('severity')),'direct='+str(v.get('isDirect')),'range='+str(v.get('range')),'fix='+json.dumps(v.get('fixAvailable'),sort_keys=True))
+          PY

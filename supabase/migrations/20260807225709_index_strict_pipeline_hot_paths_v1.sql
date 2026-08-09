@@ -1,0 +1,60 @@
+create index if not exists article_source_regions_partition_job_idx on public.article_source_regions(partition_job_id);
+create index if not exists source_page_partition_jobs_v3_freeze_idx on public.source_page_partition_jobs_v3(freeze_receipt_id);
+create index if not exists source_page_partition_proposals_v3_article_idx on public.source_page_partition_proposals_v3(article_id);
+create index if not exists source_page_partition_proposals_v3_block_fk_idx on public.source_page_partition_proposals_v3(source_image_id,page_index,block_index);
+
+create index if not exists article_embedding_jobs_v4_source_region_idx on public.article_embedding_jobs_v4(source_region_id);
+create index if not exists article_embedding_jobs_v4_partition_idx on public.article_embedding_jobs_v4(source_partition_job_id);
+create index if not exists article_embedding_jobs_v4_freeze_idx on public.article_embedding_jobs_v4(freeze_receipt_id);
+create index if not exists article_embeddings_v4_source_region_idx on public.article_embeddings_v4(source_region_id);
+create index if not exists article_embeddings_v4_partition_idx on public.article_embeddings_v4(source_partition_job_id);
+create index if not exists article_embeddings_v4_freeze_idx on public.article_embeddings_v4(freeze_receipt_id);
+create index if not exists article_embeddings_v4_job_idx on public.article_embeddings_v4(embedding_job_id);
+
+create index if not exists article_classification_jobs_v4_source_region_idx on public.article_classification_jobs_v4(source_region_id);
+create index if not exists article_classification_jobs_v4_partition_idx on public.article_classification_jobs_v4(source_partition_job_id);
+create index if not exists article_classification_jobs_v4_freeze_idx on public.article_classification_jobs_v4(freeze_receipt_id);
+create index if not exists article_profiles_v4_source_region_idx on public.article_profiles_v4(source_region_id);
+create index if not exists article_profiles_v4_partition_idx on public.article_profiles_v4(source_partition_job_id);
+create index if not exists article_profiles_v4_freeze_idx on public.article_profiles_v4(freeze_receipt_id);
+create index if not exists article_profiles_v4_primary_category_idx on public.article_profiles_v4(primary_category);
+create index if not exists article_profiles_v4_job_idx on public.article_profiles_v4(classification_job_id);
+create index if not exists article_category_memberships_v4_category_idx on public.article_category_memberships_v4(category_id);
+
+create index if not exists article_source_grounding_reviews_v3_article_idx on public.article_source_grounding_reviews_v3(article_id);
+create index if not exists article_source_grounding_reviews_v3_evidence_source_idx on public.article_source_grounding_reviews_v3(evidence_source_image_id);
+create index if not exists article_source_grounding_reviews_v3_freeze_idx on public.article_source_grounding_reviews_v3(freeze_receipt_id);
+
+create index if not exists full_corpus_article_reviews_v4_article_idx on public.full_corpus_article_reviews_v4(article_id);
+create index if not exists full_corpus_article_reviews_v4_batch_idx on public.full_corpus_article_reviews_v4(batch_id);
+create index if not exists full_corpus_article_reviews_v4_source_region_idx on public.full_corpus_article_reviews_v4(source_region_id);
+create index if not exists full_corpus_reviewer_rows_v5_article_idx on public.full_corpus_reviewer_rows_v5(article_id);
+create index if not exists full_corpus_review_critic_rows_v5_article_idx on public.full_corpus_review_critic_rows_v5(article_id);
+create index if not exists full_corpus_review_jobs_v5_batch_idx on public.full_corpus_review_jobs_v5(batch_id);
+create index if not exists full_corpus_review_jobs_v5_freeze_idx on public.full_corpus_review_jobs_v5(freeze_receipt_id);
+create index if not exists full_corpus_theme_seeds_v4_article_idx on public.full_corpus_theme_seeds_v4(article_id);
+create index if not exists full_corpus_theme_seeds_v4_review_idx on public.full_corpus_theme_seeds_v4(review_id);
+
+create index if not exists source_grounded_duplicate_candidates_v5_a_idx on public.source_grounded_duplicate_candidates_v5(article_id_a);
+create index if not exists source_grounded_duplicate_candidates_v5_b_idx on public.source_grounded_duplicate_candidates_v5(article_id_b);
+create index if not exists source_grounded_duplicate_review_passes_v5_canonical_idx on public.source_grounded_duplicate_review_passes_v5(canonical_article_id);
+
+create index if not exists theme_candidate_synthesis_jobs_v5_scan_idx on public.theme_candidate_synthesis_jobs_v5(scan_run_id);
+create index if not exists theme_candidate_synthesis_jobs_v5_freeze_idx on public.theme_candidate_synthesis_jobs_v5(freeze_receipt_id);
+create index if not exists theme_census_pass_runs_v5_analysis_idx on public.theme_census_pass_runs_v5(analysis_run_id);
+create index if not exists theme_census_relations_v4_batch_idx on public.theme_census_relations_v4(census_batch_id);
+create index if not exists theme_census_relations_v4_candidate_idx on public.theme_census_relations_v4(candidate_id);
+create index if not exists theme_census_relations_v4_article_only_idx on public.theme_census_relations_v4(article_id);
+create index if not exists theme_census_stage_v5_analysis_idx on public.theme_census_stage_v5(analysis_run_id);
+create index if not exists theme_census_stage_v5_candidate_idx on public.theme_census_stage_v5(candidate_id);
+create index if not exists theme_census_stage_v5_article_idx on public.theme_census_stage_v5(article_id);
+create index if not exists theme_seed_mapping_stage_v5_seed_idx on public.theme_seed_mapping_stage_v5(seed_id);
+create index if not exists theme_seed_mapping_stage_v5_candidate_idx on public.theme_seed_mapping_stage_v5(candidate_id);
+create index if not exists theme_seed_mappings_v4_seed_idx on public.theme_seed_mappings_v4(seed_id);
+create index if not exists theme_seed_mappings_v4_candidate_idx on public.theme_seed_mappings_v4(candidate_id);
+
+create index if not exists formal_report_jobs_v6_status_idx on public.formal_report_jobs_v6(status,next_retry_at,created_at);
+create index if not exists formal_report_jobs_v6_analysis_idx on public.formal_report_jobs_v6(analysis_run_id);
+create index if not exists formal_report_jobs_v6_theme_proof_idx on public.formal_report_jobs_v6(theme_proof_receipt_id);
+create index if not exists formal_report_jobs_v6_report_idx on public.formal_report_jobs_v6(report_id);
+create index if not exists formal_report_critic_rows_v6_claim_idx on public.formal_report_critic_rows_v6(claim_id);

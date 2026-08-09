@@ -1,0 +1,14 @@
+create index if not exists verified_article_reviews_v6_classification_receipt_idx on public.verified_article_reviews_v6(classification_receipt_id);
+create index if not exists verified_article_theme_seeds_v6_review_idx on public.verified_article_theme_seeds_v6(review_id);
+create index if not exists verified_theme_census_article_outcomes_v7_article_idx on public.verified_theme_census_article_outcomes_v7(article_id);
+create index if not exists verified_theme_census_receipts_v8_review_receipt_idx on public.verified_theme_census_receipts_v8(review_receipt_id);
+create index if not exists verified_theme_census_relations_v7_batch_idx on public.verified_theme_census_relations_v7(batch_id);
+create index if not exists verified_theme_census_relations_v7_candidate_rel_idx on public.verified_theme_census_relations_v7(candidate_id,relation);
+create index if not exists verified_theme_report_note_jobs_v8_candidate_idx on public.verified_theme_report_note_jobs_v8(candidate_id);
+create index if not exists verified_theme_report_notes_v8_candidate_idx on public.verified_theme_report_notes_v8(candidate_id);
+create index if not exists verified_theme_report_runs_v8_analysis_run_idx on public.verified_theme_report_runs_v8(analysis_run_id);
+create index if not exists verified_theme_reports_v8_analysis_proof_idx on public.verified_theme_reports_v8(analysis_proof_receipt_id);
+create index if not exists article_classification_jobs_v4_ocr_receipt_idx on public.article_classification_jobs_v4(ocr_receipt_id);
+create index if not exists article_classification_jobs_v4_duplicate_audit_idx on public.article_classification_jobs_v4(duplicate_audit_run_id);
+create index if not exists article_profiles_v4_ocr_receipt_idx on public.article_profiles_v4(ocr_receipt_id);
+create index if not exists article_profiles_v4_duplicate_audit_idx on public.article_profiles_v4(duplicate_audit_run_id);

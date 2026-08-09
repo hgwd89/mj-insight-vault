@@ -1,0 +1,4 @@
+begin;
+alter table public.verified_theme_analysis_runs_v7 drop constraint verified_theme_analysis_runs_v7_seed_count_check;
+alter table public.verified_theme_analysis_runs_v7 add constraint verified_theme_analysis_runs_v7_seed_count_check check(seed_count>=0);
+commit;

@@ -1,0 +1,1 @@
+drop trigger if exists trg_set_chat_report_unlimited_article_lookup on public.chat_reports;

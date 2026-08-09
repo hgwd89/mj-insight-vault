@@ -1,0 +1,4 @@
+create index if not exists source_page_primary_capture_v1_freeze_idx on public.source_page_primary_capture_v1(freeze_receipt_id);
+create index if not exists theme_census_relations_v4_batch_run_idx on public.theme_census_relations_v4(census_batch_id,analysis_run_id);
+create index if not exists theme_census_relations_v4_candidate_run_idx on public.theme_census_relations_v4(candidate_id,analysis_run_id);
+create index if not exists theme_seed_mappings_v4_candidate_run_idx on public.theme_seed_mappings_v4(candidate_id,analysis_run_id);

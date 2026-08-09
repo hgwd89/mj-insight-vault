@@ -1,0 +1,10 @@
+begin;
+revoke execute on function public.claim_full_corpus_review_job_v5(integer) from service_role;
+revoke execute on function public.fail_full_corpus_review_job_v5(uuid,uuid,text,boolean,text) from service_role;
+revoke execute on function public.finalize_full_corpus_review_job_v5(uuid,uuid) from service_role;
+revoke execute on function public.get_full_corpus_review_job_input_v5(uuid,uuid,text) from service_role;
+revoke execute on function public.renew_full_corpus_review_job_lease_v5(uuid,uuid,integer) from service_role;
+revoke execute on function public.requeue_full_corpus_review_job_v5(uuid) from service_role;
+revoke execute on function public.store_full_corpus_review_pass_v5(uuid,uuid,text,text,text,text,text,jsonb) from service_role;
+revoke execute on function public.create_full_corpus_scan_run_v5(integer) from service_role;
+commit;

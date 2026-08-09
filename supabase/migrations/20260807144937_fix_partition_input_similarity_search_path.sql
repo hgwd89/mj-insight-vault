@@ -1,0 +1,1 @@
+alter function public.get_source_page_partition_job_input_v3(uuid,uuid) set search_path=pg_catalog,public,extensions;

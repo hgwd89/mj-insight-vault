@@ -1,0 +1,2 @@
+update public.articles set duplicate_of_article_id='74d6bdad-3f71-48c1-925a-b7f52d8f34c3'::uuid, exclusion_reason='high_confidence_duplicate_cross_source_story_v2', updated_at=now() where id='b486b9df-fb6e-4a39-827b-1f8d02ff4396'::uuid;
+update public.articles set duplicate_of_article_id='479d4131-8caf-49eb-b7cd-cc91313d9766'::uuid, exclusion_reason='high_confidence_duplicate_cross_source_story_v2', updated_at=now() where id='ea3b0122-0927-4ca1-944a-137bc006c6a4'::uuid;

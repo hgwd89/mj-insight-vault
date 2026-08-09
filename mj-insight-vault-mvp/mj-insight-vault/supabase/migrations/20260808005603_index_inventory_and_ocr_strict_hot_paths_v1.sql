@@ -1,0 +1,15 @@
+create index if not exists source_page_article_inventory_jobs_inventory_source_idx
+  on public.source_page_article_inventory_jobs_v1(inventory_source_image_id);
+create index if not exists source_page_article_inventory_jobs_freeze_idx
+  on public.source_page_article_inventory_jobs_v1(freeze_receipt_id);
+create index if not exists source_page_article_inventory_groups_mapped_article_idx
+  on public.source_page_article_inventory_groups_v1(mapped_article_id)
+  where mapped_article_id is not null;
+create index if not exists source_page_article_inventory_mapping_stage_article_idx
+  on public.source_page_article_inventory_mapping_stage_v2(article_id);
+create index if not exists source_page_article_inventory_mappings_article_idx
+  on public.source_page_article_inventory_mappings_v2(article_id);
+create index if not exists article_ocr_verifications_partition_job_idx
+  on public.article_ocr_verifications_v1(partition_job_id);
+create index if not exists article_ocr_verifications_source_region_idx
+  on public.article_ocr_verifications_v1(source_region_id);

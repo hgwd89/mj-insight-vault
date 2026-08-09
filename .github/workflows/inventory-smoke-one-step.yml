@@ -15,7 +15,7 @@ env:
   SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
   NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
   SMOKE_JOB_ID: 0b5b56fe-1e64-4cff-8432-eb48e9688e55
-  SMOKE_RUN_REV: '5'
+  SMOKE_RUN_REV: '6'
 
 jobs:
   run:
@@ -38,4 +38,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes tsx@4.20.3 -e "(async()=>{const m=await import('./lib/articleInventoryWorker.ts');const step=await m.runArticleInventoryWorkerStep(process.env.SMOKE_JOB_ID);const out={claimed:step?.claimed,stage:step?.stage,job_id:step?.job_id,yield_status:step?.yield?.status,completed_stage:step?.yield?.completed_stage};console.log(JSON.stringify(out));if(step?.job_id!==process.env.SMOKE_JOB_ID)throw new Error('unexpected job id');if(step?.stage!=='blind_critic')throw new Error('unexpected stage '+step?.stage);if(step?.yield?.status!=='queued')throw new Error('critic step did not yield queued')})().catch(e=>{console.error(e instanceof Error?e.message:'worker step failed');process.exit(1)})"
+          npx --yes tsx@4.20.3 -e "(async()=>{const m=await import('./lib/articleInventoryWorker.ts');const fn=m.runArticleInventoryWorkerStep??m.default?.runArticleInventoryWorkerStep;if(typeof fn!=='function')throw new Error('worker export not found');const step=await fn(process.env.SMOKE_JOB_ID);const out={claimed:step?.claimed,stage:step?.stage,job_id:step?.job_id,yield_status:step?.yield?.status,completed_stage:step?.yield?.completed_stage};console.log(JSON.stringify(out));if(step?.job_id!==process.env.SMOKE_JOB_ID)throw new Error('unexpected job id');if(step?.stage!=='blind_critic')throw new Error('unexpected stage '+step?.stage);if(step?.yield?.status!=='queued')throw new Error('critic step did not yield queued')})().catch(e=>{const raw=String(e?.stack||e);const msg=raw.replace(/%/g,'%25').replace(/\r/g,'%0D').replace(/\n/g,'%0A');console.log('::error title=inventory_critic::'+msg);process.exit(1)})"

@@ -253,6 +253,7 @@ function rawEvidenceValid(item: JsonRecord) {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function existingRawGate(answer: JsonRecord): QualityGate | null {
   const gate = isRecord(answer.raw_quality_gate) ? answer.raw_quality_gate : null;
   if (!gate || gate.version !== 'formal_gate_v2' || gate.validation_mode !== 'raw_before_enrichment') return null;

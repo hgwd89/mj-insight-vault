@@ -9,6 +9,7 @@ const ALL_WORDS = /全期間|全データ|全記事|全部|全体|全件|すべ�
 const FORMAL_STOP_HEADING = '## 13. 正式レポート保存停止';
 const MAX_EVIDENCE = 24;
 const TIMEOUT_MS = Number(process.env.FULL_CORPUS_FINAL_TIMEOUT_MS) || 125_000;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const MAX_TOKENS = Number(process.env.FULL_CORPUS_FINAL_MAX_TOKENS) || 5_000;
 
 type Json = Record<string, unknown>;

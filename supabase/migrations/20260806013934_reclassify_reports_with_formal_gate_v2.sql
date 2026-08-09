@@ -1,0 +1,1 @@
+update public.chat_reports set answer_json = answer_json;

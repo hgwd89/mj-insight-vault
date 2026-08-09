@@ -1,0 +1,1 @@
+drop trigger if exists trg_reorder_chat_report_answer_text on public.chat_reports;

@@ -1,4 +1,4 @@
-name: next16-full-sim-20260809
+name: next16-full-flat-eslint-sim-20260809
 
 on:
   push:
@@ -25,22 +25,33 @@ jobs:
           set -euo pipefail
           cp package.json /tmp/package.before.json
           cp package-lock.json /tmp/package-lock.before.json
+          cp scripts/eslint.config.mjs /tmp/eslint.before.mjs
+          cp tsconfig.json /tmp/tsconfig.before.json
           npm install next@16.3.0 react@latest react-dom@latest eslint-config-next@16.3.0 @types/react@latest @types/react-dom@latest --package-lock-only --ignore-scripts
+          cat > scripts/eslint.config.mjs <<'EOF'
+          import { defineConfig, globalIgnores } from 'eslint/config';
+          import nextVitals from 'eslint-config-next/core-web-vitals';
+          import nextTs from 'eslint-config-next/typescript';
+
+          const config = defineConfig([
+            ...nextVitals,
+            ...nextTs,
+            globalIgnores([
+              '.next/**',
+              'out/**',
+              'build/**',
+              'node_modules/**',
+              'next-env.d.ts',
+              'tsconfig.tsbuildinfo'
+            ])
+          ]);
+
+          export default config;
+          EOF
           node - <<'NODE'
           const p=require('./package.json');
           console.log('SIM_DEP_VERSIONS', JSON.stringify({next:p.dependencies.next,react:p.dependencies.react,reactDom:p.dependencies['react-dom'],eslintConfigNext:p.devDependencies['eslint-config-next'],typesReact:p.devDependencies['@types/react'],typesReactDom:p.devDependencies['@types/react-dom']}));
           NODE
-          python3 - <<'PY'
-          import json
-          a=json.load(open('/tmp/package-lock.before.json')); b=json.load(open('package-lock.json'))
-          ap=a.get('packages',{}); bp=b.get('packages',{})
-          changed=[]
-          for k in sorted(set(ap)|set(bp)):
-              av=(ap.get(k) or {}).get('version'); bv=(bp.get(k) or {}).get('version')
-              if av != bv: changed.append((k,av,bv))
-          print('SIM_FULL_LOCK_VERSION_CHANGES',len(changed))
-          for k,av,bv in changed: print('SIM_FULL_LOCK_CHANGE',k or '<root>',str(av),'->',str(bv))
-          PY
       - name: Install simulated dependencies
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm ci
@@ -53,11 +64,15 @@ jobs:
       - name: Production build
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         run: npm run build
-      - name: Show automatic config changes
+      - name: Show simulated source/config diffs
         working-directory: mj-insight-vault-mvp/mj-insight-vault
         shell: bash
         run: |
           set -euo pipefail
+          echo '=== PACKAGE_JSON_DIFF ==='
+          git diff -- package.json || true
+          echo '=== ESLINT_CONFIG_DIFF ==='
+          git diff -- scripts/eslint.config.mjs || true
           echo '=== TSCONFIG_DIFF ==='
           git diff -- tsconfig.json || true
           echo '=== NEXT_CONFIG_DIFF ==='

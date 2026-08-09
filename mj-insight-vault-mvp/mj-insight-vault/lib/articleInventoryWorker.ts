@@ -206,8 +206,10 @@ async function callResponsesJson(input: {
   }
 }
 
-async function claimOneJob() {
-  const { data, error } = await supabaseAdmin.rpc('claim_source_page_article_inventory_job_v2', { p_lease_seconds: LEASE_SECONDS });
+async function claimOneJob(jobId?: string) {
+  const claimRpc = jobId ? 'claim_source_page_article_inventory_job_smoke_v1' : 'claim_source_page_article_inventory_job_v2';
+  const claimArgs = jobId ? { p_job_id: jobId, p_lease_seconds: LEASE_SECONDS } : { p_lease_seconds: LEASE_SECONDS };
+  const { data, error } = await supabaseAdmin.rpc(claimRpc, claimArgs);
   if (error) throw error;
   const row = Array.isArray(data) && isRecord(data[0]) ? data[0] : null;
   if (!row) return null;
@@ -539,8 +541,8 @@ export async function getArticleInventoryStatus() {
   return { gate, counts, third_pass_jobs: (jobs || []).filter((row) => row.requires_third_pass === true).length };
 }
 
-export async function runArticleInventoryWorkerStep() {
-  const job = await claimOneJob();
+export async function runArticleInventoryWorkerStep(jobId?: string) {
+  const job = await claimOneJob(jobId);
   if (!job) return { claimed: 0, stage: 'idle', completed: 0, needs_review: 0, discovery_required: 0, failed: 0 };
   try {
     const blindPasses = await existingBlindPassKinds(job.id);

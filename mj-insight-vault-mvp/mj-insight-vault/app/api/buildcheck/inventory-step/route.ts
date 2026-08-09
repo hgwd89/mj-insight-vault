@@ -18,6 +18,7 @@ function authorized(req: Request) {
 
 export async function GET(req: Request) {
   if (!authorized(req)) return new Response('Not Found', { status: 404 });
-  const step = await runArticleInventoryWorkerStep();
+  const jobId = new URL(req.url).searchParams.get('job_id')?.trim() || undefined;
+  const step = await runArticleInventoryWorkerStep(jobId);
   return Response.json({ step, ...(await getArticleInventoryStatus()) }, { headers: { 'cache-control': 'no-store' } });
 }

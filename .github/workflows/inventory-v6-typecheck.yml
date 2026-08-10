@@ -25,5 +25,5 @@ jobs:
         run: npm ci
       - name: TypeScript check
         run: npx tsc --noEmit
-      - name: Inventory structure test
-        run: npm run test:inventory
+      - name: Grounded inventory v6 contract
+        run: node scripts/verify-article-inventory-worker-v6.mjs

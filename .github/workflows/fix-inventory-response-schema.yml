@@ -1,4 +1,4 @@
-name: Add preview inventory smoke targeting
+name: Fix inventory OCR block source
 
 on:
   push:
@@ -17,37 +17,33 @@ jobs:
         with:
           ref: audit/verified-pipeline-v10-buildcheck
           fetch-depth: 0
-      - name: Add explicit smoke job targeting
+      - name: Align inventory worker with authoritative OCR block source
         run: |
           python - <<'PY'
           from pathlib import Path
-
-          worker = Path('mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorker.ts')
-          s = worker.read_text()
-          old = """async function claimOneJob() {\n  const { data, error } = await supabaseAdmin.rpc('claim_source_page_article_inventory_job_v2', { p_lease_seconds: LEASE_SECONDS });"""
-          new = """async function claimOneJob(jobId?: string) {\n  const claimRpc = jobId ? 'claim_source_page_article_inventory_job_smoke_v1' : 'claim_source_page_article_inventory_job_v2';\n  const claimArgs = jobId ? { p_job_id: jobId, p_lease_seconds: LEASE_SECONDS } : { p_lease_seconds: LEASE_SECONDS };\n  const { data, error } = await supabaseAdmin.rpc(claimRpc, claimArgs);"""
+          p = Path('mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorker.ts')
+          s = p.read_text()
+          old = """  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_blocks_v1')
+    .select('block_index,block_text,x_min,y_min,x_max,y_max,ocr_confidence,source_ocr_json_sha256')
+    .eq('job_id', job.id)
+    .order('block_index', { ascending: true });"""
+          new = """  const { data, error } = await supabaseAdmin
+    .from('source_ocr_blocks_v1')
+    .select('block_index,block_text,x_min,y_min,x_max,y_max,ocr_confidence,source_ocr_json_sha256')
+    .eq('source_image_id', job.inventory_source_image_id)
+    .eq('page_index', 0)
+    .eq('source_ocr_json_sha256', job.source_ocr_json_sha256)
+    .order('block_index', { ascending: true });"""
           if s.count(old) != 1:
-              raise SystemExit(f'claim target count={s.count(old)}')
-          s = s.replace(old, new, 1)
-          old = """export async function runArticleInventoryWorkerStep() {\n  const job = await claimOneJob();"""
-          new = """export async function runArticleInventoryWorkerStep(jobId?: string) {\n  const job = await claimOneJob(jobId);"""
-          if s.count(old) != 1:
-              raise SystemExit(f'worker entry target count={s.count(old)}')
-          worker.write_text(s.replace(old, new, 1))
-
-          route = Path('mj-insight-vault-mvp/mj-insight-vault/app/api/buildcheck/inventory-step/route.ts')
-          r = route.read_text()
-          old = """  const step = await runArticleInventoryWorkerStep();\n  return Response.json({ step, ...(await getArticleInventoryStatus()) }, { headers: { 'cache-control': 'no-store' } });"""
-          new = """  const jobId = new URL(req.url).searchParams.get('job_id')?.trim() || undefined;\n  const step = await runArticleInventoryWorkerStep(jobId);\n  return Response.json({ step, ...(await getArticleInventoryStatus()) }, { headers: { 'cache-control': 'no-store' } });"""
-          if r.count(old) != 1:
-              raise SystemExit(f'route target count={r.count(old)}')
-          route.write_text(r.replace(old, new, 1))
+              raise SystemExit(f'expected one loadBlocks source target, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
           PY
       - name: Commit patch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorker.ts mj-insight-vault-mvp/mj-insight-vault/app/api/buildcheck/inventory-step/route.ts
+          git add mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorker.ts
           git diff --cached --check
-          git commit -m 'chore: add preview-only targeted inventory smoke [target-smoke-done]'
+          git commit -m 'fix inventory worker OCR block source [ocr-source-fix-done]'
           git push origin HEAD:audit/verified-pipeline-v10-buildcheck

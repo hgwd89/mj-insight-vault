@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { runArticleInventoryWorkerV3Step } from '@/lib/articleInventoryWorkerV3';
+import { runArticleInventoryWorkerV4VisionStep } from '@/lib/articleInventoryWorkerV4Vision';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const runtime = 'nodejs';
@@ -71,7 +72,7 @@ async function recoveredStatus() {
     const status = String(row.status || 'unknown');
     counts[status] = (counts[status] || 0) + 1;
   }
-  return { gate, counts, worker_version: 'article_inventory_worker_v3_recovered_ocr' };
+  return { gate, counts, worker_version: 'article_inventory_v4_visual_regions' };
 }
 
 async function drain(workers: number, activeMs: number) {
@@ -83,7 +84,7 @@ async function drain(workers: number, activeMs: number) {
     let claimed = 0;
     let idle = false;
     while (Date.now() < stopStartingAt) {
-      const step = await runArticleInventoryWorkerV3Step();
+      const step = await runArticleInventoryWorkerV4VisionStep();
       const stage = String((step as { stage?: unknown }).stage || 'idle');
       stages[stage] = (stages[stage] || 0) + 1;
       if (Number((step as { claimed?: unknown }).claimed || 0) < 1) {

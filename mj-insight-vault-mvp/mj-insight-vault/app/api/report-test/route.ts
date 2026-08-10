@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { runChatAnalysis } from '@/lib/chatRouteFullCorpusGuard';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,6 +19,12 @@ const REPORT_REQUIREMENTS = [
 
 type JsonRecord = Record<string, unknown>;
 
+type LanguageDiagnostics = {
+  suspect_lines: number;
+  suspect_chars: number;
+  sample: string[];
+};
+
 function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
@@ -28,6 +35,29 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function previewOnly() {
   return process.env.VERCEL_ENV === 'preview' && process.env.VERCEL_GIT_COMMIT_REF === BRANCH;
+}
+
+function englishProseDiagnostics(value: string): LanguageDiagnostics {
+  const suspect = value
+    .split(/\n+/)
+    .map((line) => line.replace(/https?:\/\/\S+/g, '').replace(/`[^`]*`/g, '').trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const englishWords = line.match(/[A-Za-z][A-Za-z'-]{2,}/g)?.length || 0;
+      const japaneseChars = line.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/gu)?.length || 0;
+      if (englishWords < 8) return false;
+      return japaneseChars < Math.max(6, englishWords);
+    });
+
+  return {
+    suspect_lines: suspect.length,
+    suspect_chars: suspect.reduce((sum, line) => sum + line.length, 0),
+    sample: suspect.slice(0, 3).map((line) => line.slice(0, 240))
+  };
+}
+
+function languageReviewRequired(diagnostics: LanguageDiagnostics) {
+  return diagnostics.suspect_lines >= 3 || diagnostics.suspect_chars >= 360;
 }
 
 export async function POST(req: NextRequest) {
@@ -61,7 +91,40 @@ export async function POST(req: NextRequest) {
       }, { status: 500 });
     }
 
-    return Response.json({ report, result }, { headers: { 'cache-control': 'no-store' } });
+    const { data: stored, error: storedError } = await supabaseAdmin
+      .from('chat_reports')
+      .select('id,answer_text,report_kind,is_formal_report,analysis_verification_status,generation_status')
+      .eq('id', reportId)
+      .single();
+    if (storedError) throw storedError;
+    if (stored?.report_kind !== 'provisional' || stored?.is_formal_report === true) {
+      throw new Error(`preview report escaped provisional contract: ${reportId}`);
+    }
+
+    const diagnostics = englishProseDiagnostics(String(stored?.answer_text || ''));
+    if (languageReviewRequired(diagnostics)) {
+      const { error: flagError } = await supabaseAdmin
+        .from('chat_reports')
+        .update({ analysis_verification_status: 'provisional_language_review_required' })
+        .eq('id', reportId)
+        .eq('is_formal_report', false);
+      if (flagError) throw flagError;
+
+      return Response.json({
+        error: 'provisional report contains substantial English explanatory prose',
+        report_id: reportId,
+        analysis_verification_status: 'provisional_language_review_required',
+        language_diagnostics: diagnostics,
+        report,
+        result
+      }, { status: 422, headers: { 'cache-control': 'no-store' } });
+    }
+
+    return Response.json({
+      report,
+      result,
+      language_diagnostics: diagnostics
+    }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     return jsonError(error);
   }

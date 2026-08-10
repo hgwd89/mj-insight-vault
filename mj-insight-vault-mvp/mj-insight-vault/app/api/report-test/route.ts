@@ -8,7 +8,13 @@ export const maxDuration = 300;
 
 const BRANCH = 'agent/inventory-smoke-v2';
 const MAX_QUERY_CHARS = 12_000;
-const REPORT_REQUIREMENTS = '暫定テストレポート。結論、主要テーマ、根拠記事、反証・制約、実務含意、追加調査課題を含める。記事にないことは断定しない。正式レポートとは扱わない。';
+const REPORT_REQUIREMENTS = [
+  '暫定テストレポート。結論、主要テーマ、根拠記事、反証・制約、実務含意、追加調査課題を含める。',
+  '記事にないことは断定しない。正式レポートとは扱わない。',
+  'report_title、answer_text、見出し、本文、表、箇条書き、注記を含む説明文は日本語で記述する。',
+  '固有名詞、製品名、組織名、モデル名、原文引用に必要な語を除き、英語の説明文・英語見出し・英語のまとめを生成しない。',
+  '英語の分析メモを途中生成しても最終出力へ残さず、自然な日本語へ翻訳・統合してから返す。'
+].join(' ');
 
 type JsonRecord = Record<string, unknown>;
 

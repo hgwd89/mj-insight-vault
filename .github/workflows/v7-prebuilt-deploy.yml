@@ -1,0 +1,69 @@
+name: v7-prebuilt-deploy
+
+on:
+  push:
+    branches: [agent/inventory-smoke-v2]
+    paths: [.github/workflows/v7-prebuilt-deploy.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: team_1XmEhGWaGqOmBplZ7Cx7jVsN
+      VERCEL_PROJECT_ID: prj_8yQsd046lO2nBmMw4EgmQV68VipU
+      BRANCH: agent/inventory-smoke-v2
+    defaults:
+      run:
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Require Vercel token
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::error::VERCEL_TOKEN repository secret is not configured"
+            exit 2
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Patch preview-only auth for prebuilt runtime
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/api/buildcheck/inventory-v3/route.ts')
+          s = p.read_text()
+          old = "  if (process.env.VERCEL_GIT_COMMIT_REF !== BRANCH || process.env.VERCEL_ENV !== 'preview') return false;"
+          new = "  const prebuiltV7 = process.env.INVENTORY_V7_PREBUILT === '1';\n  if (!prebuiltV7 && (process.env.VERCEL_GIT_COMMIT_REF !== BRANCH || process.env.VERCEL_ENV !== 'preview')) return false;"
+          if old not in s:
+              raise SystemExit('expected auth guard not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Pull branch-specific Preview settings
+        run: npx vercel@latest pull --yes --environment=preview --git-branch="$BRANCH" --token="$VERCEL_TOKEN"
+
+      - name: Build V7 locally
+        run: npx vercel@latest build --token="$VERCEL_TOKEN"
+
+      - name: Deploy prebuilt V7 Preview
+        id: deploy
+        run: |
+          URL=$(npx vercel@latest deploy --prebuilt --token="$VERCEL_TOKEN" --env INVENTORY_V7_PREBUILT=1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "V7 Preview: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "DEPLOYMENT_URL=$URL"
+
+      - name: Verify deployment metadata
+        run: npx vercel@latest inspect "${{ steps.deploy.outputs.url }}" --token="$VERCEL_TOKEN"

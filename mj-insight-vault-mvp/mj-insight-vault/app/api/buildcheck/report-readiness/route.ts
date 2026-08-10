@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { createFullCorpusScanRun, getFullCorpusScanRun, runFullCorpusScanBatches } from '@/lib/fullCorpusScan';
+import { getFullCorpusScanRun, runFullCorpusScanBatches } from '@/lib/fullCorpusScan';
 import { runChatAnalysis } from '@/lib/chatRouteFullCorpusGuard';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const runtime='nodejs';
 export const dynamic='force-dynamic';
@@ -21,13 +22,25 @@ function auth(req:Request){
   return actual.length===expected.length&&timingSafeEqual(actual,expected);
 }
 
+async function createFormalRun(){
+  const model=process.env.OPENAI_SCAN_MODEL||'gpt-4o-mini';
+  const {data,error}=await supabaseAdmin.rpc('create_formal_full_corpus_scan_v1',{
+    p_model:model,
+    p_batch_size:50,
+    p_prompt_version:'full_corpus_batch_v2'
+  });
+  if(error)throw error;
+  const runId=String((data as Record<string,unknown> | null)?.run_id||'');
+  if(!runId)throw new Error('formal full corpus scan RPC returned no run_id');
+  return getFullCorpusScanRun(runId);
+}
+
 export async function GET(req:Request){
   if(!auth(req))return new Response('Not Found',{status:404});
   const url=new URL(req.url);
   const action=url.searchParams.get('action')||'status';
   if(action==='create'){
-    const result=await createFullCorpusScanRun({scope_type:'all',batch_size:50});
-    return Response.json(result,{headers:{'cache-control':'no-store'}});
+    return Response.json(await createFormalRun(),{headers:{'cache-control':'no-store'}});
   }
   if(action==='advance'){
     const id=url.searchParams.get('id')||'';

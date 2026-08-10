@@ -6,6 +6,7 @@ const worker = fs.readFileSync(path.join(root, 'lib/articleInventoryWorkerV6Grou
 const orchestrator = fs.readFileSync(path.join(root, 'lib/articleInventoryWorkerV7GroundedOrchestrator.ts'), 'utf8');
 const consensus = fs.readFileSync(path.join(root, 'lib/articleInventoryWorkerV5Consensus.ts'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'app/api/buildcheck/inventory-v3/route.ts'), 'utf8');
+const vercel = JSON.parse(fs.readFileSync(path.join(root, 'vercel.json'), 'utf8'));
 
 const checks = [
   ['route uses grounded v7 orchestrator', route.includes('runArticleInventoryWorkerV7GroundedOrchestratorStep')],
@@ -22,6 +23,9 @@ const checks = [
   ['v7 grounds adjudicator before consensus', orchestrator.includes("p_pass_kind:'adjudicator'") && orchestrator.includes('source_page_inventory_visual_region_evidence_v6')],
   ['v7 raw adjudicator confidence floor is 0.60', orchestrator.includes('MIN_RAW_CONFIDENCE = 0.60')],
   ['v7 adjudicator model must be independent', orchestrator.includes('must use a model distinct from mapper and critic')],
+  ['v7 adjudicator model remains runtime-overridable', orchestrator.includes('OPENAI_INVENTORY_ADJUDICATOR_MODEL')],
+  ['formal Vercel runtime pins GPT-5.6 Sol adjudicator', vercel?.env?.OPENAI_INVENTORY_ADJUDICATOR_MODEL === 'gpt-5.6-sol'],
+  ['formal Vercel runtime never pins mini adjudicator', vercel?.env?.OPENAI_INVENTORY_ADJUDICATOR_MODEL !== 'gpt-4o-mini'],
   ['v7 delegates mapper/critic raw passes to grounded v6', orchestrator.includes('runArticleInventoryWorkerV6GroundedStep')],
   ['v5 final visual confidence remains 0.80', consensus.includes('confidence < 0.80')],
   ['v5 requires independent support', consensus.includes('One-model-only visual article has no independent support')],

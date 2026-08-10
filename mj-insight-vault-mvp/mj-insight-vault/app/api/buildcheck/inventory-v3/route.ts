@@ -1,6 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { runArticleInventoryWorkerV3Step } from '@/lib/articleInventoryWorkerV3';
-import { runArticleInventoryWorkerV4VisionStep } from '@/lib/articleInventoryWorkerV4Vision';
+import { runArticleInventoryWorkerV5ConsensusStep } from '@/lib/articleInventoryWorkerV5Consensus';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const runtime = 'nodejs';
@@ -31,20 +30,14 @@ async function readJob(id: string) {
     .single();
   if (error) throw error;
 
-  const [{ data: passes, error: passError }, { data: mappingPasses, error: mappingError }] = await Promise.all([
-    supabaseAdmin
-      .from('source_page_article_inventory_pass_runs_v1')
-      .select('pass_kind,model,provider_response_id,created_at')
-      .eq('job_id', id)
-      .order('created_at', { ascending: true }),
-    supabaseAdmin
-      .from('source_page_article_inventory_mapping_pass_runs_v2')
-      .select('pass_kind,model,provider_response_id,created_at')
-      .eq('job_id', id)
-      .order('created_at', { ascending: true })
+  const [{ data: passes, error: passError }, { data: mappingPasses, error: mappingError }, { data: visualReceipt, error: visualError }] = await Promise.all([
+    supabaseAdmin.from('source_page_article_inventory_pass_runs_v1').select('pass_kind,model,provider_response_id,created_at').eq('job_id', id).order('created_at', { ascending: true }),
+    supabaseAdmin.from('source_page_article_inventory_mapping_pass_runs_v2').select('pass_kind,model,provider_response_id,created_at').eq('job_id', id).order('created_at', { ascending: true }),
+    supabaseAdmin.from('source_page_inventory_visual_consensus_receipts_v4').select('*').eq('job_id', id).maybeSingle()
   ]);
   if (passError) throw passError;
   if (mappingError) throw mappingError;
+  if (visualError) throw visualError;
 
   const { data: consensus, error: consensusError } = await supabaseAdmin.rpc('inventory_consensus_source_v3', { p_job_id: id });
   if (consensusError) throw consensusError;
@@ -52,6 +45,7 @@ async function readJob(id: string) {
   return {
     job: data,
     consensus_source_v3: typeof consensus === 'string' ? consensus : null,
+    visual_consensus_receipt: visualReceipt,
     pass_receipts: passes || [],
     mapping_pass_receipts: mappingPasses || []
   };
@@ -60,10 +54,7 @@ async function readJob(id: string) {
 async function recoveredStatus() {
   const [{ data: gate, error: gateError }, { data: jobs, error: jobsError }] = await Promise.all([
     supabaseAdmin.from('source_page_article_inventory_gate_v2').select('*').single(),
-    supabaseAdmin
-      .from('source_page_article_inventory_jobs_v1')
-      .select('status')
-      .eq('inventory_version', RECOVERED_VERSION)
+    supabaseAdmin.from('source_page_article_inventory_jobs_v1').select('status').eq('inventory_version', RECOVERED_VERSION)
   ]);
   if (gateError) throw gateError;
   if (jobsError) throw jobsError;
@@ -72,7 +63,7 @@ async function recoveredStatus() {
     const status = String(row.status || 'unknown');
     counts[status] = (counts[status] || 0) + 1;
   }
-  return { gate, counts, worker_version: 'article_inventory_v4_visual_regions' };
+  return { gate, counts, worker_version: 'article_inventory_v5_visual_consensus' };
 }
 
 async function drain(workers: number, activeMs: number) {
@@ -84,7 +75,7 @@ async function drain(workers: number, activeMs: number) {
     let claimed = 0;
     let idle = false;
     while (Date.now() < stopStartingAt) {
-      const step = await runArticleInventoryWorkerV4VisionStep();
+      const step = await runArticleInventoryWorkerV5ConsensusStep();
       const stage = String((step as { stage?: unknown }).stage || 'idle');
       stages[stage] = (stages[stage] || 0) + 1;
       if (Number((step as { claimed?: unknown }).claimed || 0) < 1) {
@@ -131,12 +122,12 @@ export async function GET(req: Request) {
       return Response.json({ case: caseName, ...(await readJob(jobId)), recovered: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });
     }
     if (action === 'step') {
-      const step = await runArticleInventoryWorkerV3Step(jobId);
+      const step = await runArticleInventoryWorkerV5ConsensusStep(jobId);
       return Response.json({ case: caseName, step, ...(await readJob(jobId)), recovered: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });
     }
     return Response.json({ error: 'unknown action' }, { status: 400 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'inventory v3 smoke error';
+    const message = error instanceof Error ? error.message : 'inventory v5 smoke error';
     return Response.json({ error: message }, { status: 500, headers: { 'cache-control': 'no-store' } });
   }
 }

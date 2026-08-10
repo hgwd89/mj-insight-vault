@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "env": {
+    "OPENAI_INVENTORY_ADJUDICATOR_MODEL": "gpt-5.6-sol"
+  }
+}

@@ -5,6 +5,10 @@ if (branch !== 'agent/inventory-smoke-v2') {
   console.log('[preview-smoke] skipped outside dedicated branch');
   process.exit(0);
 }
+if (process.env.ALLOW_PREVIEW_SMOKE !== '1') {
+  console.log('[preview-smoke] skipped: set ALLOW_PREVIEW_SMOKE=1 for explicit side-effectful execution');
+  process.exit(0);
+}
 
 const nonce = 'k1Pw1mPHc7DkzLhoMdWB0ds8gg1-699k';
 const staleReportRunId = '92346b9b-133f-43b7-b855-30c39998b1ac';

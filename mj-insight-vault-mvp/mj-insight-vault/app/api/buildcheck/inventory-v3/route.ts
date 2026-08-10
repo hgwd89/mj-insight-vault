@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { runArticleInventoryWorkerV6GroundedStep } from '@/lib/articleInventoryWorkerV6Grounded';
+import { runArticleInventoryWorkerV7GroundedOrchestratorStep } from '@/lib/articleInventoryWorkerV7GroundedOrchestrator';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const runtime = 'nodejs';
@@ -66,7 +66,7 @@ async function recoveredStatus() {
     const status = String(row.status || 'unknown');
     counts[status] = (counts[status] || 0) + 1;
   }
-  return { gate, counts, worker_version: 'article_inventory_v6_grounded_visual_consensus' };
+  return { gate, counts, worker_version: 'article_inventory_v7_grounded_orchestrator' };
 }
 
 async function drain(workers: number, activeMs: number) {
@@ -78,7 +78,7 @@ async function drain(workers: number, activeMs: number) {
     let claimed = 0;
     let idle = false;
     while (Date.now() < stopStartingAt) {
-      const step = await runArticleInventoryWorkerV6GroundedStep();
+      const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep();
       const stage = String((step as { stage?: unknown }).stage || 'idle');
       stages[stage] = (stages[stage] || 0) + 1;
       if (Number((step as { claimed?: unknown }).claimed || 0) < 1) {
@@ -125,12 +125,12 @@ export async function GET(req: Request) {
       return Response.json({ case: caseName, ...(await readJob(jobId)), recovered: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });
     }
     if (action === 'step') {
-      const step = await runArticleInventoryWorkerV6GroundedStep(jobId);
+      const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep(jobId);
       return Response.json({ case: caseName, step, ...(await readJob(jobId)), recovered: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });
     }
     return Response.json({ error: 'unknown action' }, { status: 400 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'inventory v6 smoke error';
+    const message = error instanceof Error ? error.message : 'inventory v7 smoke error';
     return Response.json({ error: message }, { status: 500, headers: { 'cache-control': 'no-store' } });
   }
 }

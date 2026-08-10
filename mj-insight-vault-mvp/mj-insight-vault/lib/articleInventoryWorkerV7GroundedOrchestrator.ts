@@ -208,11 +208,18 @@ function parseArticles(parsed: JsonRecord): VisualArticle[] {
     }
     if (!Array.isArray(item.regions) || item.regions.length < 1 || item.regions.length > 8) throw new ReviewRequiredError(`Grounded adjudicator article ${i} regions invalid.`);
     const regions = item.regions.map((rr, j) => {
-      const r = record(rr); const v = { x_min: Number(r.x_min), y_min: Number(r.y_min), x_max: Number(r.x_max), y_max: Number(r.y_max) };
-      if (!Object.values(v).every(Number.isInteger) || v.x_min < 0 || v.y_min < 0 || v.x_max > 1000 || v.y_max > 1000 || v.x_max <= v.x_min || v.y_max <= v.y_min) {
+      const r = record(rr);
+      const rawValue = { x_min: Number(r.x_min), y_min: Number(r.y_min), x_max: Number(r.x_max), y_max: Number(r.y_max) };
+      if (!Object.values(rawValue).every(Number.isInteger) || rawValue.x_min < 0 || rawValue.y_min < 0 || rawValue.x_max > 1000 || rawValue.y_max > 1000) {
         throw new ReviewRequiredError(`Grounded adjudicator article ${i} region ${j} invalid.`);
       }
-      return v;
+      let xMin = Math.min(rawValue.x_min, rawValue.x_max);
+      let xMax = Math.max(rawValue.x_min, rawValue.x_max);
+      let yMin = Math.min(rawValue.y_min, rawValue.y_max);
+      let yMax = Math.max(rawValue.y_min, rawValue.y_max);
+      if (xMax === xMin) { if (xMax < 1000) xMax += 1; else xMin -= 1; }
+      if (yMax === yMin) { if (yMax < 1000) yMax += 1; else yMin -= 1; }
+      return { x_min: xMin, y_min: yMin, x_max: xMax, y_max: yMax };
     });
     return { headline_hint: hint, confidence, regions, reason };
   });

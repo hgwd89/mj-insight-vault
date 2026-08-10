@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 const BRANCH = 'agent/inventory-smoke-v2';
-const NONCE_SHA256 = '1c906146632bd86191f3aa40a70e6f3572cc053731342cb7071617f5407214df';
+const NONCE_SHA256 = '91e495dfe26aed923586e0ba191d9ef309378840697d71bb0377fb269cfa4d36';
 const RECOVERED_VERSION = 'page_article_inventory_v4_recovered_ocr';
 const CASES: Record<string, string> = {
   case1: '0b5b56fe-1e64-4cff-8432-eb48e9688e55',

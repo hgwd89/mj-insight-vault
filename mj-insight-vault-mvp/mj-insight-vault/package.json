@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/run-inventory-smoke-preview.mjs",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx,.mjs --config scripts/eslint.config.mjs",
     "test:structure": "node scripts/verify-article-structure.mjs",
@@ -16,6 +16,7 @@
     "test:db-formal-proof": "node scripts/verify-db-formal-proof.mjs",
     "test:inventory": "node scripts/verify-article-inventory-worker.mjs",
     "test:original-ingest": "node scripts/verify-original-ingest.mjs",
+    "test:preview-smoke": "node scripts/run-inventory-smoke-preview.mjs",
     "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:inventory && npm run test:original-ingest"
   },
   "dependencies": {

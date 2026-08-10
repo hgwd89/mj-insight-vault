@@ -12,31 +12,30 @@ export type WideArticle = {
 };
 
 const PAGE_SIZE = 1000;
-const HIDDEN = new Set(['deleted', 'excluded', 'rejected']);
 const SELECT = 'id, batch_id, headline, article_date, ocr_text, article_type, status, created_at';
-
-function formalArticle(article: WideArticle) {
-  return (!article.status || !HIDDEN.has(article.status))
-    && article.article_type === 'article'
-    && Boolean(article.ocr_text?.trim());
-}
 
 function uniq(rows: WideArticle[]) {
   const seen = new Set<string>();
-  return rows.filter(formalArticle).filter((article) => {
+  return rows.filter((article) => {
     if (seen.has(article.id)) return false;
     seen.add(article.id);
     return true;
   });
 }
 
+/**
+ * The formal-corpus scan must use the database's authoritative formal corpus
+ * predicate, not a looser application-side approximation. The view also
+ * carries the provenance, deduplication, publication-date, clean-body and
+ * hard-advertisement gates that are intentionally absent from raw `articles`.
+ */
 export async function fetchAllWideArticles() {
   const rows: WideArticle[] = [];
   let from = 0;
 
   for (;;) {
     const { data, error } = await supabaseAdmin
-      .from('articles')
+      .from('formal_corpus_articles_v1')
       .select(SELECT)
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1);

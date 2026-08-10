@@ -26,20 +26,32 @@ async function ready() {
   }
   throw new Error('local Next server did not become ready');
 }
+async function invoke(path, label) {
+  const res = await fetch(`http://127.0.0.1:${port}${path}?nonce=${encodeURIComponent(nonce)}`, { signal: AbortSignal.timeout(175000) });
+  const body = await res.text();
+  console.log(`[inventory-smoke] ${label} status=${res.status} body=${body}`);
+  let parsed = {};
+  try { parsed = JSON.parse(body); } catch {}
+  return { res, parsed };
+}
+function terminal(parsed) {
+  const stage = String(parsed.stage || '');
+  const jobStatus = String(parsed?.job?.status || parsed?.result?.status || '');
+  return stage === 'needs_review' || stage === 'failed_or_requeued' || jobStatus === 'needs_review' || jobStatus === 'failed';
+}
 
 try {
   await ready();
-  for (let step = 1; step <= 6; step += 1) {
-    const res = await fetch(`http://127.0.0.1:${port}/api/buildcheck/inventory-smoke-v2c?nonce=${encodeURIComponent(nonce)}`, { signal: AbortSignal.timeout(175000) });
-    const body = await res.text();
-    console.log(`[inventory-smoke] step=${step} status=${res.status} body=${body}`);
-    let parsed = {};
-    try { parsed = JSON.parse(body); } catch {}
-    const stage = String(parsed.stage || '');
-    const jobStatus = String(parsed?.job?.status || parsed?.result?.status || '');
-    if (stage === 'needs_review' || stage === 'failed_or_requeued' || jobStatus === 'needs_review' || jobStatus === 'failed') break;
-    if (stage === 'finalize' || jobStatus === 'completed' || (parsed.claimed === 0 && jobStatus !== 'queued' && jobStatus !== 'running')) break;
-    await sleep(400);
+  const repair = await invoke('/api/buildcheck/inventory-smoke-critic-repair', 'critic-repair');
+  if (!terminal(repair.parsed)) {
+    for (let step = 1; step <= 6; step += 1) {
+      const { parsed } = await invoke('/api/buildcheck/inventory-smoke-v2c', `step=${step}`);
+      const stage = String(parsed.stage || '');
+      const jobStatus = String(parsed?.job?.status || parsed?.result?.status || '');
+      if (terminal(parsed)) break;
+      if (stage === 'finalize' || jobStatus === 'completed' || (parsed.claimed === 0 && jobStatus !== 'queued' && jobStatus !== 'running')) break;
+      await sleep(400);
+    }
   }
 } finally {
   child.kill('SIGTERM');

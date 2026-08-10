@@ -49,37 +49,24 @@ function appHeaders(){
 
 async function runProvisionalReportSmoke(){
   const query='【Preview E2E smoke 2026-08-10】生活者が物価上昇下で何を維持し、何を削っているか。根拠記事、反証・制約、実務含意、追加調査課題を分けて整理してください。';
-  const created=await invoke('/api/chat/jobs','provisional-report-create',30000,{method:'POST',headers:appHeaders(),body:JSON.stringify({
-    query,
-    model:'gpt-4o-mini',
-    target_scope:'all',
-    output_template:'auto',
-    require_full_corpus:false,
-    report_requirements:'暫定テストレポート。結論、主要テーマ、根拠記事、反証・制約、実務含意、追加調査課題を含める。記事にないことは断定しない。',
-    pipeline_version:'report_pipeline_v3',
-    preview_e2e_smoke:'2026-08-10-v1'
-  })});
-  const job=created.parsed?.job||{};
-  const id=String(job.id||'');
-  if(!id) throw new Error(`provisional report job was not created: ${JSON.stringify(created.parsed).slice(0,1000)}`);
-
-  for(let step=1;step<=8;step+=1){
-    const run=await invoke(`/api/chat/jobs/${encodeURIComponent(id)}/run`,`provisional-report-run-${step}`,290000,{method:'POST',headers:appHeaders()});
-    const state=run.parsed?.job||{};
-    const status=String(state.status||'');
-    const reportId=String(state.report_id||'');
-    if(status==='completed'&&reportId){
-      console.log(`[preview-smoke] provisional-report-e2e PASSED job_id=${id} report_id=${reportId}`);
-      return {id,reportId};
-    }
-    if(status==='failed') throw new Error(`provisional report failed: ${String(state.error_message||run.parsed?.error||'unknown')}`);
-    const retryAt=String(state.next_retry_at||'');
-    if(retryAt){
-      const ms=Math.max(500,Date.parse(retryAt)-Date.now()+250);
-      await sleep(Math.min(ms,30000));
-    } else await sleep(700);
+  const generated=await invoke('/api/report-test','provisional-report-generate',290000,{method:'POST',headers:appHeaders(),body:JSON.stringify({query,model:'gpt-4o-mini'})});
+  if(!generated.res.ok){
+    throw new Error(`provisional report generation failed: ${JSON.stringify(generated.parsed).slice(0,2000)}`);
   }
-  throw new Error(`provisional report did not complete within smoke steps: job_id=${id}`);
+  const reportId=String(generated.parsed?.report?.id||'');
+  if(!reportId) throw new Error(`provisional report was not saved: ${JSON.stringify(generated.parsed).slice(0,2000)}`);
+
+  const readback=await invoke(`/api/reports/${encodeURIComponent(reportId)}`,'provisional-report-readback',30000,{headers:appHeaders()});
+  const readbackId=String(readback.parsed?.report?.id||'');
+  const formal=Boolean(readback.parsed?.report?.is_formal_report);
+  const verification=String(readback.parsed?.report?.analysis_verification_status||'');
+  if(!readback.res.ok||readbackId!==reportId) throw new Error(`provisional report readback failed: report_id=${reportId}`);
+  if(formal) throw new Error(`preview report was incorrectly persisted as formal: report_id=${reportId}`);
+  if(!verification.startsWith('provisional')&&verification!=='quality_unverified'){
+    throw new Error(`unexpected preview verification status: ${verification||'empty'}`);
+  }
+  console.log(`[preview-smoke] provisional-report-e2e PASSED report_id=${reportId} verification=${verification}`);
+  return reportId;
 }
 
 try {

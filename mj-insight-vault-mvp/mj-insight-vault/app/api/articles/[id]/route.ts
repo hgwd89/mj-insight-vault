@@ -68,7 +68,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     const { data: article, error } = await supabaseAdmin
       .from('articles')
-      .select('*, article_tags(*), source_images(id, storage_path, file_name, mime_type)')
+      .select('*, article_tags(*), source_images!articles_source_image_id_fkey(id, storage_path, file_name, mime_type)')
       .eq('id', id)
       .single();
 
@@ -119,7 +119,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     const { data: article, error: refetchError } = await supabaseAdmin
       .from('articles')
-      .select('*, article_tags(*), source_images(id, storage_path, file_name, mime_type)')
+      .select('*, article_tags(*), source_images!articles_source_image_id_fkey(id, storage_path, file_name, mime_type)')
       .eq('id', id)
       .single();
 

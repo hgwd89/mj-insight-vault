@@ -5,7 +5,7 @@ import { rankArticlesHybrid, type SearchableArticle } from '@/lib/articleSearch'
 
 const HIDDEN_STATUSES = new Set(['deleted', 'excluded', 'rejected']);
 const PAGE_SIZE = 1000;
-const SELECT = '*, article_tags(tag_type, tag_name), source_images(id, file_name, storage_path, mime_type)';
+const SELECT = '*, article_tags(tag_type, tag_name), source_images!articles_source_image_id_fkey(id, file_name, storage_path, mime_type)';
 
 type ArticleRow = SearchableArticle;
 

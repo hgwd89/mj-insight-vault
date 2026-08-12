@@ -195,6 +195,7 @@ function visionInstructions(passKind: PassKind) {
     'Identify every distinct standalone editorial article visible on the page.',
     'Do not count advertisements, promotional panels, mastheads, folios, navigation, subscription notices, decorative text, isolated captions, or charts without a standalone editorial article.',
     'A subsection or subheading inside one article is not a separate article.',
+    'A multi-item feature package under one umbrella headline and shared introduction is one editorial article even when it contains separately titled item modules; do not split those modules into separate articles.',
     'If one article occupies several separated columns or non-rectangular areas, return multiple tight rectangles for the same article.',
     'Each rectangle uses normalized page coordinates from 0 to 1000.',
     'Rectangles must be tight around that article and must avoid neighboring articles and advertisements.',
@@ -290,16 +291,22 @@ function deriveGroundedGroups(articles: VisionArticle[], blocks: OcrBlock[], sou
   const byIndex = new Map(blocks.map((b) => [b.block_index, b])); const groups: InventoryGroup[] = []; const evidence: RegionEvidence[] = [];
   let dropped = 0;
   articles.forEach((article, index) => {
-    const ids = (assigned.get(index) || []).sort((a, b) => a - b); const ambiguous = ambiguousByArticle.get(index) || 0; const droppedHere = ids.length === 0;
-    if (droppedHere) dropped += 1;
+    const ids = (assigned.get(index) || []).sort((a, b) => a - b);
+    const ambiguous = ambiguousByArticle.get(index) || 0;
+    const articleBlocks = ids.map((id) => byIndex.get(id)).filter(Boolean) as OcrBlock[];
+    const usableBlocks = articleBlocks.filter((b) => b.block_text.trim().length >= 2);
+    const droppedHere = ids.length === 0 || usableBlocks.length === 0;
+    if (droppedHere) {
+      dropped += 1;
+      if (ids.length) leftovers.push(...ids);
+    }
     evidence.push({ article_seq: index + 1, headline_hint: article.headline_hint, confidence: article.confidence, regions: article.regions, reason: article.reason, grounded_block_count: ids.length, ambiguous_block_count: ambiguous, dropped_from_partition: droppedHere });
     if (droppedHere) return;
-    const articleBlocks = ids.map((id) => byIndex.get(id)).filter(Boolean) as OcrBlock[];
-    groups.push({ group_kind: 'article', block_indices: ids, headline_anchor: chooseAnchor(article, articleBlocks), non_article_role: '', confidence: article.confidence,
+    groups.push({ group_kind: 'article', block_indices: ids, headline_anchor: chooseAnchor(article, usableBlocks), non_article_role: '', confidence: article.confidence,
       reason: `visual_regions_v6 pass=${passKind}; raw_article_seq=${index + 1}; hint=${article.headline_hint}; regions=${JSON.stringify(article.regions)}; ambiguous_winner_blocks=${ambiguous}; dropped_visual_regions=${dropped}; ${article.reason}` });
   });
   if (leftovers.length) groups.push({ group_kind: 'non_article', block_indices: leftovers.sort((a, b) => a - b), headline_anchor: '', non_article_role: 'outside_all_grounded_visual_article_regions', confidence: 0.99,
-    reason: `deterministic complement of grounded visual regions for pass ${passKind}; dropped_zero_block_regions=${dropped}` });
+    reason: `deterministic complement of grounded visual regions for pass ${passKind}; dropped_ungrounded_regions=${dropped}` });
   if (!groups.length) throw new ReviewRequiredError('No grounded OCR partition could be derived from visual regions.');
   const seen = new Set<number>();
   for (const group of groups) for (const id of group.block_indices) { if (seen.has(id)) throw new ReviewRequiredError(`Grounded partition duplicates block ${id}.`); seen.add(id); }
@@ -341,7 +348,7 @@ async function checkSupportedUngroundedRegions(jobId: string) {
     if (rows[i].pass_kind === rows[j].pass_kind) continue; const a = bbox(rows[i].regions), b = bbox(rows[j].regions); if (!a || !b) continue;
     const overlap = iou(a, b), hint = textSimilarity(rows[i].headline_hint, rows[j].headline_hint);
     if ((overlap >= 0.25 && hint >= 0.10) || overlap >= 0.50 || hint >= 0.65) {
-      throw new ReviewRequiredError(`Two independent visual passes support an article region with zero fresh OCR blocks; pass=${rows[i].pass_kind}/${rows[j].pass_kind}; iou=${overlap.toFixed(3)}; hint_similarity=${hint.toFixed(3)}. Requires region-level OCR recovery.`);
+      throw new ReviewRequiredError(`Two independent visual passes support an article region with no usable fresh OCR anchor blocks; pass=${rows[i].pass_kind}/${rows[j].pass_kind}; iou=${overlap.toFixed(3)}; hint_similarity=${hint.toFixed(3)}. Requires region-level OCR recovery.`);
     }
   }
 }

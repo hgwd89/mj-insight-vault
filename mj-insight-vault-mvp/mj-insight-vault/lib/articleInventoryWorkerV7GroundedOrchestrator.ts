@@ -165,6 +165,7 @@ function instructions() {
     'Identify every distinct standalone editorial article visible on the page.',
     'Do not count advertisements, advertorial-looking promotional panels, mastheads, folios, navigation, subscription notices, decorative text, isolated captions, or charts without a standalone editorial article.',
     'A subsection or subheading inside one article is not a separate article.',
+    'A multi-item feature package under one umbrella headline and shared introduction is one editorial article even when it contains separately titled item modules; do not split those modules into separate articles.',
     'If one article occupies several separated columns or non-rectangular areas, return multiple tight rectangles for the same article.',
     'Each rectangle uses normalized page coordinates from 0 to 1000.',
     'Rectangles must be tight and must avoid neighboring articles and advertisements.',
@@ -262,14 +263,23 @@ function deriveGrounded(articles: VisualArticle[], blocks: Block[], source: Sour
   }
   const byIndex=new Map(blocks.map((b)=>[b.block_index,b])); const groups:JsonRecord[]=[]; const evidence:GroundedEvidence[]=[];
   articles.forEach((a,i)=>{
-    const ids=(assigned.get(i)||[]).sort((x,y)=>x-y); const dropped=ids.length===0;
+    const ids=(assigned.get(i)||[]).sort((x,y)=>x-y);
+    const articleBlocks=ids.map((id)=>byIndex.get(id)).filter(Boolean) as Block[];
+    const usableBlocks=articleBlocks.filter((b)=>b.block_text.trim().length>=2);
+    const dropped=ids.length===0||usableBlocks.length===0;
+    if (dropped && ids.length) leftovers.push(...ids);
     evidence.push({article:a,groundedBlockIndices:ids,ambiguousBlockCount:ambiguousByArticle.get(i)||0,droppedFromPartition:dropped});
     if (dropped) return;
-    const articleBlocks=ids.map((id)=>byIndex.get(id)).filter(Boolean) as Block[];
-    groups.push({group_kind:'article',block_indices:ids,headline_anchor:chooseAnchor(a,articleBlocks),non_article_role:'',confidence:a.confidence,reason:`grounded_visual_v7 pass=adjudicator; hint=${a.headline_hint}; regions=${JSON.stringify(a.regions)}; ambiguous=${ambiguousByArticle.get(i)||0}; ${a.reason}`});
+    groups.push({group_kind:'article',block_indices:ids,headline_anchor:chooseAnchor(a,usableBlocks),non_article_role:'',confidence:a.confidence,reason:`grounded_visual_v7 pass=adjudicator; hint=${a.headline_hint}; regions=${JSON.stringify(a.regions)}; ambiguous=${ambiguousByArticle.get(i)||0}; ${a.reason}`});
   });
   if (leftovers.length) groups.push({group_kind:'non_article',block_indices:leftovers.sort((a,b)=>a-b),headline_anchor:'',non_article_role:'outside_all_grounded_adjudicator_regions',confidence:0.99,reason:'deterministic complement of grounded adjudicator regions'});
   if (!groups.length) throw new ReviewRequiredError('Grounded adjudicator produced no block-grounded partition.');
+  const seen=new Set<number>();
+  for (const group of groups) {
+    const ids=Array.isArray(group.block_indices)?group.block_indices as number[]:[];
+    for (const id of ids) { if (seen.has(id)) throw new ReviewRequiredError(`Grounded adjudicator partition duplicates block ${id}.`); seen.add(id); }
+  }
+  if (seen.size!==blocks.length) throw new ReviewRequiredError(`Grounded adjudicator partition incomplete ${seen.size}/${blocks.length}.`);
   return { groups, evidence };
 }
 async function persistEvidence(job: ClaimedJob, model: string, receipt: {providerResponseId:string;promptSha256:string;responseSha256:string}, evidence: GroundedEvidence[]) {

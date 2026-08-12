@@ -1,0 +1,128 @@
+create or replace function public.claim_source_page_article_inventory_job_v3(p_job_id uuid default null::uuid, p_lease_seconds integer default 240)
+returns setof public.source_page_article_inventory_jobs_v1
+language plpgsql
+security definer
+set search_path to 'pg_catalog','public','extensions'
+as $function$
+declare
+  v_id uuid;
+  v_status text;
+  v_token uuid:=gen_random_uuid();
+  v_enabled boolean;
+  v_freeze uuid;
+  v_pages integer;
+  v_expected integer;
+  v_allow_third boolean;
+  v_lease integer;
+  v_orphan_passes text[];
+  v_sealed_fp text;
+  v_current_fp text;
+  v_current_jobs integer;
+  v_priority uuid;
+begin
+  select enabled,freeze_receipt_id,recovery_completed_pages,grounded_third_pass_enabled,recovery_set_fingerprint
+    into v_enabled,v_freeze,v_pages,v_allow_third,v_sealed_fp
+  from public.inventory_v3_execution_control_v1 where singleton=true;
+
+  select job_id into v_priority from public.inventory_execution_priority_v1 where singleton=true;
+  select expected_pages into v_expected from public.source_page_ocr_recovery_gate_v1;
+
+  if not coalesce(v_enabled,false) or v_freeze is null or v_expected is null or v_pages<>v_expected then
+    return;
+  end if;
+
+  select count(*)::integer,
+         encode(extensions.digest(convert_to(coalesce(string_agg(
+           page_identity_source_image_id::text||':'||coalesce(source_binary_sha256,'')||':'||coalesce(fresh_google_response_sha256,'')||':'||coalesce(fresh_google_text_sha256,'')||':'||coalesce(fresh_block_count::text,''),
+           '|' order by page_identity_source_image_id::text),''),'UTF8'),'sha256'),'hex')
+    into v_current_jobs,v_current_fp
+  from public.source_page_current_ocr_recovery_jobs_v2
+  where status='completed';
+
+  if v_current_jobs<>v_expected
+     or exists(select 1 from public.source_page_current_ocr_recovery_jobs_v2 where status<>'completed')
+     or coalesce(v_current_fp,'')=''
+     or v_current_fp is distinct from v_sealed_fp then
+    update public.inventory_v3_execution_control_v1
+       set enabled=false,
+           grounded_third_pass_enabled=false,
+           reason='current page recovery state or receipt fingerprint drifted after execution seal',
+           updated_at=now()
+     where singleton=true;
+    return;
+  end if;
+
+  if p_job_id is null then
+    select j.id,j.status into v_id,v_status
+    from public.source_page_article_inventory_jobs_v1 j
+    where j.inventory_version='page_article_inventory_v4_recovered_ocr'
+      and j.freeze_receipt_id=v_freeze
+      and (
+        coalesce(v_allow_third,false)
+        or not j.requires_third_pass
+        or not exists(select 1 from public.source_page_article_inventory_pass_runs_v1 p where p.job_id=j.id and p.pass_kind='mapper')
+        or not exists(select 1 from public.source_page_article_inventory_pass_runs_v1 p where p.job_id=j.id and p.pass_kind='critic')
+      )
+      and (j.status='queued' or (j.status='running' and coalesce(j.lease_expires_at,'epoch'::timestamptz)<now()))
+      and j.attempt_count<4
+    order by case when v_priority is not null and j.id=v_priority then 0 else 1 end,
+             (select count(*) from public.source_page_article_inventory_pass_runs_v1 p where p.job_id=j.id) desc,
+             j.existing_article_count asc,j.block_count asc,j.created_at,j.id
+    for update skip locked limit 1;
+  else
+    select j.id,j.status into v_id,v_status
+    from public.source_page_article_inventory_jobs_v1 j
+    where j.id=p_job_id
+      and j.inventory_version='page_article_inventory_v4_recovered_ocr'
+      and j.freeze_receipt_id=v_freeze
+      and (
+        coalesce(v_allow_third,false)
+        or not j.requires_third_pass
+        or not exists(select 1 from public.source_page_article_inventory_pass_runs_v1 p where p.job_id=j.id and p.pass_kind='mapper')
+        or not exists(select 1 from public.source_page_article_inventory_pass_runs_v1 p where p.job_id=j.id and p.pass_kind='critic')
+      )
+      and (j.status='queued' or (j.status='running' and coalesce(j.lease_expires_at,'epoch'::timestamptz)<now()))
+      and j.attempt_count<4
+    for update skip locked;
+  end if;
+
+  if v_id is null then return; end if;
+
+  if v_priority is not null and v_id=v_priority then
+    update public.inventory_execution_priority_v1
+       set job_id=null,reason=null,updated_at=now()
+     where singleton=true;
+  end if;
+
+  select array_agg(p.pass_kind order by p.pass_kind) into v_orphan_passes
+  from public.source_page_article_inventory_pass_runs_v1 p
+  where p.job_id=v_id and p.pass_kind in ('mapper','critic','adjudicator')
+    and not exists(
+      select 1 from public.source_page_inventory_visual_region_evidence_v6 e
+      where e.job_id=p.job_id and e.pass_kind=p.pass_kind
+    );
+
+  if coalesce(array_length(v_orphan_passes,1),0)>0 then
+    delete from public.source_page_article_inventory_mappings_v2 where job_id=v_id;
+    delete from public.source_page_article_inventory_mapping_pass_runs_v2 where job_id=v_id;
+    delete from public.source_page_article_inventory_mapping_stage_v2 where job_id=v_id;
+    delete from public.source_page_inventory_visual_consensus_receipts_v4 where job_id=v_id;
+    delete from public.source_page_inventory_visual_group_evidence_v4 where job_id=v_id;
+    delete from public.source_page_article_inventory_groups_v1 where job_id=v_id and pass_kind=any(v_orphan_passes);
+    delete from public.source_page_article_inventory_pass_runs_v1 where job_id=v_id and pass_kind=any(v_orphan_passes);
+  end if;
+
+  v_lease:=420;
+  update public.source_page_article_inventory_jobs_v1
+     set status='running',
+         lease_token=v_token,
+         lease_expires_at=now()+make_interval(secs=>v_lease),
+         attempt_count=attempt_count+case when v_status='running' then 1 else 0 end,
+         error_message=null,
+         updated_at=now()
+   where id=v_id;
+
+  return query
+  select * from public.source_page_article_inventory_jobs_v1 where id=v_id;
+end
+$function$;

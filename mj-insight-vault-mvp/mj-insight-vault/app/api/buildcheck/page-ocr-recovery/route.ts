@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { getSourcePageOcrRecoveryStatus, runSourcePageOcrRecoveryWorkerStep } from '@/lib/sourcePageOcrRecoveryWorker';
+import { getSourcePageInventoryRegionOcrRecoveryStatus, runSourcePageInventoryRegionOcrRecoveryWorkerStep } from '@/lib/sourcePageInventoryRegionOcrRecoveryWorker';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,7 +36,6 @@ async function drain() {
     return step;
   };
 
-  // Warm the Google OAuth token cache and prove one request works before high concurrency.
   const first = await runOne();
   if (!first.claimed) {
     return { claimed, external_calls: externalCalls, elapsed_ms: Date.now() - startedAt, idle: true, sample, status: await getSourcePageOcrRecoveryStatus() };
@@ -62,12 +62,22 @@ async function drain() {
 
 export async function GET(req: Request) {
   if (!authorized(req)) return new Response('Not Found', { status: 404 });
-  const action = new URL(req.url).searchParams.get('action') || 'step';
+  const url = new URL(req.url);
+  const action = url.searchParams.get('action') || 'step';
   if (action === 'status') {
     return Response.json(await getSourcePageOcrRecoveryStatus(), { headers: { 'cache-control': 'no-store' } });
   }
   if (action === 'drain') {
     return Response.json(await drain(), { headers: { 'cache-control': 'no-store' } });
+  }
+  if (action === 'region-status') {
+    return Response.json(await getSourcePageInventoryRegionOcrRecoveryStatus(), { headers: { 'cache-control': 'no-store' } });
+  }
+  if (action === 'region-step') {
+    const jobId = url.searchParams.get('job_id') || undefined;
+    const step = await runSourcePageInventoryRegionOcrRecoveryWorkerStep(jobId);
+    const status = await getSourcePageInventoryRegionOcrRecoveryStatus();
+    return Response.json({ step, status }, { headers: { 'cache-control': 'no-store' } });
   }
   if (action !== 'step') return Response.json({ error: 'invalid action' }, { status: 400 });
 

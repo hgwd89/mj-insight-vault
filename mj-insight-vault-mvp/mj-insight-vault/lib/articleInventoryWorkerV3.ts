@@ -48,7 +48,9 @@ type ConsensusGroup = {
 type FormalArticle = {
   article_id: string;
   headline: string;
-  ocr_text: string;
+  analysis_body_clean: string;
+  analysis_body_clean_sha256: string;
+  analysis_body_clean_version: string;
   article_date: string;
   source_image_id: string;
 };
@@ -63,6 +65,7 @@ type MappingRow = {
 class ReviewRequiredError extends Error {}
 
 const LEASE_SECONDS = 240;
+const CLEAN_BODY_VERSION = 'clean_article_analysis_body_v1';
 
 const blindSchema = {
   name: 'blind_article_inventory_v3',
@@ -94,7 +97,7 @@ const blindSchema = {
 } as const;
 
 const mappingSchema = {
-  name: 'inventory_article_mapping_v3',
+  name: 'inventory_article_mapping_v4_clean_body',
   strict: true,
   schema: {
     type: 'object',
@@ -150,9 +153,9 @@ function requireDistinctModels(models: string[], label: string) {
 function outputText(payload: JsonRecord) {
   if (typeof payload.output_text === 'string' && payload.output_text.trim()) return payload.output_text;
   for (const rawItem of Array.isArray(payload.output) ? payload.output : []) {
-    const item = rawItem && typeof rawItem === 'object' ? (rawItem as JsonRecord) : {};
+    const item = rawItem && typeof rawItem === 'object' ? rawItem as JsonRecord : {};
     for (const rawPart of Array.isArray(item.content) ? item.content : []) {
-      const part = rawPart && typeof rawPart === 'object' ? (rawPart as JsonRecord) : {};
+      const part = rawPart && typeof rawPart === 'object' ? rawPart as JsonRecord : {};
       if (typeof part.text === 'string' && part.text.trim()) return part.text;
     }
   }
@@ -186,10 +189,19 @@ async function callStructured(args: {
   });
   const raw = await response.text();
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}: ${raw.slice(0, 500)}`);
-  const payload = JSON.parse(raw) as JsonRecord;
+
+  let payload: JsonRecord;
+  try { payload = JSON.parse(raw) as JsonRecord; }
+  catch { throw new Error('OpenAI structured response envelope is not valid JSON.'); }
+  if (payload.status === 'incomplete') {
+    throw new Error(`OpenAI incomplete structured response: ${JSON.stringify(payload.incomplete_details || {})}`);
+  }
+
   const providerResponseId = stringValue(payload.id, 'response.id');
   if (!/^resp_[A-Za-z0-9_-]{16,}$/.test(providerResponseId)) throw new Error('Invalid provider response receipt.');
-  const parsed = JSON.parse(outputText(payload)) as JsonRecord;
+  let parsed: JsonRecord;
+  try { parsed = JSON.parse(outputText(payload)) as JsonRecord; }
+  catch { throw new Error('OpenAI structured output JSON parse failed.'); }
   return { parsed, providerResponseId, promptSha256, responseSha256: sha256(raw) };
 }
 
@@ -327,23 +339,51 @@ async function loadFormalArticles(job: ClaimedJob) {
   if (mapError) throw new Error(mapError.message);
   const sourceIds = [...new Set((maps || []).map((row) => String(row.source_image_id)))];
   if (!sourceIds.length) throw new ReviewRequiredError('No source captures for page identity.');
-  const { data, error } = await supabaseAdmin
+
+  const { data: formalRows, error: formalError } = await supabaseAdmin
     .from('formal_corpus_articles_v1')
-    .select('id,headline,ocr_text,article_date,source_image_id')
+    .select('id,headline,article_date,source_image_id')
     .in('source_image_id', sourceIds);
-  if (error) throw new Error(error.message);
-  const byId = new Map<string, FormalArticle>();
-  for (const row of data || []) {
+  if (formalError) throw new Error(formalError.message);
+  const formalById = new Map<string, { headline: string; article_date: string; source_image_id: string }>();
+  for (const row of formalRows || []) {
     const id = String(row.id);
-    if (!byId.has(id)) byId.set(id, {
-      article_id: id,
+    if (!formalById.has(id)) formalById.set(id, {
       headline: String(row.headline || ''),
-      ocr_text: String(row.ocr_text || ''),
       article_date: String(row.article_date || ''),
       source_image_id: String(row.source_image_id || '')
     });
   }
-  return [...byId.values()];
+  const ids = [...formalById.keys()];
+  if (!ids.length) throw new ReviewRequiredError('No formal articles for page identity.');
+
+  const { data: cleanRows, error: cleanError } = await supabaseAdmin
+    .from('articles')
+    .select('id,analysis_body_clean,analysis_body_clean_sha256,analysis_body_clean_version')
+    .in('id', ids);
+  if (cleanError) throw new Error(cleanError.message);
+  const cleanById = new Map((cleanRows || []).map((row) => [String(row.id), row]));
+
+  const articles: FormalArticle[] = [];
+  for (const [articleId, formal] of formalById) {
+    const clean = cleanById.get(articleId);
+    const body = String(clean?.analysis_body_clean || '');
+    const bodySha = String(clean?.analysis_body_clean_sha256 || '');
+    const bodyVersion = String(clean?.analysis_body_clean_version || '');
+    if (body.trim().length < 40 || bodyVersion !== CLEAN_BODY_VERSION || !/^[0-9a-f]{64}$/.test(bodySha) || sha256(body) !== bodySha) {
+      throw new ReviewRequiredError(`Formal article clean-body provenance invalid: ${articleId}`);
+    }
+    articles.push({
+      article_id: articleId,
+      headline: formal.headline,
+      analysis_body_clean: body,
+      analysis_body_clean_sha256: bodySha,
+      analysis_body_clean_version: bodyVersion,
+      article_date: formal.article_date,
+      source_image_id: formal.source_image_id
+    });
+  }
+  return articles;
 }
 
 async function tryAutoMap(job: ClaimedJob) {
@@ -366,14 +406,25 @@ function mappingPrompt(groups: ConsensusGroup[], articles: FormalArticle[], pass
     system: [
       'You are an independent one-to-one article identity mapper.',
       'Match every blind consensus group to exactly one formal article, and every supplied formal article to exactly one group.',
-      'Use only headline and OCR-content evidence supplied here.',
-      'Do not use UUID shape, ordering, filenames, or prior mapping outputs.',
+      'Use only the group OCR evidence, formal headline, and article-specific clean analysis body supplied here.',
+      'The formal clean body is article-specific evidence. Do not infer identity from UUID shape, ordering, filenames, or prior mapping outputs.',
       'Each mapping confidence must be at least 0.80; if that cannot be supported, return your best mapping with calibrated lower confidence so the caller fails closed.',
       `This is independent mapping pass ${passKind}.`
     ].join(' '),
     user: JSON.stringify({
-      groups: groups.map((g) => ({ group_fingerprint: g.group_fingerprint, headline_anchor: g.headline_anchor, ocr_text: g.group_text.slice(0, 18000) })),
-      formal_articles: articles.map((a) => ({ article_id: a.article_id, headline: a.headline, ocr_text: a.ocr_text.slice(0, 18000), article_date: a.article_date }))
+      groups: groups.map((g) => ({
+        group_fingerprint: g.group_fingerprint,
+        headline_anchor: g.headline_anchor,
+        ocr_text: g.group_text.slice(0, 18000)
+      })),
+      formal_articles: articles.map((a) => ({
+        article_id: a.article_id,
+        headline: a.headline,
+        analysis_body_clean: a.analysis_body_clean.slice(0, 18000),
+        analysis_body_clean_sha256: a.analysis_body_clean_sha256,
+        analysis_body_clean_version: a.analysis_body_clean_version,
+        article_date: a.article_date
+      }))
     })
   };
 }
@@ -508,16 +559,16 @@ export async function runArticleInventoryWorkerV3Step(jobId?: string) {
       const prompt = mappingPrompt(groups, articles, 'mapper');
       const receipt = await callStructured({ model: mappingMapperModel, ...prompt, schema: mappingSchema });
       await persistMapping(job, 'mapper', mappingMapperModel, receipt, parseMappings(receipt.parsed, groups, articles));
-      return { claimed: 1, job_id: job.id, stage: 'mapping_mapper_v3', yield: await yieldJob(job, 'mapping_mapper_v3') };
+      return { claimed: 1, job_id: job.id, stage: 'mapping_mapper_v4_clean_body', yield: await yieldJob(job, 'mapping_mapper_v4_clean_body') };
     }
     if (!mapPasses.has('critic')) {
       const prompt = mappingPrompt(groups, articles, 'critic');
       const receipt = await callStructured({ model: mappingCriticModel, ...prompt, schema: mappingSchema });
       await persistMapping(job, 'critic', mappingCriticModel, receipt, parseMappings(receipt.parsed, groups, articles));
-      return { claimed: 1, job_id: job.id, stage: 'mapping_critic_v3', yield: await yieldJob(job, 'mapping_critic_v3') };
+      return { claimed: 1, job_id: job.id, stage: 'mapping_critic_v4_clean_body', yield: await yieldJob(job, 'mapping_critic_v4_clean_body') };
     }
 
-    return { claimed: 1, job_id: job.id, stage: 'mapping_finalize_v3', consensus_source: source, result: await finalize(job) };
+    return { claimed: 1, job_id: job.id, stage: 'mapping_finalize_v4_clean_body', consensus_source: source, result: await finalize(job) };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown inventory v3 error';
     if (error instanceof ReviewRequiredError) {
@@ -530,5 +581,5 @@ export async function runArticleInventoryWorkerV3Step(jobId?: string) {
 export async function getArticleInventoryV3Status() {
   const { data, error } = await supabaseAdmin.from('source_page_article_inventory_gate_v1').select('*').single();
   if (error) throw new Error(error.message);
-  return { ...(data || {}), worker_version: 'article_inventory_worker_v3_pair_consensus' };
+  return { ...(data || {}), worker_version: 'article_inventory_worker_v3_clean_body_mapping' };
 }

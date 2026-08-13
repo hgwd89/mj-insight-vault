@@ -16,11 +16,13 @@ function runBoundedInventoryDrainDuringPreviewBuild() {
     return;
   }
 
-  const [{ supabaseAdmin }, workerModule] = await Promise.all([
+  const [supabaseModule, workerModule] = await Promise.all([
     import('./lib/supabaseAdmin.ts'),
     import('./lib/articleInventoryWorkerV7GroundedOrchestrator.ts')
   ]);
-  const runStep = workerModule.runArticleInventoryWorkerV7GroundedOrchestratorStep;
+  const supabaseAdmin = supabaseModule.supabaseAdmin || supabaseModule.default?.supabaseAdmin;
+  const runStep = workerModule.runArticleInventoryWorkerV7GroundedOrchestratorStep || workerModule.default?.runArticleInventoryWorkerV7GroundedOrchestratorStep;
+  if (!supabaseAdmin) throw new Error('inventory_v7_supabase_admin_export_missing');
   if (typeof runStep !== 'function') throw new Error('inventory_v7_worker_export_missing');
 
   const commitSha = process.env.VERCEL_GIT_COMMIT_SHA || 'unknown-build-commit';

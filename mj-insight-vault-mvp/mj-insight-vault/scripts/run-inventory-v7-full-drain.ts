@@ -2,6 +2,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin';
 import { runArticleInventoryWorkerV7GroundedOrchestratorStep } from '../lib/articleInventoryWorkerV7GroundedOrchestrator';
 
 const freezeId = process.env.INVENTORY_FREEZE_ID || '96b4d379-b33d-48be-91e4-d259b268a003';
+const inventoryVersion = 'page_article_inventory_v4_recovered_ocr';
 const workers = Math.max(1, Math.min(4, Number(process.env.INVENTORY_WORKERS || 4)));
 const maxMinutes = Math.max(5, Math.min(50, Number(process.env.INVENTORY_MAX_MINUTES || 50)));
 const deadline = Date.now() + maxMinutes * 60_000;
@@ -12,15 +13,33 @@ let claimedTotal = 0;
 const stages: Record<string, number> = {};
 
 async function snapshot() {
-  const { data, error } = await supabaseAdmin
-    .from('source_page_article_inventory_jobs_v1')
-    .select('status,requires_third_pass,error_message')
-    .eq('freeze_receipt_id', freezeId);
-  if (error) throw new Error(error.message);
+  const [{ data: jobs, error: jobsError }, { data: capture, error: captureError }] = await Promise.all([
+    supabaseAdmin
+      .from('source_page_article_inventory_jobs_v1')
+      .select('page_identity_source_image_id,inventory_source_image_id,source_ocr_json_sha256,status,requires_third_pass,error_message')
+      .eq('freeze_receipt_id', freezeId)
+      .eq('inventory_version', inventoryVersion),
+    supabaseAdmin
+      .from('source_page_inventory_capture_v1')
+      .select('page_identity_source_image_id,inventory_source_image_id,source_ocr_json_sha256'),
+  ]);
+  if (jobsError) throw new Error(jobsError.message);
+  if (captureError) throw new Error(captureError.message);
+
+  const currentKeys = new Set(
+    (capture || []).map((row) =>
+      `${String(row.page_identity_source_image_id)}:${String(row.inventory_source_image_id)}:${String(row.source_ocr_json_sha256)}`
+    )
+  );
+  const currentJobs = (jobs || []).filter((row) =>
+    currentKeys.has(
+      `${String(row.page_identity_source_image_id)}:${String(row.inventory_source_image_id)}:${String(row.source_ocr_json_sha256)}`
+    )
+  );
 
   const counts: Record<string, number> = {};
   let dangerousReview = 0;
-  for (const row of data || []) {
+  for (const row of currentJobs) {
     const status = String(row.status || 'unknown');
     counts[status] = (counts[status] || 0) + 1;
     if (
@@ -28,20 +47,24 @@ async function snapshot() {
       /grounding guard|semantic correction|grounding violation/i.test(String(row.error_message || ''))
     ) dangerousReview += 1;
   }
-  return { counts, dangerousReview };
+  return { counts, dangerousReview, currentJobs: currentJobs.length, capturePages: currentKeys.size };
 }
 
 async function healthCheck() {
   const snap = await snapshot();
+  if (snap.currentJobs !== snap.capturePages || snap.capturePages < 1) {
+    stop = true;
+    stopReason = `current_job_identity_mismatch=${snap.currentJobs}/${snap.capturePages}`;
+  }
   const discovery = snap.counts.discovery_required || 0;
   const failed = snap.counts.failed || 0;
-  if (discovery > 0) {
+  if (!stop && discovery > 0) {
     stop = true;
     stopReason = `discovery_required=${discovery}`;
-  } else if (failed > 0) {
+  } else if (!stop && failed > 0) {
     stop = true;
     stopReason = `failed=${failed}`;
-  } else if (snap.dangerousReview > 0) {
+  } else if (!stop && snap.dangerousReview > 0) {
     stop = true;
     stopReason = `dangerous_review=${snap.dangerousReview}`;
   }
@@ -76,7 +99,7 @@ async function lane(laneNo: number) {
 }
 
 async function main() {
-  console.log(JSON.stringify({ event: 'start', freeze_id: freezeId, workers, max_minutes: maxMinutes }));
+  console.log(JSON.stringify({ event: 'start', freeze_id: freezeId, inventory_version: inventoryVersion, workers, max_minutes: maxMinutes }));
   const before = await healthCheck();
   if (stop) throw new Error(`Inventory V7 drain blocked before start: ${stopReason}`);
 
@@ -85,6 +108,7 @@ async function main() {
   console.log(JSON.stringify({
     event: 'finish',
     freeze_id: freezeId,
+    inventory_version: inventoryVersion,
     workers,
     claimed_total: claimedTotal,
     stages,

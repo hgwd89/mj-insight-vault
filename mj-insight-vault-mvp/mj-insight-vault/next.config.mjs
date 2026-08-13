@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process';
 
 const INVENTORY_DRAIN_BRANCH = 'agent/inventory-smoke-v2';
-const INVENTORY_DRAIN_TICKET = 'inventory-v7-build-drain-20260813-d';
+const INVENTORY_DRAIN_TICKET = 'inventory-v7-build-drain-20260813-e';
 
 function runBoundedInventoryDrainDuringPreviewBuild() {
   if (process.env.VERCEL_ENV !== 'preview' || process.env.VERCEL_GIT_COMMIT_REF !== INVENTORY_DRAIN_BRANCH) return;
 
   const workerProgram = String.raw`
 (async () => {
-  const ticketKey = process.env.MJ_INVENTORY_BUILD_TICKET || 'inventory-v7-build-drain-20260813-d';
+  const ticketKey = process.env.MJ_INVENTORY_BUILD_TICKET || 'inventory-v7-build-drain-20260813-e';
   const required = ['OPENAI_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'NEXT_PUBLIC_SUPABASE_URL'];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) {
@@ -70,9 +70,11 @@ function runBoundedInventoryDrainDuringPreviewBuild() {
             .maybeSingle();
           if (stateError) throw new Error('inventory_build_job_state_read_failed:' + stateError.message);
           const status = String(jobState?.status || '');
-          if (status === 'discovery_required' || status === 'failed') {
+          const errorMessage = String(jobState?.error_message || '');
+          const groundingStop = status === 'needs_review' && errorMessage.startsWith('inventory v3 mapping grounding guard failed');
+          if (status === 'discovery_required' || status === 'failed' || groundingStop) {
             stopAll = true;
-            stopReason = { job_id: jobId, status, error_message: String(jobState?.error_message || '').slice(0, 1000) };
+            stopReason = { job_id: jobId, status, error_message: errorMessage.slice(0, 1000) };
             break;
           }
         }

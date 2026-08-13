@@ -1,0 +1,44 @@
+name: Inventory V7 full drain
+
+on:
+  push:
+    branches:
+      - agent/inventory-smoke-v2
+    paths:
+      - '.github/workflows/inventory-v7-full-drain.yml'
+      - 'mj-insight-vault-mvp/mj-insight-vault/scripts/run-inventory-v7-full-drain.ts'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inventory-v7-full-drain
+  cancel-in-progress: false
+
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  INVENTORY_FREEZE_ID: 96b4d379-b33d-48be-91e4-d259b268a003
+  INVENTORY_WORKERS: '4'
+  INVENTORY_MAX_MINUTES: '50'
+  NODE_OPTIONS: --dns-result-order=ipv4first
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    defaults:
+      run:
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Inventory V7 with four lanes
+        run: npx --yes tsx@4.20.3 scripts/run-inventory-v7-full-drain.ts

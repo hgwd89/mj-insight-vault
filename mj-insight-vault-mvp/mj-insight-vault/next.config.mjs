@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process';
 
 const INVENTORY_DRAIN_BRANCH = 'agent/inventory-smoke-v2';
-const INVENTORY_DRAIN_TICKET = 'inventory-v7-build-drain-20260813-c';
+const INVENTORY_DRAIN_TICKET = 'inventory-v7-build-drain-20260813-d';
 
 function runBoundedInventoryDrainDuringPreviewBuild() {
   if (process.env.VERCEL_ENV !== 'preview' || process.env.VERCEL_GIT_COMMIT_REF !== INVENTORY_DRAIN_BRANCH) return;
 
   const workerProgram = String.raw`
 (async () => {
-  const ticketKey = process.env.MJ_INVENTORY_BUILD_TICKET || 'inventory-v7-build-drain-20260813-c';
+  const ticketKey = process.env.MJ_INVENTORY_BUILD_TICKET || 'inventory-v7-build-drain-20260813-d';
   const required = ['OPENAI_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'NEXT_PUBLIC_SUPABASE_URL'];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) {
@@ -40,6 +40,8 @@ function runBoundedInventoryDrainDuringPreviewBuild() {
   const activeMs = Math.max(30000, Math.min(600000, Number(claim.active_ms || 600000)));
   const freezeReceiptId = String(claim.freeze_receipt_id || '');
   const stopStartingAt = Date.now() + activeMs;
+  let stopAll = false;
+  let stopReason = null;
 
   async function lane(laneNo) {
     let claimedSteps = 0;
@@ -47,7 +49,7 @@ function runBoundedInventoryDrainDuringPreviewBuild() {
     let consecutiveErrors = 0;
     const stages = {};
     const errors = [];
-    while (Date.now() < stopStartingAt) {
+    while (Date.now() < stopStartingAt && !stopAll) {
       try {
         const step = await runStep();
         const stage = String(step?.stage || 'idle');
@@ -58,6 +60,22 @@ function runBoundedInventoryDrainDuringPreviewBuild() {
         }
         claimedSteps += 1;
         consecutiveErrors = 0;
+
+        const jobId = String(step?.job_id || '');
+        if (jobId) {
+          const { data: jobState, error: stateError } = await supabaseAdmin
+            .from('source_page_article_inventory_jobs_v1')
+            .select('status,error_message')
+            .eq('id', jobId)
+            .maybeSingle();
+          if (stateError) throw new Error('inventory_build_job_state_read_failed:' + stateError.message);
+          const status = String(jobState?.status || '');
+          if (status === 'discovery_required' || status === 'failed') {
+            stopAll = true;
+            stopReason = { job_id: jobId, status, error_message: String(jobState?.error_message || '').slice(0, 1000) };
+            break;
+          }
+        }
       } catch (error) {
         consecutiveErrors += 1;
         errors.push(String(error?.message || error).slice(0, 500));
@@ -88,11 +106,12 @@ function runBoundedInventoryDrainDuringPreviewBuild() {
       active_ms: activeMs,
       claimed_steps: lanes.reduce((sum, item) => sum + item.claimed_steps, 0),
       lanes,
+      stop_reason: stopReason,
       counts
     };
   } catch (error) {
     fatalError = String(error?.message || error).slice(0, 2000);
-    result = { workers, active_ms: activeMs, fatal_error: fatalError };
+    result = { workers, active_ms: activeMs, stop_reason: stopReason, fatal_error: fatalError };
   }
 
   const { data: finish, error: finishError } = await supabaseAdmin.rpc('finish_inventory_build_drain_ticket_v1', {

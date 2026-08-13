@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process';
 
 const INVENTORY_DRAIN_BRANCH = 'agent/inventory-smoke-v2';
-const INVENTORY_DRAIN_TICKET = 'inventory-v7-build-drain-20260813-b';
+const INVENTORY_DRAIN_TICKET = 'inventory-v7-build-drain-20260813-c';
 
 function runBoundedInventoryDrainDuringPreviewBuild() {
   if (process.env.VERCEL_ENV !== 'preview' || process.env.VERCEL_GIT_COMMIT_REF !== INVENTORY_DRAIN_BRANCH) return;
 
   const workerProgram = String.raw`
 (async () => {
-  const ticketKey = process.env.MJ_INVENTORY_BUILD_TICKET || 'inventory-v7-build-drain-20260813-b';
+  const ticketKey = process.env.MJ_INVENTORY_BUILD_TICKET || 'inventory-v7-build-drain-20260813-c';
   const required = ['OPENAI_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'NEXT_PUBLIC_SUPABASE_URL'];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) {

@@ -7,6 +7,8 @@ const noSignal = fs.readFileSync(path.join(root, 'supabase/migrations/2026080614
 const dedupe = fs.readFileSync(path.join(root, 'supabase/migrations/20260806152000_deduplicate_formal_corpus.sql'), 'utf8');
 const categoryGate = fs.readFileSync(path.join(root, 'supabase/migrations/20260806154500_block_incomplete_category_reports.sql'), 'utf8');
 const classification = fs.readFileSync(path.join(root, 'supabase/migrations/20260806180000_add_resumable_article_classification.sql'), 'utf8');
+const staleClassificationRequeue = fs.readFileSync(path.join(root, 'supabase/migrations/20260814110000_requeue_stale_category_classifications.sql'), 'utf8');
+const classificationGrants = fs.readFileSync(path.join(root, 'supabase/migrations/20260814111500_restore_classification_worker_rpc_grants.sql'), 'utf8');
 const classificationWorker = fs.readFileSync(path.join(root, 'lib/articleClassificationWorker.ts'), 'utf8');
 const classificationRoute = fs.readFileSync(path.join(root, 'app/api/classification/route.ts'), 'utf8');
 const classificationWorkerRoute = fs.readFileSync(path.join(root, 'app/api/classification/worker/route.ts'), 'utf8');
@@ -74,6 +76,14 @@ assert(/A product launch is a market signal, not proof of consumer demand/.test(
 assert(/model omitted article/.test(classificationWorker), 'Missing model outputs must be retried rather than silently completed.');
 assert(/fail_article_classification_job_v2/.test(classificationWorker), 'Worker failures must be persisted through the retry contract.');
 assert(/enqueue_article_classification_v2/.test(classificationRoute), 'Queue API must enqueue classification jobs.');
+assert(/source_analysis_text_sha256 = a\.analysis_text_sha256/.test(staleClassificationRequeue), 'Classification enqueue must treat stale source hashes as incomplete.');
+assert(/j\.status in \('completed', 'failed'\)/.test(staleClassificationRequeue), 'Classification enqueue must requeue stale completed or failed jobs without forcing all jobs.');
+assert(/p_force/.test(staleClassificationRequeue) && /j\.status <> 'running'/.test(staleClassificationRequeue), 'Forced classification enqueue must still avoid running jobs.');
+for (const fn of ['enqueue_article_classification_v2', 'claim_article_classification_jobs_v2', 'complete_article_classification_job_v2', 'fail_article_classification_job_v2']) {
+  assert(classificationGrants.includes(`public.${fn}`), `Classification worker grants must include ${fn}.`);
+}
+assert(/to postgres, service_role/.test(classificationGrants), 'Classification worker RPCs must be executable by service_role.');
+assert(/from public, anon, authenticated/.test(classificationGrants), 'Classification worker RPCs must remain hidden from public roles.');
 assert(/maxDuration = 240/.test(classificationWorkerRoute), 'Worker endpoint must remain below the Vercel hard limit.');
 assert(/requireAppPassword/.test(classificationRoute) && /requireAppPassword/.test(classificationWorkerRoute), 'Classification APIs must require authentication.');
 

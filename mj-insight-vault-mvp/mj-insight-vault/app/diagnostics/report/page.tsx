@@ -136,7 +136,7 @@ export default function ReportDiagnosticsPage() {
           query,
           target_scope: 'all',
           conversation: [],
-          model: 'gpt-5'
+          model: 'gpt-4o-mini'
         })
       });
       const createdJob = created.job as Job;

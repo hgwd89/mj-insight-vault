@@ -2,6 +2,8 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import {
   createFullCorpusScanRun,
   runFullCorpusScanBatches,
+  scanGateReasonRequiresRebuild,
+  scanGateReasonBlocksExecution,
   MAX_SCAN_TRANSIENT_ATTEMPTS,
   MAX_SCAN_VALIDATION_ATTEMPTS
 } from '@/lib/fullCorpusScan';
@@ -417,6 +419,13 @@ async function createCurrentRun(scope: ReportScope) {
   });
 }
 
+function gateBlockedProblem(context: BoundedCorpusContext) {
+  const reason = text(context.gate_reason);
+  if (!scanGateReasonBlocksExecution(reason)) return '';
+  const run = isRecord(context.run) ? context.run : {};
+  return `本文読解の前提ゲートが未達です。run_id=${text(run.id) || 'none'} gate_reason=${reason}`;
+}
+
 export async function prepareReportCorpus(
   body: JsonRecord,
   maxBatches = 1
@@ -449,12 +458,41 @@ export async function prepareReportCorpus(
   }
 
   let createdNewRun = false;
-  const stale = context.gate_reason === 'run_stale_article_count_mismatch';
-  const terminalExistingRun = num(context.terminal_batches) > 0;
-  if (!context.run || stale || terminalExistingRun) {
-    await createCurrentRun(scope);
+  const stale = scanGateReasonRequiresRebuild(text(context.gate_reason));
+  if (!context.run || stale) {
+    try {
+      await createCurrentRun(scope);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '本文読解runの作成に失敗しました';
+      return {
+        required: true,
+        ready: false,
+        terminal: true,
+        scope,
+        context,
+        progress: 100,
+        stage: '本文読解run作成エラー',
+        error: message,
+        created_new_run: createdNewRun
+      };
+    }
     createdNewRun = true;
     context = await getBoundedFullCorpusContext(scope.scopeType, scope.scopeQuery);
+  }
+
+  const blockedProblem = gateBlockedProblem(context);
+  if (blockedProblem) {
+    return {
+      required: true,
+      ready: false,
+      terminal: true,
+      scope,
+      context,
+      progress: 100,
+      stage: '本文読解の前提ゲート未達',
+      error: blockedProblem,
+      created_new_run: createdNewRun
+    };
   }
 
   const beforeProblem = terminalProblem(context);
@@ -478,7 +516,21 @@ export async function prepareReportCorpus(
   } catch (error) {
     const message = error instanceof Error ? error.message : '本文読解バッチの実行に失敗しました';
     if (message.includes('run is stale; rebuild required')) {
-      await createCurrentRun(scope);
+      try {
+        await createCurrentRun(scope);
+      } catch (createError) {
+        return {
+          required: true,
+          ready: false,
+          terminal: true,
+          scope,
+          context,
+          progress: 100,
+          stage: '本文読解run再構築エラー',
+          error: createError instanceof Error ? createError.message : '本文読解runの再構築に失敗しました',
+          created_new_run: createdNewRun
+        };
+      }
       context = await getBoundedFullCorpusContext(scope.scopeType, scope.scopeQuery);
       return {
         required: true,

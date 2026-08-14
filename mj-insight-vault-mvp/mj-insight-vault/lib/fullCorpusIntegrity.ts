@@ -160,7 +160,7 @@ async function loadArticles(ids: string[]) {
   for (let index = 0; index < ids.length; index += 500) {
     const part = ids.slice(index, index + 500);
     const { data, error } = await supabaseAdmin
-      .from('articles')
+      .from('formal_corpus_articles_v1')
       .select('id, article_type, status, ocr_text')
       .in('id', part);
     if (error) throw error;

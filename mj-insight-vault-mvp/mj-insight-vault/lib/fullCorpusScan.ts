@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getOpenAI } from '@/lib/openai';
-import { fetchAllWideArticles, type WideArticle } from '@/lib/wideArticleRetrieval';
+import type { WideArticle } from '@/lib/wideArticleRetrieval';
 
 type JsonRecord = Record<string, unknown>;
 
 export const FULL_CORPUS_PROMPT_VERSION = 'full_corpus_batch_v2';
+export const FULL_CORPUS_ANALYSIS_CONTRACT_VERSION = 'formal_full_corpus_scan_v3_source_truth';
 export const MAX_SCAN_TRANSIENT_ATTEMPTS = 4;
 export const MAX_SCAN_VALIDATION_ATTEMPTS = 2;
 
@@ -13,6 +14,8 @@ const DEFAULT_SCAN_TIMEOUT_MS = 180_000;
 const MIN_SCAN_TIMEOUT_MS = 30_000;
 const MAX_SCAN_TIMEOUT_MS = 240_000;
 const STALE_BATCH_MS = 10 * 60 * 1000;
+const PAGE_SIZE = 1000;
+const FORMAL_CORPUS_SELECT = 'id, batch_id, source_image_id, headline, article_date, ocr_text, article_type, status, created_at, analysis_text_sha256, source_ocr_sha256';
 
 type ScanRun = {
   id: string;
@@ -53,6 +56,21 @@ type ClassifiedError = {
   message: string;
   retryable: boolean;
   errorClass: string;
+};
+
+type FormalScanArticle = WideArticle & {
+  source_image_id?: string | null;
+  analysis_text_sha256?: string | null;
+  source_ocr_sha256?: string | null;
+};
+
+type FormalFreezeProof = {
+  current_article_count?: number | null;
+  current_article_set_fingerprint?: string | null;
+  current_source_truth_fingerprint?: string | null;
+  freeze_receipt_id?: string | null;
+  freeze_gate_v2?: string | null;
+  gate_reason_v2?: string | null;
 };
 
 function text(value: unknown) {
@@ -182,23 +200,6 @@ function asStringArray(value: unknown) {
   return value.map((item) => text(item)).filter(Boolean);
 }
 
-function words(query: string) {
-  return Array.from(new Set(query
-    .replace(/[^\p{Letter}\p{Number}ぁ-んァ-ヶ一-龠々ー]+/gu, ' ')
-    .split(/\s+/)
-    .map((word) => word.trim())
-    .filter((word) => word.length >= 2)
-    .slice(0, 30)));
-}
-
-function matchesScope(article: WideArticle, scopeType: string, scopeQuery: string) {
-  if (scopeType !== 'category' || !scopeQuery.trim()) return true;
-  const terms = words(scopeQuery);
-  if (!terms.length) return true;
-  const haystack = `${article.headline || ''}\n${article.article_date || ''}\n${article.ocr_text || ''}`.toLowerCase();
-  return terms.some((term) => haystack.includes(term.toLowerCase()));
-}
-
 function chunk<T>(items: T[], size: number) {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
@@ -215,26 +216,115 @@ function compactArticle(article: WideArticle, index: number) {
   };
 }
 
-async function fetchScopedArticles(scopeType: string, scopeQuery: string) {
-  const all = await fetchAllWideArticles();
-  if (scopeType !== 'category' || !scopeQuery) return all;
+async function fetchFormalCorpusArticles() {
+  const rows: FormalScanArticle[] = [];
+  let from = 0;
 
+  for (;;) {
+    const { data, error } = await supabaseAdmin
+      .from('formal_corpus_articles_v1')
+      .select(FORMAL_CORPUS_SELECT)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    rows.push(...((data || []) as FormalScanArticle[]));
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const seen = new Set<string>();
+  return rows.filter((article) => {
+    if (!text(article.id) || !text(article.ocr_text)) return false;
+    if (seen.has(article.id)) return false;
+    seen.add(article.id);
+    return true;
+  });
+}
+
+async function fetchCategoryMembershipHashes(categoryId: string) {
+  const hashes = new Map<string, string>();
+  let from = 0;
+
+  for (;;) {
+    const { data, error } = await supabaseAdmin
+      .from('article_category_memberships')
+      .select('article_id, source_analysis_text_sha256')
+      .eq('category_id', categoryId)
+      .eq('source', 'article_category_profile_v2')
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    for (const row of data || []) {
+      const articleId = text(row.article_id);
+      const hash = text(row.source_analysis_text_sha256);
+      if (articleId && hash) hashes.set(articleId, hash);
+    }
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return hashes;
+}
+
+async function assertActiveCategory(categoryId: string) {
   const { data, error } = await supabaseAdmin
-    .from('article_category_memberships')
-    .select('article_id')
-    .eq('category_id', scopeQuery);
+    .from('analysis_categories')
+    .select('id')
+    .eq('id', categoryId)
+    .eq('is_active', true)
+    .maybeSingle();
   if (error) throw error;
-  const ids = new Set((data || []).map((row) => text(row.article_id)).filter(Boolean));
-  if (ids.size > 0) return all.filter((article) => ids.has(article.id));
+  if (!data) throw new Error(`category is inactive or missing: ${categoryId}`);
+}
 
-  return all.filter((article) => matchesScope(article, scopeType, scopeQuery));
+async function assertCategoryClassificationReady() {
+  const { data, error } = await supabaseAdmin
+    .from('category_classification_gate_v2')
+    .select('category_classification_gate, gate_reason')
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  const gate = text(data?.category_classification_gate);
+  if (gate !== 'passed') {
+    throw new Error(`category classification gate failed: ${text(data?.gate_reason) || gate || 'unknown'}`);
+  }
+}
+
+async function fetchFormalFreezeProof() {
+  const { data, error } = await supabaseAdmin
+    .from('formal_corpus_freeze_gate_v2')
+    .select('current_article_count, current_article_set_fingerprint, current_source_truth_fingerprint, freeze_receipt_id, freeze_gate_v2, gate_reason_v2')
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  const proof = (isRecord(data) ? data : null) as FormalFreezeProof | null;
+  if (!proof) throw new Error('formal_corpus_freeze_gate_v2 returned no proof row');
+  const gate = text(proof.freeze_gate_v2);
+  const reason = text(proof.gate_reason_v2);
+  if (gate !== 'passed') throw new Error(`formal corpus freeze gate failed: ${reason || gate || 'unknown'}`);
+  if (!text(proof.current_article_set_fingerprint)) throw new Error('formal corpus freeze proof is missing current_article_set_fingerprint');
+  if (!text(proof.current_source_truth_fingerprint)) throw new Error('formal corpus freeze proof is missing current_source_truth_fingerprint');
+  if (!text(proof.freeze_receipt_id)) throw new Error('formal corpus freeze proof is missing freeze_receipt_id');
+  return proof;
+}
+
+async function fetchScopedArticles(scopeType: string, scopeQuery: string) {
+  const all = await fetchFormalCorpusArticles();
+  if (scopeType !== 'category') return all;
+  if (!scopeQuery) throw new Error('category scope_query is required');
+  await assertActiveCategory(scopeQuery);
+  await assertCategoryClassificationReady();
+
+  const membershipHashes = await fetchCategoryMembershipHashes(scopeQuery);
+  return all.filter((article) => membershipHashes.get(article.id) === text(article.analysis_text_sha256));
 }
 
 async function loadArticlesByIds(ids: string[]) {
   if (!ids.length) return [] as WideArticle[];
   const { data, error } = await supabaseAdmin
-    .from('articles')
-    .select('id, batch_id, headline, article_date, ocr_text, status, created_at')
+    .from('formal_corpus_articles_v1')
+    .select(FORMAL_CORPUS_SELECT)
     .in('id', ids);
   if (error) throw error;
   const byId = new Map((data || []).map((article) => [article.id, article as WideArticle]));
@@ -335,13 +425,36 @@ function corpusFingerprint(input: {
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-async function findRunByFingerprint(scopeType: string, scopeQuery: string, fingerprint: string) {
+export function scanGateReasonRequiresRebuild(reason: string) {
+  const normalized = text(reason);
+  return normalized.startsWith('run_stale_')
+    || normalized === 'batch_article_count_mismatch'
+    || normalized === 'batch_article_set_mismatch'
+    || normalized === 'duplicate_batch_article_ids';
+}
+
+export function scanGateReasonBlocksExecution(reason: string) {
+  const normalized = text(reason);
+  return normalized.startsWith('category_classification_')
+    || normalized === 'category_inactive_or_missing';
+}
+
+async function findRunByFingerprint(
+  scopeType: string,
+  scopeQuery: string,
+  fingerprint: string,
+  proof: FormalFreezeProof | null
+) {
   let query = supabaseAdmin
     .from('full_corpus_scan_runs')
     .select('*')
     .eq('scope_type', scopeType)
     .eq('corpus_fingerprint', fingerprint)
+    .eq('analysis_contract_version', FULL_CORPUS_ANALYSIS_CONTRACT_VERSION)
     .in('status', ['queued', 'running', 'completed']);
+  if (scopeType === 'all' && proof?.current_source_truth_fingerprint) {
+    query = query.eq('source_truth_fingerprint', proof.current_source_truth_fingerprint);
+  }
   query = scopeQuery ? query.eq('scope_query', scopeQuery) : query.is('scope_query', null);
   const { data, error } = await query
     .order('created_at', { ascending: false })
@@ -357,8 +470,12 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
   const model = text(input.model) || process.env.OPENAI_SCAN_MODEL || 'gpt-4o-mini';
   const batchSize = Math.max(5, Math.min(50, Math.round(Number(input.batch_size || 30))));
 
+  const proof = scopeType === 'all' ? await fetchFormalFreezeProof() : null;
   const scoped = await fetchScopedArticles(scopeType, scopeQuery);
   const ocrReady = scoped.filter((article) => text(article.ocr_text));
+  if (proof && num(proof.current_article_count) !== ocrReady.length) {
+    throw new Error(`formal corpus proof mismatch: freeze_count=${num(proof.current_article_count)} app_count=${ocrReady.length}`);
+  }
   const batches = chunk(ocrReady, batchSize);
   const fingerprint = corpusFingerprint({
     scopeType,
@@ -368,8 +485,31 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
     articleIds: ocrReady.map((article) => article.id)
   });
 
-  const existing = await findRunByFingerprint(scopeType, scopeQuery, fingerprint);
+  const existing = await findRunByFingerprint(scopeType, scopeQuery, fingerprint, proof);
   if (existing) return getFullCorpusScanRun(text(existing.id));
+
+  const coverageJson: JsonRecord = {
+    active_article_count: scoped.length,
+    ocr_ready_article_count: ocrReady.length,
+    missing_ocr_count: scoped.length - ocrReady.length,
+    batch_size: batchSize,
+    total_batches: batches.length,
+    prompt_version: FULL_CORPUS_PROMPT_VERSION,
+    corpus_fingerprint: fingerprint,
+    formal_corpus_source: 'formal_corpus_articles_v1',
+    analysis_contract_version: FULL_CORPUS_ANALYSIS_CONTRACT_VERSION,
+    full_corpus_gate: batches.length && scoped.length === ocrReady.length ? 'pending' : 'failed'
+  };
+  if (scopeType === 'category') {
+    coverageJson.category_membership_source = 'article_category_profile_v2';
+  }
+  if (proof) {
+    coverageJson.article_set_fingerprint = text(proof.current_article_set_fingerprint);
+    coverageJson.source_truth_fingerprint = text(proof.current_source_truth_fingerprint);
+    coverageJson.freeze_receipt_id = text(proof.freeze_receipt_id);
+    coverageJson.formal_corpus_freeze_gate_v2 = text(proof.freeze_gate_v2);
+    coverageJson.formal_corpus_freeze_gate_reason = text(proof.gate_reason_v2);
+  }
 
   const inserted = await supabaseAdmin
     .from('full_corpus_scan_runs')
@@ -383,16 +523,10 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
       ocr_ready_article_count: ocrReady.length,
       total_batches: batches.length,
       corpus_fingerprint: fingerprint,
-      coverage_json: {
-        active_article_count: scoped.length,
-        ocr_ready_article_count: ocrReady.length,
-        missing_ocr_count: scoped.length - ocrReady.length,
-        batch_size: batchSize,
-        total_batches: batches.length,
-        prompt_version: FULL_CORPUS_PROMPT_VERSION,
-        corpus_fingerprint: fingerprint,
-        full_corpus_gate: batches.length && scoped.length === ocrReady.length ? 'pending' : 'failed'
-      },
+      source_truth_fingerprint: proof ? text(proof.current_source_truth_fingerprint) : null,
+      source_grounded_fingerprint: proof ? text(proof.current_source_truth_fingerprint) : null,
+      analysis_contract_version: FULL_CORPUS_ANALYSIS_CONTRACT_VERSION,
+      coverage_json: coverageJson,
       error_message: batches.length ? null : 'No OCR-ready articles matched this scan scope.'
     })
     .select('*')
@@ -400,7 +534,7 @@ export async function createFullCorpusScanRun(input: { scope_type?: string; scop
 
   if (inserted.error) {
     if (inserted.error.code === '23505') {
-      const raced = await findRunByFingerprint(scopeType, scopeQuery, fingerprint);
+      const raced = await findRunByFingerprint(scopeType, scopeQuery, fingerprint, proof);
       if (raced) return getFullCorpusScanRun(text(raced.id));
     }
     throw inserted.error;
@@ -569,8 +703,12 @@ export async function runFullCorpusScanBatches(id: string, maxBatches = 2) {
     .eq('id', id)
     .maybeSingle();
   if (gateError) throw gateError;
-  if (gateData?.gate_reason === 'run_stale_article_count_mismatch') {
-    throw new Error(`run is stale; rebuild required. current_article_count_diff=${gateData.current_article_count_diff}`);
+  const gateReason = text(gateData?.gate_reason);
+  if (scanGateReasonRequiresRebuild(gateReason)) {
+    throw new Error(`run is stale; rebuild required. gate_reason=${gateReason}; current_article_count_diff=${gateData?.current_article_count_diff || 0}`);
+  }
+  if (scanGateReasonBlocksExecution(gateReason)) {
+    throw new Error(`run cannot be executed until corpus gate prerequisite passes. gate_reason=${gateReason}`);
   }
 
   const { data: run, error } = await supabaseAdmin

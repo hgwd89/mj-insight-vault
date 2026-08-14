@@ -57,7 +57,7 @@ assert(/normalizeOcrText/.test(text), 'OCR text normalization helper is missing.
 assert(/ocr_text_raw/.test(processRoute) && /ocr_json/.test(processRoute), 'OCR raw text and OCR JSON must be stored on process.');
 assert(/ocr_text_raw/.test(reprocessRoute) && /ocr_json/.test(reprocessRoute), 'OCR raw text and OCR JSON must be stored on reprocess.');
 assert(/source_image_id/.test(processRoute) && /batch_id/.test(processRoute), 'Created articles must retain source image and batch linkage.');
-assert(/source_images\(id, file_name, storage_path, mime_type\)/.test(articlesApi), 'Articles API should expose source image metadata.');
+assert(/source_images(?:![^(]+)?\(id, file_name, storage_path, mime_type\)/.test(articlesApi), 'Articles API should expose source image metadata.');
 assert(/article_tags/.test(articleDetailApi), 'Article detail API should preserve article tags.');
 
 for (const candidate of fixtures.valid || []) {

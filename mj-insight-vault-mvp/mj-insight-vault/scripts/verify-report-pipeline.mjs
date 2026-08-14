@@ -66,7 +66,8 @@ assertIncludes(provider, "window.addEventListener('storage'", 'provider must syn
 assertExcludes(provider, "if (pathname === '/chat') return", 'chat page must not stop job execution');
 
 const pipeline = read('lib/reportPipeline.ts');
-assertIncludes(pipeline, 'run_stale_article_count_mismatch', 'stale corpus runs must be rebuilt');
+assertIncludes(pipeline, 'scanGateReasonRequiresRebuild', 'all stale corpus gate reasons must trigger rebuild');
+assertIncludes(pipeline, 'scanGateReasonBlocksExecution', 'category classification gate failures must block report generation');
 assertIncludes(pipeline, 'createFullCorpusScanRun', 'pipeline must create a current scan run');
 assertIncludes(pipeline, 'runFullCorpusScanBatches', 'pipeline must advance scan batches');
 assertIncludes(pipeline, 'terminal_batches', 'pipeline must distinguish terminal failures');
@@ -76,6 +77,13 @@ assertIncludes(pipeline, 'detail_omitted_for_prompt_budget', 'legacy preparation
 
 const scan = read('lib/fullCorpusScan.ts');
 assertIncludes(scan, 'corpusFingerprint', 'identical article populations must reuse a scan run');
+assertIncludes(scan, "from('formal_corpus_articles_v1')", 'scan runs must use the database formal corpus population');
+assertIncludes(scan, "from('formal_corpus_freeze_gate_v2')", 'all-scope scans must carry a current freeze proof');
+assertIncludes(scan, 'formal_full_corpus_scan_v3_source_truth', 'scan runs must use the source-truth formal contract');
+assertIncludes(scan, 'source_truth_fingerprint', 'all-scope scan runs must persist the source truth fingerprint');
+assertIncludes(scan, ".eq('source', 'article_category_profile_v2')", 'category scans must use the canonical category profile membership source');
+assertIncludes(scan, 'source_analysis_text_sha256', 'category scan membership must match the article analysis text hash');
+assertIncludes(scan, 'scanGateReasonRequiresRebuild', 'scan execution must reject every stale gate reason before spending model cost');
 assertIncludes(scan, 'claim_full_corpus_scan_batch', 'scan batches must be claimed atomically');
 assertIncludes(scan, 'MAX_SCAN_TRANSIENT_ATTEMPTS', 'transient scan retries must be bounded');
 assertIncludes(scan, 'MAX_SCAN_VALIDATION_ATTEMPTS', 'validation retries must be bounded');
@@ -103,6 +111,7 @@ assertExcludes(guard, "from '@/lib/fullCorpusScan'", 'formal report generation m
 assertIncludes(integrity, 'all_batches_uniform_compact_digest_v1', 'final synthesis must use a uniform all-batch digest');
 assertIncludes(integrity, 'omitted_batches: 0', 'formal final synthesis must omit no completed batches');
 assertIncludes(integrity, 'read_article_ids_mismatch', 'integrity validation must compare exact read article IDs');
+assertIncludes(integrity, "from('formal_corpus_articles_v1')", 'formal report integrity must re-check evidence IDs against the formal corpus view');
 assertIncludes(integrity, 'non_article_record', 'formal corpus validation must reject non-article records');
 assertIncludes(integrity, 'prompt_version_mismatch', 'legacy scan prompt versions must fail integrity validation');
 assertIncludes(guard, 'const MAX_EVIDENCE = 24;', 'direct writer citation lookup must stay bounded');
@@ -161,6 +170,10 @@ assertIncludes(monthlyRollupsRoute, 'if (!row || row.status', 'rollup lease chec
 const statusRoute = read('app/api/chat/jobs/[id]/route.ts');
 assertIncludes(statusRoute, 'lease_expires_at', 'stale recovery must use worker leases');
 assertIncludes(statusRoute, ".eq('lease_token', currentLease)", 'stale recovery must use compare-and-swap');
+
+const diagnosticsReport = read('app/diagnostics/report/page.tsx');
+assertIncludes(diagnosticsReport, "model: 'gpt-4o-mini'", 'diagnostic report execution must default to the low-cost model');
+assertExcludes(diagnosticsReport, "model: 'gpt-5'", 'diagnostic report execution must not default to an expensive model');
 
 const migration = read('supabase/migrations/20260805090000_harden_report_job_pipeline.sql');
 assertIncludes(migration, 'claim_chat_job', 'migration must provide an atomic job claim');

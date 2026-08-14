@@ -24,7 +24,8 @@ type Run = {
 function label(run: Run) {
   const scope = run.scope_type === 'all' ? 'all' : run.scope_query || 'category';
   const stale = run.current_article_count_diff ? `｜STALE diff ${run.current_article_count_diff}` : '';
-  return `${scope}｜${run.active_article_count}件｜${run.completed_batches}/${run.total_batches}バッチ｜${run.execution_state}${stale}`;
+  const reason = run.gate_reason && run.gate_reason !== 'passed' ? `｜${run.gate_reason}` : '';
+  return `${scope}｜${run.active_article_count}件｜${run.completed_batches}/${run.total_batches}バッチ｜${run.execution_state}${stale}${reason}`;
 }
 
 function shouldStop(run: Run | undefined) {
@@ -32,6 +33,9 @@ function shouldStop(run: Run | undefined) {
   if (run.execution_state === 'done') return 'done';
   if (run.execution_state === 'review_or_retry') return 'needs_review_or_failed';
   if (run.execution_state === 'stale_rebuild_required') return 'stale_rebuild_required';
+  if (run.gate_reason?.startsWith('run_stale_')) return run.gate_reason;
+  if (run.gate_reason?.startsWith('category_classification_')) return run.gate_reason;
+  if (run.gate_reason === 'category_inactive_or_missing') return run.gate_reason;
   if (run.failed_batches > 0) return 'failed_batches_exist';
   if (run.needs_review_batches > 0) return 'needs_review_batches_exist';
   if (run.current_article_count_diff !== 0) return 'stale_article_count_diff';
@@ -208,7 +212,7 @@ export default function Page() {
         <label className="block text-sm font-bold">run id</label>
         <input className="input" value={runId} onChange={(e) => setRunId(e.target.value)} disabled={busy} />
         <label className="block text-sm font-bold">batch_limit</label>
-        <input className="input" type="number" min={1} max={5} value={limit} onChange={(e) => setLimit(Number(e.target.value))} disabled={busy} />
+        <input className="input" type="number" min={1} max={10} value={limit} onChange={(e) => setLimit(Number(e.target.value))} disabled={busy} />
         <label className="block text-sm font-bold">auto max steps</label>
         <input className="input" type="number" min={1} max={100} value={maxSteps} onChange={(e) => setMaxSteps(Number(e.target.value))} disabled={busy} />
       </div>

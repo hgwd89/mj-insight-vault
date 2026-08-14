@@ -1,0 +1,44 @@
+name: inventory-v7-gh-smoke
+
+on:
+  push:
+    branches: [codex/full-corpus-report-production]
+    paths:
+      - .github/workflows/inventory-v7-gh-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: team_1XmEhGWaGqOmBplZ7Cx7jVsN
+      VERCEL_PROJECT_ID: prj_8yQsd046lO2nBmMw4EgmQV68VipU
+      BRANCH: codex/full-corpus-report-production
+    defaults:
+      run:
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Require Vercel token
+        run: |
+          test -n "$VERCEL_TOKEN" || { echo "::error::VERCEL_TOKEN is missing"; exit 2; }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Link K5K2 and pull Preview settings
+        run: npx vercel@latest pull --yes --environment=preview --git-branch="$BRANCH" --token="$VERCEL_TOKEN"
+
+      - name: Run one fixed Inventory V7 job with Preview env
+        run: npx vercel@latest env run -e preview --git-branch "$BRANCH" --token="$VERCEL_TOKEN" -- npx tsx scripts/inventory-v7-smoke.ts

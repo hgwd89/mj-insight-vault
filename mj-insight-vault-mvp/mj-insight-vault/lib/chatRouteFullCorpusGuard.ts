@@ -466,7 +466,8 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
 
   await reportProgress(onProgress, 48, '全件scanの根拠候補を記事本文へ接地中');
   const allSeeds = collectEvidence(context, 0).slice(0, 400);
-  if (allSeeds.length < 20) throw new Error(`validated evidence candidate pool insufficient: ${allSeeds.length}`);
+  const minEvidenceCandidateCount = totalBatches <= 3 ? 12 : 20;
+  if (allSeeds.length < minEvidenceCandidateCount) throw new Error(`validated evidence candidate pool insufficient: ${allSeeds.length}`);
   const allEvidence = await enrichEvidence(allSeeds);
   const evidenceById = new Map(allEvidence.map((item) => [item.article_id, item]));
   const shortlistedById = new Map<string, Evidence>();

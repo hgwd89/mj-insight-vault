@@ -9,6 +9,7 @@ const categoryGate = fs.readFileSync(path.join(root, 'supabase/migrations/202608
 const classification = fs.readFileSync(path.join(root, 'supabase/migrations/20260806180000_add_resumable_article_classification.sql'), 'utf8');
 const staleClassificationRequeue = fs.readFileSync(path.join(root, 'supabase/migrations/20260814110000_requeue_stale_category_classifications.sql'), 'utf8');
 const classificationGrants = fs.readFileSync(path.join(root, 'supabase/migrations/20260814111500_restore_classification_worker_rpc_grants.sql'), 'utf8');
+const strictReportJobs = fs.readFileSync(path.join(root, 'supabase/migrations/20260814113000_allow_strict_full_corpus_report_jobs.sql'), 'utf8');
 const classificationWorker = fs.readFileSync(path.join(root, 'lib/articleClassificationWorker.ts'), 'utf8');
 const classificationRoute = fs.readFileSync(path.join(root, 'app/api/classification/route.ts'), 'utf8');
 const classificationWorkerRoute = fs.readFileSync(path.join(root, 'app/api/classification/worker/route.ts'), 'utf8');
@@ -84,6 +85,9 @@ for (const fn of ['enqueue_article_classification_v2', 'claim_article_classifica
 }
 assert(/to postgres, service_role/.test(classificationGrants), 'Classification worker RPCs must be executable by service_role.');
 assert(/from public, anon, authenticated/.test(classificationGrants), 'Classification worker RPCs must remain hidden from public roles.');
+assert(/require_full_corpus/.test(strictReportJobs) && /full_corpus_required/.test(strictReportJobs), 'Report jobs must explicitly require full-corpus processing.');
+assert(/v_scope in \('all', 'category'\)/.test(strictReportJobs), 'Strict report jobs must be scoped to all or category.');
+assert(/unless the request explicitly requires full-corpus processing/.test(strictReportJobs), 'Legacy report job blocking must remain fail-closed for non-corpus requests.');
 assert(/maxDuration = 240/.test(classificationWorkerRoute), 'Worker endpoint must remain below the Vercel hard limit.');
 assert(/requireAppPassword/.test(classificationRoute) && /requireAppPassword/.test(classificationWorkerRoute), 'Classification APIs must require authentication.');
 

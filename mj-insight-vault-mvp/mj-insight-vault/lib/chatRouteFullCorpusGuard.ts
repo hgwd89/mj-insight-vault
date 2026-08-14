@@ -234,6 +234,50 @@ function parseContext(value: string) {
   try { return JSON.parse(value) as unknown; } catch { return value; }
 }
 
+function batchSummaryText(batch: Json) {
+  const summary = record(batch.summary_json) ? batch.summary_json : {};
+  return JSON.stringify({
+    batch_index: number(batch.batch_index),
+    core_findings: summary.core_findings,
+    consumer_narratives: summary.consumer_narratives,
+    behavior_signals: summary.behavior_signals,
+    weak_signals: summary.weak_signals,
+    tensions: summary.tensions,
+    evidence: records(summary.evidence).map((item) => ({
+      claim: item.claim,
+      theme: item.theme,
+      observed_fact: item.observed_fact,
+      what_can_be_said: item.what_can_be_said
+    })).slice(0, 12)
+  });
+}
+
+function validBatchIndices(context: Context) {
+  return context.batches
+    .map((item) => record(item) ? number(item.batch_index) : NaN)
+    .filter((item) => Number.isFinite(item));
+}
+
+function normalizeSupportingBatchIndices(theme: Json, context: Context, minCount: number, maxCount: number) {
+  const valid = new Set(validBatchIndices(context));
+  const existing = Array.from(new Set((Array.isArray(theme.supporting_batch_indices) ? theme.supporting_batch_indices : [])
+    .map((item) => Number(item))
+    .filter((item) => valid.has(item))));
+  if (existing.length >= minCount && existing.length <= maxCount) return existing;
+
+  const themeText = `${text(theme.title)} ${text(theme.claim)} ${text(theme.support_summary)}`;
+  const scored = context.batches
+    .filter(record)
+    .map((batch) => ({
+      index: number(batch.batch_index),
+      score: bigramCoverage(themeText, batchSummaryText(batch))
+    }))
+    .filter((item) => valid.has(item.index))
+    .sort((left, right) => right.score - left.score || left.index - right.index);
+  const merged = Array.from(new Set([...existing, ...scored.map((item) => item.index)]));
+  return merged.slice(0, Math.max(minCount, Math.min(maxCount, merged.length)));
+}
+
 function ensureRawFields(answer: Json, evidenceLookup: Evidence[], run: Json, scope: Scope) {
   const lookup = new Map(evidenceLookup.map((item) => [item.article_id, item]));
   const evidence: Json[] = [];
@@ -311,13 +355,19 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
   const writerModel = text(body.model) || TEXT_MODEL;
   const analystModel = text(process.env.FULL_CORPUS_ANALYST_MODEL) || 'gpt-4.1-mini';
   const stageTimeout = Math.min(TIMEOUT_MS, 70_000);
+  const totalBatches = Math.max(1, runValue(run, 'total_batches') || context.represented_batches || context.batches.length);
+  const requiredThemeBatchCount = Math.min(3, totalBatches);
+  const maxThemeBatchCount = Math.min(6, totalBatches);
+  const supportingBatchInstruction = totalBatches <= 3
+    ? `supporting_batch_indicesは入力中に実在する全${totalBatches}バッチ番号を含める。`
+    : `supporting_batch_indicesは入力中に実在する異なるバッチ番号を${requiredThemeBatchCount}〜${Math.min(5, maxThemeBatchCount)}件だけ含める。`;
   const query = [
     text(body.query),
     scope.type === 'category' ? `対象カテゴリID: ${scope.query}` : '',
     scope.name ? `対象カテゴリ名: ${scope.name}` : ''
   ].filter(Boolean).join('\n');
 
-  await reportProgress(onProgress, 28, '全78バッチから頻度・反証付きテーマを抽出中');
+  await reportProgress(onProgress, 28, `全${totalBatches}バッチから頻度・反証付きテーマを抽出中`);
   const themePayload = {
     query,
     coverage: {
@@ -335,7 +385,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
     rules: [
       '全バッチを横断し、4〜5個だけのテーマを頻度・反証・弱いシグナルとともに抽出する。',
       '各テーマはtheme_id、title、claim、supporting_batch_indices、support_summary、signal_type、counterargument、falsification_condition、confidence、reason_for_uncertaintyを持つ。',
-      'supporting_batch_indicesは入力中に実在する異なるバッチ番号を3〜5件だけ含める。単一事例を主要テーマへ昇格しない。',
+      `${supportingBatchInstruction}単一事例を主要テーマへ昇格しない。`,
       'signal_typeはdirect_consumer、mixed、supply_onlyのいずれか。企業施策だけならsupply_onlyとする。',
       '生活者本人の調査・購買・利用・発話と、企業側の供給シグナルを区別する。',
       'negative_spaceは2件、research_needsは3件、cross_article_insightsは2件だけ含める。',
@@ -366,7 +416,7 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
           ...themePayload,
           correction: {
             errors: themeFeedback,
-            instruction: 'Return a shorter complete JSON object. Use exactly 4 themes, 2 negative-space items, 3 research needs and 2 cross-article insights. Keep every string under 100 Japanese characters.'
+            instruction: `Return a shorter complete JSON object. Use exactly 4 themes, 2 negative-space items, 3 research needs and 2 cross-article insights. Each theme must cite ${requiredThemeBatchCount}〜${maxThemeBatchCount} real supporting_batch_indices. Keep every string under 100 Japanese characters.`
           }
         }
       : themePayload;
@@ -393,12 +443,15 @@ async function directWriter(body: Json, context: Context, scope: Scope, onProgre
       continue;
     }
     themes = records(themeAnalysis.ranked_themes);
+    themes.forEach((item) => {
+      item.supporting_batch_indices = normalizeSupportingBatchIndices(item, context, requiredThemeBatchCount, maxThemeBatchCount);
+    });
     themeIds = new Set(themes.map((item) => text(item.theme_id)).filter(Boolean));
     const errors: string[] = [];
     if (themes.length < 4 || themes.length > 5) errors.push(`ranked_themes requires 4〜5 items; received ${themes.length}`);
     if (themeIds.size !== themes.length) errors.push('theme_id values must be non-empty and unique');
     if (themes.some((item) => text(item.claim).length < 20 || text(item.counterargument).length < 10 || text(item.falsification_condition).length < 10)) errors.push('theme claims and refutation fields are incomplete');
-    if (themes.some((item) => !Array.isArray(item.supporting_batch_indices) || item.supporting_batch_indices.length < 3 || item.supporting_batch_indices.length > 6)) errors.push('each theme requires 3〜6 supporting batches');
+    if (themes.some((item) => !Array.isArray(item.supporting_batch_indices) || item.supporting_batch_indices.length < requiredThemeBatchCount || item.supporting_batch_indices.length > maxThemeBatchCount)) errors.push(`each theme requires ${requiredThemeBatchCount}〜${maxThemeBatchCount} supporting batches`);
     if (records(themeAnalysis.negative_space).length !== 2) errors.push('negative_space requires exactly 2 items');
     if (records(themeAnalysis.research_needs).length !== 3) errors.push('research_needs requires exactly 3 items');
     if (records(themeAnalysis.cross_article_insights).length < 2) errors.push('cross_article_insights requires at least 2 items');

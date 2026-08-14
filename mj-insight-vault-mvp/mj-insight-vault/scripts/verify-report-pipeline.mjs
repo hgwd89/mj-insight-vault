@@ -127,7 +127,9 @@ assertIncludes(guard, 'Evidence Criticで根拠を選定中', 'evidence selectio
 assertIncludes(guard, 'evidence_excerpt_or_fact: groundedFact', 'citation facts must be grounded to article text');
 assertIncludes(guard, 'evidence_excerpt_or_factは出力しない', 'critic must not invent quotation text');
 assertIncludes(guard, 'full_corpus_hierarchical_theme_evidence_writer_v1', 'formal generation must use hierarchical theme, evidence, and writer stages');
-assertIncludes(guard, '全78バッチから頻度・反証付きテーマを抽出中', 'theme extraction must be a separate stage');
+assertIncludes(guard, 'requiredThemeBatchCount', 'theme support validation must adapt to small category runs');
+assertIncludes(guard, 'normalizeSupportingBatchIndices', 'theme support validation must stay grounded in real batch summaries');
+assertIncludes(guard, 'バッチから頻度・反証付きテーマを抽出中', 'theme extraction must be a separate stage');
 assertIncludes(guard, 'テーマ抽出JSONを短縮して自己修正中', 'truncated theme JSON must be retried compactly');
 assertIncludes(guard, 'ranked_themes requires 4〜5 items', 'theme output must remain concise');
 assertIncludes(guard, 'max_completion_tokens: 2_800', 'theme output token budget must be bounded');

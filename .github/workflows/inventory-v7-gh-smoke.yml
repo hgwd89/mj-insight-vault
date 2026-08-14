@@ -37,8 +37,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Link K5K2 and pull Preview settings
-        run: npx vercel@latest pull --yes --environment=preview --git-branch="$BRANCH" --token="$VERCEL_TOKEN"
-
-      - name: Run one fixed Inventory V7 job with Preview env
-        run: npx vercel@latest env run -e preview --git-branch "$BRANCH" --token="$VERCEL_TOKEN" -- npx tsx scripts/inventory-v7-smoke.ts
+      - name: Run one fixed Inventory V7 job with K5K2 Preview env
+        run: npx vercel@latest env run -e preview --git-branch "$BRANCH" --project "$VERCEL_PROJECT_ID" --token="$VERCEL_TOKEN" -- npx tsx scripts/inventory-v7-smoke.ts

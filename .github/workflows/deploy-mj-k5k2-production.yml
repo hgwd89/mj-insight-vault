@@ -1,0 +1,56 @@
+name: Deploy MJ Insight Vault K5K2 Production
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mj-insight-vault-mvp/mj-insight-vault/**'
+      - '.github/workflows/deploy-mj-k5k2-production.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: mj-insight-vault-mvp/mj-insight-vault
+
+jobs:
+  deploy:
+    name: deploy-production
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: team_1XmEhGWaGqOmBplZ7Cx7jVsN
+      VERCEL_PROJECT_ID: prj_8yQsd046lO2nBmMw4EgmQV68VipU
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check Vercel token
+        shell: bash
+        run: |
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            echo "VERCEL_TOKEN secret is missing."
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pull Vercel production environment
+        run: npx vercel@59.0.0 pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build production artifact
+        run: npx vercel@59.0.0 build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy production artifact
+        run: npx vercel@59.0.0 deploy --prebuilt --prod --token="$VERCEL_TOKEN"

@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 const BRANCH = 'codex/full-corpus-report-production';
-const NONCE_SHA256 = '4020589078643a73d174b520d6c38d934b8506174ecbb9bf1cf3f28eb4477bb9';
+const NONCE_SHA256 = '2bd58c543d9d8625c5dab4957d57a909f9db4d071977bf3942be8e08732e214b';
 const RECOVERED_VERSION = 'page_article_inventory_v4_recovered_ocr';
 
 function auth(req: Request) {

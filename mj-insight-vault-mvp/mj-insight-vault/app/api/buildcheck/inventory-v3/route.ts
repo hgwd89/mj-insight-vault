@@ -67,6 +67,10 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const action = url.searchParams.get('action') || 'recovered-status';
+    if (action === 'step') {
+      const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep();
+      return Response.json({ step, status: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });
+    }
     if (action === 'drain') {
       const workers = Math.max(1, Math.min(8, Number(url.searchParams.get('workers') || 2)));
       const activeMs = Math.max(30_000, Math.min(130_000, Number(url.searchParams.get('active_ms') || 120_000)));

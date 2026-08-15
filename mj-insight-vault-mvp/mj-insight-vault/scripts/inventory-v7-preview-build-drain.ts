@@ -1,13 +1,38 @@
 import { runArticleInventoryWorkerV7GroundedOrchestratorStep } from '../lib/articleInventoryWorkerV7GroundedOrchestrator';
+import { supabaseAdmin } from '../lib/supabaseAdmin';
 
 const BRANCH = 'codex/full-corpus-report-production';
-const MAX_STEPS = 40;
+const MAX_STEPS = 240;
 const LANES = 2;
-const MAX_MS = 8 * 60 * 1000;
+const MAX_MS = 12 * 60 * 1000;
+
+async function currentExceptions() {
+  const { data: control, error: controlError } = await supabaseAdmin
+    .from('inventory_v3_execution_control_v1')
+    .select('freeze_receipt_id')
+    .eq('singleton', true)
+    .single();
+  if (controlError) throw controlError;
+  const freeze = String(control?.freeze_receipt_id || '');
+  if (!freeze) throw new Error('Current inventory freeze missing.');
+  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_jobs_v1')
+    .select('id,status,error_message')
+    .eq('freeze_receipt_id', freeze)
+    .in('status', ['needs_review', 'discovery_required', 'failed']);
+  if (error) throw error;
+  return data || [];
+}
 
 async function main() {
   if (process.env.VERCEL_ENV !== 'preview' || process.env.VERCEL_GIT_COMMIT_REF !== BRANCH) {
     console.log(JSON.stringify({ inventory_v7_preview_build_drain: 'skipped_non_target', env: process.env.VERCEL_ENV || null, branch: process.env.VERCEL_GIT_COMMIT_REF || null }));
+    return;
+  }
+
+  const initialExceptions = await currentExceptions();
+  if (initialExceptions.length) {
+    console.log(JSON.stringify({ inventory_v7_preview_build_drain: 'stopped_existing_exception', exceptions: initialExceptions }));
     return;
   }
 
@@ -27,6 +52,13 @@ async function main() {
       roundClaims += c;
       console.log(JSON.stringify({ inventory_v7_preview_build_drain: 'step', round, step }));
     }
+
+    const exceptions = await currentExceptions();
+    if (exceptions.length) {
+      console.log(JSON.stringify({ inventory_v7_preview_build_drain: 'stopped_new_exception', round, claimed, exceptions }));
+      break;
+    }
+
     if (roundClaims === 0) {
       idleRounds += 1;
       if (idleRounds >= 2) break;

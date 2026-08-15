@@ -9,6 +9,7 @@ export const maxDuration = 300;
 const BRANCH = 'codex/full-corpus-report-production';
 const NONCE_SHA256 = '91e495dfe26aed923586e0ba191d9ef309378840697d71bb0377fb269cfa4d36';
 const RECOVERED_VERSION = 'page_article_inventory_v4_recovered_ocr';
+const TERMINAL = new Set(['completed', 'needs_review', 'discovery_required', 'failed']);
 
 function auth(req: Request) {
   if (process.env.VERCEL_GIT_COMMIT_REF !== BRANCH || process.env.VERCEL_ENV !== 'preview') return false;
@@ -16,6 +17,16 @@ function auth(req: Request) {
   const actual = createHash('sha256').update(nonce).digest();
   const expected = Buffer.from(NONCE_SHA256, 'hex');
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+async function readJob(jobId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('source_page_article_inventory_jobs_v1')
+    .select('id,status,error_message,requires_third_pass,attempt_count,updated_at,finished_at')
+    .eq('id', jobId)
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 async function recoveredStatus() {
@@ -31,6 +42,20 @@ async function recoveredStatus() {
     counts[key] = (counts[key] || 0) + 1;
   }
   return { gate, counts, worker_version: 'article_inventory_v7_grounded_orchestrator' };
+}
+
+async function runTargetJob(jobId: string, maxSteps: number) {
+  const steps: unknown[] = [];
+  for (let i = 1; i <= maxSteps; i += 1) {
+    const before = await readJob(jobId);
+    if (TERMINAL.has(String(before.status))) return { terminal: true, before, steps };
+    const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep(jobId);
+    steps.push({ i, step });
+    const after = await readJob(jobId);
+    if (TERMINAL.has(String(after.status))) return { terminal: true, after, steps };
+    if (Number((step as { claimed?: unknown } | null)?.claimed || 0) < 1) return { terminal: false, after, steps, stopped: 'not_claimed' };
+  }
+  return { terminal: false, after: await readJob(jobId), steps, stopped: 'max_steps' };
 }
 
 async function drain(workers: number, activeMs: number) {
@@ -67,6 +92,13 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const action = url.searchParams.get('action') || 'recovered-status';
+    if (action === 'job') {
+      const jobId = url.searchParams.get('job_id') || '';
+      if (!/^[0-9a-f-]{36}$/i.test(jobId)) return Response.json({ error: 'invalid job_id' }, { status: 400 });
+      const maxSteps = Math.max(1, Math.min(10, Number(url.searchParams.get('max_steps') || 8)));
+      const result = await runTargetJob(jobId, maxSteps);
+      return Response.json({ result, status: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });
+    }
     if (action === 'step') {
       const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep();
       return Response.json({ step, status: await recoveredStatus() }, { headers: { 'cache-control': 'no-store' } });

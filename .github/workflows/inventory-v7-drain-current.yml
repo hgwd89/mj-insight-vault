@@ -1,0 +1,48 @@
+name: Inventory V7 drain current
+
+on:
+  push:
+    branches:
+      - codex/full-corpus-report-production
+    paths:
+      - '.github/workflows/inventory-v7-drain-current.yml'
+
+permissions:
+  contents: read
+
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  NODE_OPTIONS: --dns-result-order=ipv4first
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Authenticated Supabase preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --connect-timeout 10 --max-time 20 --silent --show-error --fail \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            --output /dev/null \
+            "${NEXT_PUBLIC_SUPABASE_URL%/}/rest/v1/source_page_article_inventory_jobs_v1?select=id&limit=1"
+      - name: Drain currently eligible Inventory V7 jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes tsx@4.20.3 -e "(async()=>{const m=await import('./lib/articleInventoryWorkerV7GroundedOrchestrator.ts');const fn=m.runArticleInventoryWorkerV7GroundedOrchestratorStep;if(typeof fn!=='function')throw new Error('V7 orchestrator export not found');let empty=0;for(let i=1;i<=120;i++){const r=await fn();console.log(JSON.stringify({i,claimed:r?.claimed,job_id:r?.job_id,stage:r?.stage,error:r?.error||null}));if(Number(r?.claimed||0)===0){empty++;if(empty>=2)break;}else{empty=0;}}})().catch(e=>{console.error(e?.stack||e);process.exit(1)})"

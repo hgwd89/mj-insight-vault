@@ -17,8 +17,19 @@ process.env.OPENAI_INVENTORY_ADJUDICATOR_MODEL = 'gpt-5.6-sol';
 
 type JsonRecord = Record<string, unknown>;
 
+type LaneResult = {
+  lane: number;
+  ok: boolean;
+  step?: unknown;
+  error?: string;
+};
+
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || 'inventory v7 lane error');
 }
 
 async function currentState() {
@@ -85,7 +96,7 @@ async function finishSchedulerRun(
   claimedSteps: number,
   exceptionSteps: number,
   summary: JsonRecord,
-  errorMessage?: string
+  errorMessageValue?: string
 ) {
   const { error } = await supabaseAdmin.rpc('finish_inventory_v7_scheduler_run_v1', {
     p_lease_token: leaseToken,
@@ -93,7 +104,7 @@ async function finishSchedulerRun(
     p_claimed_steps: claimedSteps,
     p_exception_steps: exceptionSteps,
     p_summary: summary,
-    p_error: errorMessage || null
+    p_error: errorMessageValue || null
   });
   if (error) throw error;
 }
@@ -101,6 +112,17 @@ async function finishSchedulerRun(
 function stepHasException(step: unknown) {
   const text = JSON.stringify(step || {});
   return text.includes('needs_review') || text.includes('discovery_required') || text.includes('"status":"failed"');
+}
+
+async function runLane(lane: number): Promise<LaneResult> {
+  try {
+    const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep();
+    return { lane, ok: true, step };
+  } catch (error) {
+    // A single DB/provider/job failure must never abort the other lane or the recurring scheduler.
+    // The underlying job lease/fail-closed state remains authoritative and a later tick can continue.
+    return { lane, ok: false, error: errorMessage(error) };
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -119,14 +141,14 @@ export async function POST(req: NextRequest) {
     const steps: unknown[] = [];
 
     try {
-      const results = await Promise.all(
-        Array.from({ length: LANES }, async (_, index) => {
-          const step = await runArticleInventoryWorkerV7GroundedOrchestratorStep();
-          return { lane: index + 1, step };
-        })
-      );
+      const results = await Promise.all(Array.from({ length: LANES }, (_, index) => runLane(index + 1)));
 
       for (const result of results) {
+        if (!result.ok) {
+          exceptionSteps += 1;
+          steps.push(result);
+          continue;
+        }
         const claimed = Number(asRecord(result.step).claimed || 0);
         claimedSteps += claimed;
         if (claimed > 0 && stepHasException(result.step)) exceptionSteps += 1;
@@ -139,7 +161,7 @@ export async function POST(req: NextRequest) {
       await finishSchedulerRun(leaseToken, 'ok', claimedSteps, exceptionSteps, summary);
       return Response.json({ ok: true, claimed_steps: claimedSteps, exception_steps: exceptionSteps, ...summary });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'inventory v7 scheduler error';
+      const message = errorMessage(error);
       const state = await currentState().catch(() => null);
       await finishSchedulerRun(leaseToken, 'error', claimedSteps, exceptionSteps, { steps, state }, message).catch(() => undefined);
       throw error;

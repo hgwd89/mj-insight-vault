@@ -30,6 +30,10 @@ async function main() {
     return;
   }
 
+  // The DB contract for formal grounded adjudication requires this exact model.
+  // Pin it here so stale Preview environment values cannot downgrade adjudication.
+  process.env.OPENAI_INVENTORY_ADJUDICATOR_MODEL = 'gpt-5.6-sol';
+
   const initialExceptions = await currentExceptions();
   if (initialExceptions.length) {
     console.log(JSON.stringify({ inventory_v7_preview_build_drain: 'stopped_existing_exception', exceptions: initialExceptions }));

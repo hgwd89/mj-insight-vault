@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { runSourcePageInventoryRegionOcrRecoveryWorkerStep } from '@/lib/sourcePageInventoryRegionOcrRecoveryWorker';
+import { runSourcePageInventoryRegionOcrRescueStep } from '@/lib/sourcePageInventoryRegionOcrRescue';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,6 +18,6 @@ function authorized(req: Request) {
 
 export async function GET(req: Request) {
   if (!authorized(req)) return new Response('Not Found', { status: 404 });
-  const step = await runSourcePageInventoryRegionOcrRecoveryWorkerStep(REGION_JOB_ID);
+  const step = await runSourcePageInventoryRegionOcrRescueStep(REGION_JOB_ID);
   return Response.json({ step }, { headers: { 'cache-control': 'no-store' } });
 }

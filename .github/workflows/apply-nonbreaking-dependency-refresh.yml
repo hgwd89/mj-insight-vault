@@ -1,0 +1,74 @@
+name: Apply nonbreaking dependency refresh
+
+on:
+  push:
+    branches:
+      - security/nonbreaking-dependency-refresh
+    paths:
+      - '.github/workflows/apply-nonbreaking-dependency-refresh.yml'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: mj-insight-vault-mvp/mj-insight-vault
+
+jobs:
+  refresh-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: security/nonbreaking-dependency-refresh
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Refresh lockfile within existing semver ranges
+        run: npm audit fix --package-lock-only || true
+
+      - name: Install refreshed lockfile
+        run: npm ci
+
+      - name: Report remaining production vulnerabilities
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > /tmp/audit-prod.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          const a = JSON.parse(fs.readFileSync('/tmp/audit-prod.json', 'utf8'));
+          console.log('POST_REFRESH_PRODUCTION_AUDIT=' + JSON.stringify(a.metadata?.vulnerabilities || {}));
+          for (const [name, v] of Object.entries(a.vulnerabilities || {})) {
+            console.log('POST_REFRESH_PRODUCTION_VULNERABILITY=' + JSON.stringify({name,severity:v.severity,isDirect:v.isDirect,range:v.range,fixAvailable:v.fixAvailable}));
+          }
+          NODE
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Local regression suite
+        run: npm run test:local
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit verified lockfile refresh
+        working-directory: .
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+          if git diff --cached --quiet; then
+            echo 'No lockfile changes available within current semver ranges.'
+            exit 0
+          fi
+          git commit -m 'Refresh dependencies within existing semver ranges'
+          git push origin HEAD:security/nonbreaking-dependency-refresh

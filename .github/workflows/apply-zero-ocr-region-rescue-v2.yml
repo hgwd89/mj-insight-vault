@@ -1,0 +1,126 @@
+name: Apply zero OCR region rescue v2
+
+on:
+  push:
+    branches:
+      - fix/zero-ocr-region-rescue-v2
+    paths:
+      - '.github/workflows/apply-zero-ocr-region-rescue-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  generate-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rescue branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/zero-ocr-region-rescue-v2
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Generate rescue migration with Supabase CLI
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        shell: bash
+        run: |
+          supabase migration new add_zero_ocr_region_rescue_v2
+          migration="$(ls -1t supabase/migrations/*_add_zero_ocr_region_rescue_v2.sql | head -1)"
+          test -n "$migration"
+          cat > "$migration" <<'SQL'
+          create or replace function public.claim_source_page_inventory_region_ocr_rescue_v2(
+            p_job_id uuid,
+            p_lease_seconds integer default 420
+          )
+          returns setof public.source_page_inventory_region_ocr_recovery_v1
+          language plpgsql
+          security definer
+          set search_path to 'pg_catalog', 'public'
+          as $function$
+          declare
+            v_id uuid;
+            v_token uuid := gen_random_uuid();
+          begin
+            if p_job_id is null then return; end if;
+
+            select id into v_id
+            from public.source_page_inventory_region_ocr_recovery_v1
+            where id = p_job_id
+              and status = 'needs_review'
+              and attempt_count = 1
+              and error_message = 'region crop OCR returned insufficient text'
+              and crop_spec_sha256 is not null
+              and crop_image_sha256 is not null
+              and google_response_sha256 is not null
+              and google_text_sha256 is not null
+              and crop_json is not null
+              and evidence_json is not null
+              and completed_at is not null
+            for update skip locked;
+
+            if v_id is null then return; end if;
+
+            update public.source_page_inventory_region_ocr_recovery_v1
+            set status = 'running',
+                lease_token = v_token,
+                lease_expires_at = now() + make_interval(secs => greatest(300,least(600,coalesce(p_lease_seconds,420)))),
+                attempt_count = attempt_count + 1,
+                error_message = null,
+                updated_at = now()
+            where id = v_id;
+
+            return query
+            select * from public.source_page_inventory_region_ocr_recovery_v1 where id = v_id;
+          end
+          $function$;
+
+          revoke all on function public.claim_source_page_inventory_region_ocr_rescue_v2(uuid, integer) from public, anon, authenticated;
+          grant execute on function public.claim_source_page_inventory_region_ocr_rescue_v2(uuid, integer) to service_role;
+          SQL
+          echo "Generated $migration"
+
+      - name: Install exact dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+
+      - name: Production dependency audit
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        shell: bash
+        run: |
+          npm audit --omit=dev --audit-level=moderate
+
+      - name: Lint
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run lint
+
+      - name: Local regression suite
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run test:local
+
+      - name: Production build
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run build
+
+      - name: Commit generated migration only
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          migration="$(ls -1t mj-insight-vault-mvp/mj-insight-vault/supabase/migrations/*_add_zero_ocr_region_rescue_v2.sql | head -1)"
+          test -n "$migration"
+          git add "$migration"
+          git diff --cached --quiet && exit 1
+          git commit -m 'Add zero OCR region rescue claim contract'
+          git push origin HEAD:fix/zero-ocr-region-rescue-v2

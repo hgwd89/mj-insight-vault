@@ -10,8 +10,10 @@ import { runVerifiedThemeCandidateWorkerStep } from '@/lib/verifiedThemeCandidat
 import { runVerifiedThemeCensusWorkerStep } from '@/lib/verifiedThemeCensusWorker';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
+const SCHEDULER_LEASE_SECONDS = 210;
 type StepRecord = Record<string, unknown>;
 
 function record(value: unknown): StepRecord {
@@ -20,6 +22,45 @@ function record(value: unknown): StepRecord {
 
 function stepStage(value: unknown) {
   return String(record(value).stage || 'unknown');
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || 'verified pipeline scheduler error');
+}
+
+async function currentSchedulerState() {
+  const [{ data: state, error: stateError }, { data: safety, error: safetyError }] = await Promise.all([
+    supabaseAdmin.from('verified_pipeline_scheduler_state_v1').select('*').eq('singleton', true).maybeSingle(),
+    supabaseAdmin.from('strict_system_safety_audit_v24').select('system_safety_gate').maybeSingle()
+  ]);
+  if (stateError) throw stateError;
+  if (safetyError) throw safetyError;
+  return { state, system_safety_gate: safety?.system_safety_gate || null };
+}
+
+async function claimSchedulerRun() {
+  const { data, error } = await supabaseAdmin.rpc('claim_verified_pipeline_scheduler_run_v1', {
+    p_lease_seconds: SCHEDULER_LEASE_SECONDS
+  });
+  if (error) throw error;
+  return record(data);
+}
+
+async function finishSchedulerRun(
+  leaseToken: string,
+  status: 'ok' | 'error' | 'skipped',
+  stage: string,
+  summary: StepRecord,
+  errorValue?: string
+) {
+  const { error } = await supabaseAdmin.rpc('finish_verified_pipeline_scheduler_run_v1', {
+    p_lease_token: leaseToken,
+    p_status: status,
+    p_stage: stage,
+    p_summary: summary,
+    p_error: errorValue || null
+  });
+  if (error) throw error;
 }
 
 async function ensureVerifiedOcrCorpusReceipt() {
@@ -92,7 +133,35 @@ export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
     await req.json().catch(() => ({}));
-    return Response.json(await runStrictPipelineTick());
+
+    const claim = await claimSchedulerRun();
+    if (!claim.claimed) {
+      return Response.json({ ok: true, skipped: true, claim, scheduler: await currentSchedulerState() }, { status: 202 });
+    }
+
+    const leaseToken = String(claim.lease_token || '');
+    if (!/^[0-9a-f-]{36}$/i.test(leaseToken)) throw new Error('Verified pipeline scheduler lease token is invalid.');
+
+    try {
+      const result = await runStrictPipelineTick();
+      const stage = stepStage(result);
+      const summary = { claim, result };
+      await finishSchedulerRun(leaseToken, 'ok', stage, summary);
+      return Response.json({ ok: true, claim, result, scheduler: await currentSchedulerState() });
+    } catch (error) {
+      const message = errorMessage(error);
+      await finishSchedulerRun(leaseToken, 'error', 'runtime_error', { claim }, message).catch(() => undefined);
+      throw error;
+    }
+  } catch (error) {
+    return jsonError(error);
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    requireAppPassword(req);
+    return Response.json({ ok: true, scheduler: await currentSchedulerState() });
   } catch (error) {
     return jsonError(error);
   }

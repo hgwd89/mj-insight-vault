@@ -32,6 +32,13 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || 'inventory v7 lane error');
 }
 
+function hasProviderQuotaExhaustion(value: unknown) {
+  const normalized = JSON.stringify(value || {}).toLowerCase();
+  return normalized.includes('credit_balance_exhausted')
+    || normalized.includes('no credits remaining')
+    || normalized.includes('insufficient_quota');
+}
+
 async function currentState() {
   const { data: control, error: controlError } = await supabaseAdmin
     .from('inventory_v3_execution_control_v1')
@@ -109,6 +116,15 @@ async function finishSchedulerRun(
   if (error) throw error;
 }
 
+async function tripProviderQuotaCircuitBreaker() {
+  const { data, error } = await supabaseAdmin.rpc('set_inventory_v7_scheduler_enabled_v1', {
+    p_enabled: false,
+    p_reason: 'provider_quota_exhausted_circuit_breaker'
+  });
+  if (error) throw error;
+  return data;
+}
+
 function stepHasException(step: unknown) {
   const text = JSON.stringify(step || {});
   return text.includes('needs_review') || text.includes('discovery_required') || text.includes('"status":"failed"');
@@ -153,6 +169,19 @@ export async function POST(req: NextRequest) {
         claimedSteps += claimed;
         if (claimed > 0 && stepHasException(result.step)) exceptionSteps += 1;
         steps.push(result);
+      }
+
+      if (results.some(hasProviderQuotaExhaustion)) {
+        const circuitBreaker = await tripProviderQuotaCircuitBreaker();
+        const state = await currentState();
+        const summary = {
+          steps,
+          third_pass_gate: { attempted: false, reason: 'provider_quota_exhausted_circuit_breaker' },
+          provider_circuit_breaker: circuitBreaker,
+          state
+        };
+        await finishSchedulerRun(leaseToken, 'ok', claimedSteps, exceptionSteps, summary);
+        return Response.json({ ok: true, paused: true, claimed_steps: claimedSteps, exception_steps: exceptionSteps, ...summary });
       }
 
       const thirdPass = await maybeEnableThirdPass();

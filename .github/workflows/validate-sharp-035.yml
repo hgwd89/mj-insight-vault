@@ -1,0 +1,71 @@
+name: Validate sharp 0.35 security upgrade
+
+on:
+  push:
+    branches:
+      - security/sharp-035-validation
+    paths:
+      - '.github/workflows/validate-sharp-035.yml'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: mj-insight-vault-mvp/mj-insight-vault
+
+jobs:
+  upgrade-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: security/sharp-035-validation
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Upgrade sharp only
+        run: npm install 'sharp@^0.35.3' --save
+
+      - name: Verify direct sharp version
+        run: npm ls sharp
+
+      - name: Audit production dependencies
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > /tmp/audit-prod.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          const a = JSON.parse(fs.readFileSync('/tmp/audit-prod.json', 'utf8'));
+          console.log('SHARP_UPGRADE_AUDIT=' + JSON.stringify(a.metadata?.vulnerabilities || {}));
+          for (const [name, v] of Object.entries(a.vulnerabilities || {})) {
+            console.log('SHARP_UPGRADE_VULNERABILITY=' + JSON.stringify({name,severity:v.severity,isDirect:v.isDirect,range:v.range,fixAvailable:v.fixAvailable}));
+          }
+          NODE
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Local regression suite
+        run: npm run test:local
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit verified sharp upgrade
+        working-directory: .
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mj-insight-vault-mvp/mj-insight-vault/package.json mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+          git diff --cached --quiet && exit 1
+          git commit -m 'Upgrade sharp to 0.35.3'
+          git push origin HEAD:security/sharp-035-validation

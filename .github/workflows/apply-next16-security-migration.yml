@@ -107,6 +107,7 @@ jobs:
               'mj-insight-vault-mvp/mj-insight-vault/package.json',
               'mj-insight-vault-mvp/mj-insight-vault/package-lock.json',
               'mj-insight-vault-mvp/mj-insight-vault/scripts/eslint.config.mjs',
+              'mj-insight-vault-mvp/mj-insight-vault/tsconfig.json',
           }
           changed = set(filter(None, subprocess.check_output(['git','diff','--name-only'], text=True).splitlines()))
           unexpected = changed - expected
@@ -125,7 +126,8 @@ jobs:
           git add \
             mj-insight-vault-mvp/mj-insight-vault/package.json \
             mj-insight-vault-mvp/mj-insight-vault/package-lock.json \
-            mj-insight-vault-mvp/mj-insight-vault/scripts/eslint.config.mjs
+            mj-insight-vault-mvp/mj-insight-vault/scripts/eslint.config.mjs \
+            mj-insight-vault-mvp/mj-insight-vault/tsconfig.json
           git diff --cached --quiet && exit 1
           git commit -m 'Upgrade Next.js to 16.3.1 security baseline'
           git push origin HEAD:security/next16-security-migration

@@ -4,6 +4,7 @@ import path from 'node:path';
 const root = process.cwd();
 const rescue = fs.readFileSync(path.join(root, 'lib/sourcePageInventoryRegionOcrRescue.ts'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'app/api/internal/zero-ocr-region-recovery/route.ts'), 'utf8');
+const resumeRoute = fs.readFileSync(path.join(root, 'app/api/internal/zero-ocr-inventory-resume/route.ts'), 'utf8');
 const migrationDir = path.join(root, 'supabase/migrations');
 const migrationNames = fs.readdirSync(migrationDir).filter((name) => name.endsWith('_add_zero_ocr_region_rescue_v2.sql'));
 
@@ -17,6 +18,12 @@ const sql = fs.readFileSync(path.join(migrationDir, migrationNames[0]), 'utf8');
 assert(route.includes("const REGION_JOB_ID = '9640ace3-1c68-436b-9e3c-eb6fe2ce812c'"), 'The rescue route must remain pinned to the one unresolved region job.');
 assert(route.includes('runSourcePageInventoryRegionOcrRescueStep(REGION_JOB_ID)'), 'The dedicated route must use rescue v2, not the original single-crop worker.');
 assert(/export const maxDuration = 300/.test(route), 'The bounded rescue route must keep the verified 300-second duration budget.');
+
+assert(resumeRoute.includes("const INVENTORY_JOB_ID = '33abde71-6eca-485c-94bb-51205395c476'"), 'The inventory resume route must remain pinned to the single recovered promotional OCR case.');
+assert(resumeRoute.includes('runArticleInventoryWorkerV7GroundedOrchestratorStep(INVENTORY_JOB_ID)'), 'The inventory resume route must pass only the pinned job ID to V7.');
+assert(!resumeRoute.includes('runArticleInventoryWorkerV7GroundedOrchestratorStep()'), 'The inventory resume route must never invoke the generic queue drain.');
+assert(resumeRoute.includes("process.env.VERCEL_ENV !== 'production'"), 'The inventory resume route must be production-only.');
+assert(/export const maxDuration = 300/.test(resumeRoute), 'The exact inventory resume route must keep the verified 300-second duration budget.');
 
 for (const variant of ['supported_union_color', 'supported_union_enhanced', 'bottom_band_color', 'bottom_band_enhanced']) {
   assert(rescue.includes(`'${variant}'`), `Rescue must preserve ${variant}.`);

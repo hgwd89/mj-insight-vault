@@ -49,6 +49,7 @@ assert(/maxDuration = 240/.test(workerApi), 'Monthly worker must stay below the 
 assert(/claim_next_monthly_rollup/.test(worker), 'Worker must claim work atomically through the database.');
 assert(/eq\('lease_token', token\)/.test(worker), 'Worker updates must be conditional on the claimed lease token.');
 assert(/CALL_TIMEOUT_MS/.test(worker) && /AbortController/.test(worker), 'Every worker LLM call must have a bounded timeout.');
+assert(/LEASE_SECONDS = boundedNumber\(process\.env\.MONTHLY_ROLLUP_LEASE_SECONDS, 270, 270, 480\)/.test(worker), 'Monthly rollup lease must outlive the 240 second Vercel worker ceiling by at least 30 seconds.');
 assert(/sourceFingerprint/.test(worker) && /compactArticle\(article\)/.test(worker), 'Source fingerprint must include compact article content, not IDs alone.');
 assert(/request_char_budget/.test(worker) && /preflight budget exceeded/.test(worker), 'Worker must reject oversized requests before OpenAI calls.');
 assert(/formal monthly rollup evidence gate failed/.test(worker), 'Formal monthly output must have a grounded evidence gate.');

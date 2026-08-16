@@ -77,6 +77,23 @@ function reportIdFromResult(result: unknown) {
   return text(result.report.id);
 }
 
+function compactCompletedJobResult(result: unknown, reportId: string) {
+  const root = isRecord(result) ? result : {};
+  const answer = isRecord(root.answer)
+    ? root.answer
+    : isRecord(root.answer_json)
+      ? root.answer_json
+      : {};
+  const answerText = text(answer.answer_text || root.answer_text || answer.summary || answer.report_title);
+  return {
+    answer: {
+      report_title: text(answer.report_title) || 'レポート',
+      answer_text: answerText.slice(0, 180)
+    },
+    report: { id: reportId }
+  };
+}
+
 async function loadJob(id: string) {
   const loaded = await supabaseAdmin.from('chat_jobs').select('*').eq('id', id).single();
   if (loaded.error) throw loaded.error;
@@ -232,7 +249,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
           status: 'completed',
           progress: 100,
           stage: '保存済み正式レポートを復旧',
-          result_json: { recovered_report: savedReport },
+          result_json: compactCompletedJobResult(savedReport, text(savedReport.id)),
           report_id: text(savedReport.id),
           error_message: null,
           attempt_count: 0,
@@ -323,7 +340,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id?: strin
         status: 'completed',
         progress: 100,
         stage: 'completed',
-        result_json: result,
+        result_json: compactCompletedJobResult(result, reportId),
         report_id: reportId,
         error_message: reportError || null,
         attempt_count: 0,

@@ -58,6 +58,9 @@ assertIncludes(runner, "status: 409", 'quality-gate failures must not surface as
 assertIncludes(runner, "status: 'queued'", 'incomplete scan work must return to the queue');
 assertIncludes(runner, '{ status: 202 }', 'incomplete scan work must be reported as pending');
 assertIncludes(runner, 'pipelineSnapshot', 'job state must persist bounded pipeline diagnostics');
+assertIncludes(runner, 'compactCompletedJobResult', 'completed report jobs must keep only a bounded UI payload');
+assertIncludes(runner, 'result_json: compactCompletedJobResult(result, reportId)', 'new completed jobs must not duplicate the full formal report in chat_jobs');
+assertIncludes(runner, 'result_json: compactCompletedJobResult(savedReport, text(savedReport.id))', 'recovered completed jobs must also keep a bounded payload');
 
 const provider = read('components/ChatJobStatusProvider.tsx');
 assertIncludes(provider, 'window.localStorage', 'job state must persist across browser sessions');

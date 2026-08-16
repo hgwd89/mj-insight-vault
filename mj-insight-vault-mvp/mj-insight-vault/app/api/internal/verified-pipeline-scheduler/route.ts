@@ -79,6 +79,20 @@ async function ensureVerifiedOcrCorpusReceipt() {
   return { ready: true as const, receipt_id: String(data || ''), created: true as const };
 }
 
+async function ensureVerifiedThemeAnalysisProof() {
+  const { data: gate, error: gateError } = await supabaseAdmin.from('verified_theme_analysis_gate_v8').select('analysis_gate, proof_receipt_id').maybeSingle();
+  if (gateError) throw gateError;
+  if (gate?.analysis_gate === 'passed' && gate.proof_receipt_id) {
+    return { ready: true as const, proof_receipt_id: String(gate.proof_receipt_id), created: false as const };
+  }
+  const { data: census, error: censusError } = await supabaseAdmin.from('verified_theme_census_gate_v7').select('census_gate').maybeSingle();
+  if (censusError) throw censusError;
+  if (census?.census_gate !== 'passed') return { ready: false as const, proof_receipt_id: null, created: false as const };
+  const { data, error } = await supabaseAdmin.rpc('record_verified_theme_analysis_proof_v8');
+  if (error) throw error;
+  return { ready: true as const, proof_receipt_id: String(data || ''), created: true as const };
+}
+
 async function nextQueuedReportJob() {
   const { data, error } = await supabaseAdmin
     .from('chat_jobs')
@@ -145,6 +159,10 @@ async function runStrictPipelineTick() {
   const censusStage = stepStage(census);
   if (censusStage === 'blocked') return { stage: 'blocked', blocked_at: 'theme_census', trace };
   if (censusStage !== 'idle') return { stage: 'theme_census', trace };
+
+  const proof = await ensureVerifiedThemeAnalysisProof();
+  if (!proof.ready) return { stage: 'theme_analysis_waiting', trace };
+  if (proof.created) return { stage: 'theme_analysis_proof_sealed', proof, trace };
 
   const sourceJobId = await nextQueuedReportJob();
   if (!sourceJobId) return { stage: 'verified_pipeline_ready_for_report_v15', trace };

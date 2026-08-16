@@ -46,3 +46,48 @@ $function$;
 
 revoke all on function public.claim_source_page_inventory_region_ocr_rescue_v2(uuid, integer) from public, anon, authenticated;
 grant execute on function public.claim_source_page_inventory_region_ocr_rescue_v2(uuid, integer) to service_role;
+
+create or replace function public.enqueue_source_page_inventory_region_ocr_recovery_v2(p_inventory_job_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path to 'pg_catalog','public'
+as $function$
+declare
+  j public.source_page_article_inventory_jobs_v1%rowtype;
+  v_freeze uuid;
+  v_id uuid;
+  v_passes integer;
+begin
+  select * into j from public.source_page_article_inventory_jobs_v1 where id=p_inventory_job_id;
+  if not found or j.inventory_version<>'page_article_inventory_v4_recovered_ocr' or j.status<>'needs_review' then
+    raise exception 'region_ocr_recovery_wrong_inventory_state';
+  end if;
+  if coalesce(j.error_message,'') not like 'Two independent visual passes support an article region with zero fresh OCR blocks%'
+     and coalesce(j.error_message,'') not like 'Two independent visual passes support an article region with no usable fresh OCR anchor blocks%'
+  then
+    raise exception 'region_ocr_recovery_zero_block_review_required';
+  end if;
+  select freeze_receipt_id into v_freeze from public.formal_corpus_freeze_gate_v2 where freeze_gate_v2='passed';
+  if v_freeze is null or j.freeze_receipt_id is distinct from v_freeze then
+    raise exception 'region_ocr_recovery_not_current_freeze';
+  end if;
+  select count(distinct pass_kind) into v_passes
+  from public.source_page_inventory_visual_region_evidence_v6
+  where job_id=j.id and dropped_from_partition=true and pass_kind in ('mapper','critic','adjudicator');
+  if v_passes<2 then
+    raise exception 'region_ocr_recovery_independent_visual_support_required';
+  end if;
+  insert into public.source_page_inventory_region_ocr_recovery_v1(inventory_job_id,source_image_id,status)
+  values(j.id,j.inventory_source_image_id,'queued')
+  on conflict(inventory_job_id) do update
+  set status=case when source_page_inventory_region_ocr_recovery_v1.status='completed' then 'completed' else 'queued' end,
+      error_message=null,
+      updated_at=now()
+  returning id into v_id;
+  return v_id;
+end
+$function$;
+
+revoke all on function public.enqueue_source_page_inventory_region_ocr_recovery_v2(uuid) from public, anon, authenticated;
+grant execute on function public.enqueue_source_page_inventory_region_ocr_recovery_v2(uuid) to service_role;

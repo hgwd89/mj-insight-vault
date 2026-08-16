@@ -1,0 +1,113 @@
+name: Validate removal of unused Google Vision SDK
+
+on:
+  push:
+    branches:
+      - security/google-vision-5
+    paths:
+      - '.github/workflows/validate-remove-google-vision-sdk.yml'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: mj-insight-vault-mvp/mj-insight-vault
+
+jobs:
+  validate-remove-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout validation branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: security/google-vision-5
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Prove Google Vision SDK is not imported by application code
+        shell: bash
+        run: |
+          set -euo pipefail
+          matches="$(grep -RIn --exclude-dir=node_modules --exclude-dir=.next --exclude='package.json' --exclude='package-lock.json' --exclude='*.md' --exclude='*.yml' --exclude='*.yaml' '@google-cloud/vision' . || true)"
+          if [ -n "$matches" ]; then
+            echo "$matches"
+            echo 'Google Vision SDK is referenced by application code; refusing removal.' >&2
+            exit 1
+          fi
+          echo 'No application-code imports of @google-cloud/vision found.'
+
+      - name: Remove unused SDK dependency
+        run: npm uninstall @google-cloud/vision --save
+
+      - name: Verify dependency is absent
+        shell: bash
+        run: |
+          if npm ls @google-cloud/vision --depth=0 >/tmp/vision-ls.txt 2>&1; then
+            cat /tmp/vision-ls.txt
+            echo '@google-cloud/vision still present as a direct dependency.' >&2
+            exit 1
+          fi
+          cat /tmp/vision-ls.txt || true
+
+      - name: Enforce production audit gate
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > /tmp/audit-prod.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          const a = JSON.parse(fs.readFileSync('/tmp/audit-prod.json', 'utf8'));
+          const v = a.metadata?.vulnerabilities || {};
+          console.log('POST_VISION_REMOVAL_AUDIT=' + JSON.stringify(v));
+          for (const [name, item] of Object.entries(a.vulnerabilities || {})) {
+            console.log('POST_VISION_REMOVAL_VULNERABILITY=' + JSON.stringify({name,severity:item.severity,isDirect:item.isDirect,range:item.range,fixAvailable:item.fixAvailable}));
+          }
+          if ((v.high || 0) !== 0 || (v.critical || 0) !== 0 || (v.moderate || 0) !== 0) {
+            console.error('Expected zero moderate/high/critical production vulnerabilities after removing unused Vision SDK.');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Local regression suite
+        run: npm run test:local
+
+      - name: Production build
+        run: npm run build
+
+      - name: Assert exact change scope
+        working-directory: .
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+              'mj-insight-vault-mvp/mj-insight-vault/package.json',
+              'mj-insight-vault-mvp/mj-insight-vault/package-lock.json',
+          }
+          changed = set(filter(None, subprocess.check_output(['git','diff','--name-only'], text=True).splitlines()))
+          print('CHANGED_FILES=' + ','.join(sorted(changed)))
+          unexpected = changed - expected
+          missing = expected - changed
+          if unexpected or missing:
+              raise SystemExit(f'unexpected removal scope: unexpected={sorted(unexpected)} missing={sorted(missing)}')
+          PY
+
+      - name: Commit verified dependency removal
+        working-directory: .
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mj-insight-vault-mvp/mj-insight-vault/package.json mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+          git diff --cached --quiet && exit 1
+          git commit -m 'Remove unused Google Vision SDK dependency'
+          git push origin HEAD:security/google-vision-5

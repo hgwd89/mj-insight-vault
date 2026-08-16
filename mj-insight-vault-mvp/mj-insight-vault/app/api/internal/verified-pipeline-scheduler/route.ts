@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
 const SCHEDULER_LEASE_SECONDS = 210;
-const REPORT_PIPELINE_VERSION = 'report_pipeline_v3';
+const REPORT_PIPELINE_VERSION = 'verified_report_pipeline_v15';
 type StepRecord = Record<string, unknown>;
 
 function record(value: unknown): StepRecord {

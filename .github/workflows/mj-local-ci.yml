@@ -6,12 +6,14 @@ on:
       - main
     paths:
       - 'mj-insight-vault-mvp/mj-insight-vault/**'
+      - 'mj-insight-vault-mvp/vercel.json'
       - '.github/workflows/**'
   pull_request:
     branches:
       - main
     paths:
       - 'mj-insight-vault-mvp/mj-insight-vault/**'
+      - 'mj-insight-vault-mvp/vercel.json'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -42,6 +44,16 @@ jobs:
             echo 'Vercel CLI/token deployment logic must not be reintroduced into GitHub Actions; Vercel Git Integration owns deployment.' >&2
             exit 1
           fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = 'mj-insight-vault-mvp/vercel.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (config?.git?.deploymentEnabled !== false) {
+            console.error('Legacy Vercel project must remain disabled via mj-insight-vault-mvp/vercel.json.');
+            process.exit(1);
+          }
+          NODE
 
           stale=()
           while IFS= read -r path; do

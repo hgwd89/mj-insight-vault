@@ -294,7 +294,7 @@ function buildConsensus(raw: RawGroup[], blocks: Block[]): FinalGroup[] {
   }
   candidates.sort((a, b) => b.score - a.score);
   for (const edge of candidates) {
-    let ra = find(edge.a), rb = find(edge.b); if (ra === rb) continue;
+    const ra = find(edge.a), rb = find(edge.b); if (ra === rb) continue;
     const merged = new Set([...passes[ra], ...passes[rb]]); if (merged.size !== passes[ra].size + passes[rb].size) continue;
     parent[rb] = ra; passes[ra] = merged;
   }

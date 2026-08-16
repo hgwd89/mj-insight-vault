@@ -88,7 +88,8 @@ assert(/from public, anon, authenticated/.test(classificationGrants), 'Classific
 assert(/require_full_corpus/.test(strictReportJobs) && /full_corpus_required/.test(strictReportJobs), 'Report jobs must explicitly require full-corpus processing.');
 assert(/v_scope in \('all', 'category'\)/.test(strictReportJobs), 'Strict report jobs must be scoped to all or category.');
 assert(/unless the request explicitly requires full-corpus processing/.test(strictReportJobs), 'Legacy report job blocking must remain fail-closed for non-corpus requests.');
-assert(/maxDuration = 240/.test(classificationWorkerRoute), 'Worker endpoint must remain below the Vercel hard limit.');
+const classificationWorkerDuration = Number(classificationWorkerRoute.match(/export const maxDuration\s*=\s*(\d+)/)?.[1] || NaN);
+assert(Number.isFinite(classificationWorkerDuration) && classificationWorkerDuration > 0 && classificationWorkerDuration <= 240, 'Worker endpoint must remain at or below the verified Vercel duration budget.');
 assert(/requireAppPassword/.test(classificationRoute) && /requireAppPassword/.test(classificationWorkerRoute), 'Classification APIs must require authentication.');
 
 console.log('verify-db-formal-proof: ok');

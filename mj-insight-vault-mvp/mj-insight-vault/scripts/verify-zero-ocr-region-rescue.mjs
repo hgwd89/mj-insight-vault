@@ -49,4 +49,14 @@ assert(sql.includes('count(distinct pass_kind)'), 'Region OCR enqueue v2 must re
 assert(/revoke all on function public\.enqueue_source_page_inventory_region_ocr_recovery_v2/.test(sql), 'Region OCR enqueue v2 must be hidden from public roles.');
 assert(/grant execute on function public\.enqueue_source_page_inventory_region_ocr_recovery_v2/.test(sql), 'Region OCR enqueue v2 must be service-role callable.');
 
+assert(sql.includes("'region_ocr_promotional_false_positive'::text"), 'Visual exclusion constraint must explicitly allow positive region-OCR promotional false positives.');
+assert(sql.includes('apply_region_ocr_promotional_false_positive_v1'), 'Database must expose the positive region-OCR promotional exclusion RPC.');
+assert(sql.includes("v_region.status<>'completed'"), 'Promotional exclusion must require a completed region OCR receipt.');
+assert(sql.includes("v_text !~ '出版'"), 'Promotional exclusion must require publisher evidence.');
+assert(sql.includes("v_text !~ '〒' and v_text !~ '東京都'"), 'Promotional exclusion must require address evidence.');
+assert(sql.includes('region_ocr_promo_exclusion_adjudicator_supports_region'), 'Promotional exclusion must fail if the independent adjudicator supports the same headline.');
+assert(sql.includes("pass_kind='adjudicator' and model='gpt-5.6-sol'"), 'Promotional exclusion must require the GPT-5.6-sol adjudicator receipt.');
+assert(sql.includes("set status='queued'"), 'Successful promotional exclusion must resume the existing inventory consensus without clearing its verified pass receipts.');
+assert(/revoke all on function public\.apply_region_ocr_promotional_false_positive_v1/.test(sql), 'Promotional exclusion RPC must be hidden from public roles.');
+
 console.log('verify-zero-ocr-region-rescue: ok');

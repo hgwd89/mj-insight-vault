@@ -34,7 +34,7 @@ assertIncludes(shell, 'ReportJobPanel', 'chat page must use the persistent repor
 assertExcludes(shell, 'import { ChatPanel }', 'chat page must not expose the legacy direct-request panel');
 
 const jobsRoute = read('app/api/chat/jobs/route.ts');
-assertIncludes(jobsRoute, "PIPELINE_VERSION = 'report_pipeline_v3'", 'new jobs must be versioned');
+assertIncludes(jobsRoute, "PIPELINE_VERSION = 'verified_report_pipeline_v15'", 'new jobs must use the verified report pipeline version');
 assertIncludes(jobsRoute, "url.searchParams.get('active')", 'active jobs must be server-discoverable');
 assertIncludes(jobsRoute, 'active_job_exists', 'multiple active report jobs must be rejected');
 assertIncludes(jobsRoute, "inserted.error.code === '23505'", 'active job creation must be race safe');

@@ -40,4 +40,13 @@ assert(/greatest\(300,least\(600/.test(sql), 'Rescue lease must outlive the Visi
 assert(/revoke all on function public\.claim_source_page_inventory_region_ocr_rescue_v2/.test(sql), 'Rescue RPC must be hidden from public roles.');
 assert(/grant execute on function public\.claim_source_page_inventory_region_ocr_rescue_v2/.test(sql) && /to service_role/.test(sql), 'Only service_role may execute the rescue RPC.');
 
+assert(sql.includes('enqueue_source_page_inventory_region_ocr_recovery_v2'), 'Database must expose the current-freeze region OCR enqueue v2 RPC.');
+assert(sql.includes('no usable fresh OCR anchor blocks'), 'Region OCR enqueue v2 must accept the newer no-usable-anchor review state.');
+assert(sql.includes('zero fresh OCR blocks'), 'Region OCR enqueue v2 must preserve compatibility with the original zero-block review state.');
+assert(sql.includes("j.inventory_version<>'page_article_inventory_v4_recovered_ocr'"), 'Region OCR enqueue v2 must remain pinned to recovered OCR inventory jobs.');
+assert(sql.includes("freeze_gate_v2='passed'"), 'Region OCR enqueue v2 must require the current formal freeze.');
+assert(sql.includes('count(distinct pass_kind)'), 'Region OCR enqueue v2 must require independent visual support.');
+assert(/revoke all on function public\.enqueue_source_page_inventory_region_ocr_recovery_v2/.test(sql), 'Region OCR enqueue v2 must be hidden from public roles.');
+assert(/grant execute on function public\.enqueue_source_page_inventory_region_ocr_recovery_v2/.test(sql), 'Region OCR enqueue v2 must be service-role callable.');
+
 console.log('verify-zero-ocr-region-rescue: ok');

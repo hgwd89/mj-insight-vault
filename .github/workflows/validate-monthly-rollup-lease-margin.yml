@@ -1,0 +1,98 @@
+name: Validate monthly rollup lease margin
+
+on:
+  push:
+    branches:
+      - fix/monthly-rollup-lease-margin
+    paths:
+      - '.github/workflows/validate-monthly-rollup-lease-margin.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/monthly-rollup-lease-margin
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Enforce lease margin over Vercel worker ceiling
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('mj-insight-vault-mvp/mj-insight-vault')
+
+          worker = root / 'lib/monthlyRollupWorker.ts'
+          s = worker.read_text()
+          old = "const LEASE_SECONDS = boundedNumber(process.env.MONTHLY_ROLLUP_LEASE_SECONDS, 210, 60, 480);"
+          new = "const LEASE_SECONDS = boundedNumber(process.env.MONTHLY_ROLLUP_LEASE_SECONDS, 270, 270, 480);"
+          assert s.count(old) == 1, 'monthly rollup lease constant drifted'
+          worker.write_text(s.replace(old, new, 1))
+
+          proof = root / 'scripts/verify-rollup-logic.mjs'
+          s = proof.read_text()
+          anchor = "assert(/CALL_TIMEOUT_MS/.test(worker) && /AbortController/.test(worker), 'Every worker LLM call must have a bounded timeout.');"
+          addition = anchor + "\nassert(/LEASE_SECONDS = boundedNumber\\(process\\.env\\.MONTHLY_ROLLUP_LEASE_SECONDS, 270, 270, 480\\)/.test(worker), 'Monthly rollup lease must outlive the 240 second Vercel worker ceiling by at least 30 seconds.');"
+          assert s.count(anchor) == 1, 'rollup proof insertion anchor drifted'
+          proof.write_text(s.replace(anchor, addition, 1))
+          PY
+
+      - name: Install exact dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+
+      - name: Production dependency audit
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Lint
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run lint
+
+      - name: Local regression suite
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run test:local
+
+      - name: Production build
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run build
+
+      - name: Assert exact repair scope
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+              'mj-insight-vault-mvp/mj-insight-vault/lib/monthlyRollupWorker.ts',
+              'mj-insight-vault-mvp/mj-insight-vault/scripts/verify-rollup-logic.mjs',
+          }
+          changed = set(filter(None, subprocess.check_output(['git','diff','--name-only'], text=True).splitlines()))
+          print('CHANGED_FILES=' + ','.join(sorted(changed)))
+          if changed != expected:
+              raise SystemExit(f'unexpected repair scope: {sorted(changed)}')
+          PY
+
+      - name: Commit verified repair
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            mj-insight-vault-mvp/mj-insight-vault/lib/monthlyRollupWorker.ts \
+            mj-insight-vault-mvp/mj-insight-vault/scripts/verify-rollup-logic.mjs
+          git diff --cached --quiet && exit 1
+          git commit -m 'Keep monthly rollup lease beyond function ceiling'
+          git push origin HEAD:fix/monthly-rollup-lease-margin

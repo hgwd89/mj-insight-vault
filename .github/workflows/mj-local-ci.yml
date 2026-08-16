@@ -6,13 +6,13 @@ on:
       - main
     paths:
       - 'mj-insight-vault-mvp/mj-insight-vault/**'
-      - '.github/workflows/mj-local-ci.yml'
+      - '.github/workflows/**'
   pull_request:
     branches:
       - main
     paths:
       - 'mj-insight-vault-mvp/mj-insight-vault/**'
-      - '.github/workflows/mj-local-ci.yml'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,35 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Guard repository deployment invariants
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          token_key='VERCEL_''TOKEN'
+          cli_pattern='vercel[[:space:]]+(pull|build|deploy)'
+          if git grep -n -E "${token_key}|${cli_pattern}" -- .github/workflows; then
+            echo 'Vercel CLI/token deployment logic must not be reintroduced into GitHub Actions; Vercel Git Integration owns deployment.' >&2
+            exit 1
+          fi
+
+          stale=()
+          while IFS= read -r path; do
+            [ -n "$path" ] && stale+=("$path")
+          done < <(
+            find .github/workflows -maxdepth 1 -type f \( -name 'apply-*.yml' -o -name 'retry-vercel-rate-limit.yml' -o -name 'diagnose-e2e-runtime-secrets.yml' \) -print
+            find .github -maxdepth 1 -type f -name 'trigger-*' -print
+            find . -maxdepth 1 -type f -name '.vercel-redeploy*' -print
+            if [ -d scripts ]; then
+              find scripts -maxdepth 1 -type f \( -name 'patch_*.py' -o -name 'fix_semantic_patch_*.py' -o -name 'add_*marker*.py' \) -print
+            fi
+          )
+          if [ "${#stale[@]}" -ne 0 ]; then
+            printf 'Stale deployment/patch scaffolding is forbidden:\n%s\n' "${stale[@]}" >&2
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4

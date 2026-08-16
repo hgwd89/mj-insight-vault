@@ -28,8 +28,14 @@ jobs:
           cache: npm
           cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
 
-      - name: Install current Next 16 stack transiently
-        run: npm install next@16.3.1 eslint-config-next@16.3.1 --no-save
+      - name: Set migration ranges transiently
+        run: |
+          npm pkg set dependencies.next='^16.3.1'
+          npm pkg set dependencies.sharp='^0.35.3'
+          npm pkg set devDependencies.eslint-config-next='^16.3.1'
+
+      - name: Install migrated dependency graph
+        run: npm install
 
       - name: Show resolved framework stack
         run: npm ls next eslint-config-next sharp postcss

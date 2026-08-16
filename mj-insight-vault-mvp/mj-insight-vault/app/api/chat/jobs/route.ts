@@ -8,7 +8,7 @@ export const maxDuration = 60;
 type JobPayload = Record<string, unknown>;
 
 const ALL_SCOPE_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
-const PIPELINE_VERSION = 'report_pipeline_v3';
+const PIPELINE_VERSION = 'verified_report_pipeline_v15';
 const MAX_QUERY_CHARS = 12_000;
 
 function text(value: unknown) {

@@ -1,0 +1,97 @@
+name: Apply MJ Local CI repair
+
+on:
+  push:
+    branches:
+      - fix/mj-local-ci-repair
+    paths:
+      - '.github/workflows/apply-mj-local-ci-repair.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/mj-local-ci-repair
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mj-insight-vault-mvp/mj-insight-vault/package-lock.json
+
+      - name: Apply exact CI repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('mj-insight-vault-mvp/mj-insight-vault')
+
+          p = root / 'lib/articleInventoryWorkerV5Consensus.ts'
+          s = p.read_text()
+          old = '    let ra = find(edge.a), rb = find(edge.b); if (ra === rb) continue;'
+          new = '    const ra = find(edge.a), rb = find(edge.b); if (ra === rb) continue;'
+          assert s.count(old) == 1, 'articleInventory prefer-const target drifted'
+          p.write_text(s.replace(old, new, 1))
+
+          p = root / 'lib/verifiedThemeCandidateWorker.ts'
+          s = p.read_text()
+          old = "let chunkJobs:Record<string,number>={},consolidationJobs:Record<string,number>={};"
+          new = "const chunkJobs:Record<string,number>={},consolidationJobs:Record<string,number>={};"
+          assert s.count(old) == 1, 'verifiedThemeCandidate prefer-const target drifted'
+          p.write_text(s.replace(old, new, 1))
+
+          p = root / 'scripts/verify-db-formal-proof.mjs'
+          s = p.read_text()
+          old = "assert(/maxDuration = 240/.test(classificationWorkerRoute), 'Worker endpoint must remain below the Vercel hard limit.');"
+          new = "const classificationWorkerDuration = Number(classificationWorkerRoute.match(/export const maxDuration\\s*=\\s*(\\d+)/)?.[1] || NaN);\nassert(Number.isFinite(classificationWorkerDuration) && classificationWorkerDuration > 0 && classificationWorkerDuration <= 240, 'Worker endpoint must remain at or below the verified Vercel duration budget.');"
+          assert s.count(old) == 1, 'db formal proof duration target drifted'
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('.github/workflows/mj-local-ci.yml')
+          s = p.read_text()
+          old = "node-version: '20'"
+          assert s.count(old) == 3, f'expected 3 Node 20 CI entries, found {s.count(old)}'
+          p.write_text(s.replace(old, "node-version: '24'"))
+          PY
+
+      - name: Install dependencies
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm ci
+
+      - name: Lint
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run lint
+
+      - name: Local regression suite
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run test:local
+
+      - name: Production build
+        working-directory: mj-insight-vault-mvp/mj-insight-vault
+        run: npm run build
+
+      - name: Remove one-shot helper
+        run: rm .github/workflows/apply-mj-local-ci-repair.yml
+
+      - name: Commit verified repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            mj-insight-vault-mvp/mj-insight-vault/lib/articleInventoryWorkerV5Consensus.ts \
+            mj-insight-vault-mvp/mj-insight-vault/lib/verifiedThemeCandidateWorker.ts \
+            mj-insight-vault-mvp/mj-insight-vault/scripts/verify-db-formal-proof.mjs \
+            .github/workflows/mj-local-ci.yml \
+            .github/workflows/apply-mj-local-ci-repair.yml
+          git diff --cached --quiet && exit 1
+          git commit -m 'Repair MJ Local CI contracts'
+          git push origin HEAD:fix/mj-local-ci-repair

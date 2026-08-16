@@ -8,12 +8,14 @@ import { runVerifiedArticleClassificationWorkerStep } from '@/lib/verifiedArticl
 import { runVerifiedArticleReviewWorkerStep } from '@/lib/verifiedArticleReviewWorker';
 import { runVerifiedThemeCandidateWorkerStep } from '@/lib/verifiedThemeCandidateWorker';
 import { runVerifiedThemeCensusWorkerStep } from '@/lib/verifiedThemeCensusWorker';
+import { runVerifiedThemeReportWorkerV15Step } from '@/lib/verifiedThemeReportWorkerV15';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
 const SCHEDULER_LEASE_SECONDS = 210;
+const REPORT_PIPELINE_VERSION = 'report_pipeline_v3';
 type StepRecord = Record<string, unknown>;
 
 function record(value: unknown): StepRecord {
@@ -77,6 +79,24 @@ async function ensureVerifiedOcrCorpusReceipt() {
   return { ready: true as const, receipt_id: String(data || ''), created: true as const };
 }
 
+async function nextQueuedReportJob() {
+  const { data, error } = await supabaseAdmin
+    .from('chat_jobs')
+    .select('id, next_retry_at, lease_token, lease_expires_at, created_at')
+    .eq('status', 'queued')
+    .eq('request_json->>pipeline_version', REPORT_PIPELINE_VERSION)
+    .is('lease_token', null)
+    .order('created_at', { ascending: true })
+    .limit(20);
+  if (error) throw error;
+  const now = Date.now();
+  const row = (data || []).find((item) => {
+    const nextRetry = item.next_retry_at ? Date.parse(String(item.next_retry_at)) : 0;
+    return !nextRetry || !Number.isFinite(nextRetry) || nextRetry <= now;
+  });
+  return row ? String(row.id) : '';
+}
+
 async function runStrictPipelineTick() {
   const trace: Array<{ stage: string; result: unknown }> = [];
 
@@ -126,7 +146,14 @@ async function runStrictPipelineTick() {
   if (censusStage === 'blocked') return { stage: 'blocked', blocked_at: 'theme_census', trace };
   if (censusStage !== 'idle') return { stage: 'theme_census', trace };
 
-  return { stage: 'verified_pipeline_ready_for_report_v15', trace };
+  const sourceJobId = await nextQueuedReportJob();
+  if (!sourceJobId) return { stage: 'verified_pipeline_ready_for_report_v15', trace };
+
+  const report = await runVerifiedThemeReportWorkerV15Step(sourceJobId);
+  trace.push({ stage: 'report_v15', result: report });
+  const reportStage = stepStage(report);
+  if (reportStage === 'blocked') return { stage: 'blocked', blocked_at: 'report_v15', source_job_id: sourceJobId, trace };
+  return { stage: 'report_v15', source_job_id: sourceJobId, report_stage: reportStage, trace };
 }
 
 export async function POST(req: NextRequest) {

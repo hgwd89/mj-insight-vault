@@ -37,6 +37,28 @@ jobs:
       - name: Install migrated dependency graph
         run: npm install
 
+      - name: Replace ESLint config with Next 16 flat config transiently
+        shell: bash
+        run: |
+          cat > scripts/eslint.config.mjs <<'EOF'
+          import { defineConfig, globalIgnores } from 'eslint/config';
+          import nextVitals from 'eslint-config-next/core-web-vitals';
+          import nextTs from 'eslint-config-next/typescript';
+
+          export default defineConfig([
+            ...nextVitals,
+            ...nextTs,
+            globalIgnores([
+              '.next/**',
+              'out/**',
+              'build/**',
+              'node_modules/**',
+              'next-env.d.ts',
+              'tsconfig.tsbuildinfo'
+            ])
+          ]);
+          EOF
+
       - name: Show resolved framework stack
         run: npm ls next eslint-config-next sharp postcss
 

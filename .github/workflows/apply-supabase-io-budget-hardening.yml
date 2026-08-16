@@ -32,52 +32,22 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           root = Path('mj-insight-vault-mvp/mj-insight-vault')
           runner = root / 'app/api/chat/jobs/[id]/run/route.ts'
           s = runner.read_text()
-
-          old = """function reportIdFromResult(result: unknown) {
-  if (!isRecord(result) || !isRecord(result.report)) return '';
-  return text(result.report.id);
-}
-"""
-          new = """function reportIdFromResult(result: unknown) {
-  if (!isRecord(result) || !isRecord(result.report)) return '';
-  return text(result.report.id);
-}
-
-function compactCompletedJobResult(result: unknown, reportId: string) {
-  const root = isRecord(result) ? result : {};
-  const answer = isRecord(root.answer)
-    ? root.answer
-    : isRecord(root.answer_json)
-      ? root.answer_json
-      : {};
-  const answerText = text(answer.answer_text || root.answer_text || answer.summary || answer.report_title);
-  return {
-    answer: {
-      report_title: text(answer.report_title) || 'レポート',
-      answer_text: answerText.slice(0, 180)
-    },
-    report: { id: reportId }
-  };
-}
-"""
+          old = "function reportIdFromResult(result: unknown) {\n  if (!isRecord(result) || !isRecord(result.report)) return '';\n  return text(result.report.id);\n}\n"
+          helper = "\nfunction compactCompletedJobResult(result: unknown, reportId: string) {\n  const root = isRecord(result) ? result : {};\n  const answer = isRecord(root.answer)\n    ? root.answer\n    : isRecord(root.answer_json)\n      ? root.answer_json\n      : {};\n  const answerText = text(answer.answer_text || root.answer_text || answer.summary || answer.report_title);\n  return {\n    answer: {\n      report_title: text(answer.report_title) || 'レポート',\n      answer_text: answerText.slice(0, 180)\n    },\n    report: { id: reportId }\n  };\n}\n"
           assert s.count(old) == 1, 'reportIdFromResult insertion point drifted'
-          s = s.replace(old, new, 1)
-
+          s = s.replace(old, old + helper, 1)
           old_saved = "        result_json: { recovered_report: savedReport },"
           new_saved = "        result_json: compactCompletedJobResult(savedReport, text(savedReport.id)),"
           assert s.count(old_saved) == 1, 'saved report result payload target drifted'
           s = s.replace(old_saved, new_saved, 1)
-
           old_completed = "        result_json: result,\n        report_id: reportId,"
           new_completed = "        result_json: compactCompletedJobResult(result, reportId),\n        report_id: reportId,"
           assert s.count(old_completed) == 1, 'completed result payload target drifted'
           s = s.replace(old_completed, new_completed, 1)
           runner.write_text(s)
-
           verify = root / 'scripts/verify-report-pipeline.mjs'
           v = verify.read_text()
           marker = "assertIncludes(runner, 'pipelineSnapshot', 'job state must persist bounded pipeline diagnostics');"

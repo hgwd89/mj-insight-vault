@@ -17,6 +17,7 @@ export const maxDuration = 180;
 const SCHEDULER_LEASE_SECONDS = 210;
 const REPORT_PIPELINE_VERSION = 'verified_report_pipeline_v15';
 type StepRecord = Record<string, unknown>;
+type BatchState = 'idle' | 'worked' | 'blocked';
 
 function record(value: unknown): StepRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as StepRecord : {};
@@ -28,6 +29,17 @@ function stepStage(value: unknown) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || 'verified pipeline scheduler error');
+}
+
+async function runWorkerBatch(stage: string, lanes: number, worker: () => Promise<unknown>) {
+  const settled = await Promise.allSettled(Array.from({ length: lanes }, () => worker()));
+  const results = settled.map((item, lane) => item.status === 'fulfilled'
+    ? { lane, ok: true, result: item.value, stage: stepStage(item.value) }
+    : { lane, ok: false, error: errorMessage(item.reason), stage: 'lane_error' });
+  const hasWorked = results.some((item) => item.stage !== 'idle' && item.stage !== 'blocked');
+  const hasBlocked = results.some((item) => item.stage === 'blocked');
+  const state: BatchState = hasWorked ? 'worked' : hasBlocked ? 'blocked' : 'idle';
+  return { stage, lanes, state, results };
 }
 
 async function currentSchedulerState() {
@@ -114,51 +126,44 @@ async function nextQueuedReportJob() {
 async function runStrictPipelineTick() {
   const trace: Array<{ stage: string; result: unknown }> = [];
 
-  const ocr = await runOcrVerificationWorkerStep();
+  const ocr = await runWorkerBatch('ocr_verification', 2, runOcrVerificationWorkerStep);
   trace.push({ stage: 'ocr_verification', result: ocr });
-  const ocrStage = stepStage(ocr);
-  if (ocrStage === 'blocked') return { stage: 'blocked', blocked_at: 'ocr_verification', trace };
-  if (ocrStage !== 'idle') return { stage: 'ocr_verification', trace };
+  if (ocr.state === 'blocked') return { stage: 'blocked', blocked_at: 'ocr_verification', trace };
+  if (ocr.state === 'worked') return { stage: 'ocr_verification', trace };
 
   const ocrReceipt = await ensureVerifiedOcrCorpusReceipt();
   if (!ocrReceipt.ready) return { stage: 'ocr_verification_waiting', trace };
   if (ocrReceipt.created) return { stage: 'ocr_corpus_sealed', receipt: ocrReceipt, trace };
 
-  const embedding = await runVerifiedArticleEmbeddingWorkerStep();
+  const embedding = await runWorkerBatch('embedding', 4, runVerifiedArticleEmbeddingWorkerStep);
   trace.push({ stage: 'embedding', result: embedding });
-  const embeddingStage = stepStage(embedding);
-  if (embeddingStage === 'blocked') return { stage: 'blocked', blocked_at: 'embedding', trace };
-  if (embeddingStage !== 'idle') return { stage: 'embedding', trace };
+  if (embedding.state === 'blocked') return { stage: 'blocked', blocked_at: 'embedding', trace };
+  if (embedding.state === 'worked') return { stage: 'embedding', trace };
 
-  const duplicate = await runVerifiedDuplicateAuditWorkerStep();
+  const duplicate = await runWorkerBatch('duplicate_audit', 2, runVerifiedDuplicateAuditWorkerStep);
   trace.push({ stage: 'duplicate_audit', result: duplicate });
-  const duplicateStage = stepStage(duplicate);
-  if (duplicateStage === 'blocked') return { stage: 'blocked', blocked_at: 'duplicate_audit', trace };
-  if (duplicateStage !== 'idle') return { stage: 'duplicate_audit', trace };
+  if (duplicate.state === 'blocked') return { stage: 'blocked', blocked_at: 'duplicate_audit', trace };
+  if (duplicate.state === 'worked') return { stage: 'duplicate_audit', trace };
 
-  const classification = await runVerifiedArticleClassificationWorkerStep();
+  const classification = await runWorkerBatch('classification', 2, runVerifiedArticleClassificationWorkerStep);
   trace.push({ stage: 'classification', result: classification });
-  const classificationStage = stepStage(classification);
-  if (classificationStage === 'blocked') return { stage: 'blocked', blocked_at: 'classification', trace };
-  if (classificationStage !== 'idle') return { stage: 'classification', trace };
+  if (classification.state === 'blocked') return { stage: 'blocked', blocked_at: 'classification', trace };
+  if (classification.state === 'worked') return { stage: 'classification', trace };
 
-  const review = await runVerifiedArticleReviewWorkerStep();
+  const review = await runWorkerBatch('article_review', 2, runVerifiedArticleReviewWorkerStep);
   trace.push({ stage: 'article_review', result: review });
-  const reviewStage = stepStage(review);
-  if (reviewStage === 'blocked') return { stage: 'blocked', blocked_at: 'article_review', trace };
-  if (reviewStage !== 'idle') return { stage: 'article_review', trace };
+  if (review.state === 'blocked') return { stage: 'blocked', blocked_at: 'article_review', trace };
+  if (review.state === 'worked') return { stage: 'article_review', trace };
 
-  const candidates = await runVerifiedThemeCandidateWorkerStep();
+  const candidates = await runWorkerBatch('theme_candidates', 1, runVerifiedThemeCandidateWorkerStep);
   trace.push({ stage: 'theme_candidates', result: candidates });
-  const candidateStage = stepStage(candidates);
-  if (candidateStage === 'blocked') return { stage: 'blocked', blocked_at: 'theme_candidates', trace };
-  if (candidateStage !== 'idle') return { stage: 'theme_candidates', trace };
+  if (candidates.state === 'blocked') return { stage: 'blocked', blocked_at: 'theme_candidates', trace };
+  if (candidates.state === 'worked') return { stage: 'theme_candidates', trace };
 
-  const census = await runVerifiedThemeCensusWorkerStep();
+  const census = await runWorkerBatch('theme_census', 2, runVerifiedThemeCensusWorkerStep);
   trace.push({ stage: 'theme_census', result: census });
-  const censusStage = stepStage(census);
-  if (censusStage === 'blocked') return { stage: 'blocked', blocked_at: 'theme_census', trace };
-  if (censusStage !== 'idle') return { stage: 'theme_census', trace };
+  if (census.state === 'blocked') return { stage: 'blocked', blocked_at: 'theme_census', trace };
+  if (census.state === 'worked') return { stage: 'theme_census', trace };
 
   const proof = await ensureVerifiedThemeAnalysisProof();
   if (!proof.ready) return { stage: 'theme_analysis_waiting', trace };

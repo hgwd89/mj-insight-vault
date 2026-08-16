@@ -172,16 +172,18 @@ export async function POST(req: NextRequest) {
       }
 
       if (results.some(hasProviderQuotaExhaustion)) {
-        const circuitBreaker = await tripProviderQuotaCircuitBreaker();
-        const state = await currentState();
+        const stateBeforePause = await currentState();
         const summary = {
           steps,
           third_pass_gate: { attempted: false, reason: 'provider_quota_exhausted_circuit_breaker' },
-          provider_circuit_breaker: circuitBreaker,
-          state
+          provider_quota_exhausted: true,
+          state: stateBeforePause
         };
+        // Close the audit row while the lease is still valid. Disabling the scheduler clears the lease.
         await finishSchedulerRun(leaseToken, 'ok', claimedSteps, exceptionSteps, summary);
-        return Response.json({ ok: true, paused: true, claimed_steps: claimedSteps, exception_steps: exceptionSteps, ...summary });
+        const circuitBreaker = await tripProviderQuotaCircuitBreaker();
+        const state = await currentState();
+        return Response.json({ ok: true, paused: true, claimed_steps: claimedSteps, exception_steps: exceptionSteps, ...summary, provider_circuit_breaker: circuitBreaker, state });
       }
 
       const thirdPass = await maybeEnableThirdPass();

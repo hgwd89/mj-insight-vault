@@ -43,6 +43,9 @@ jobs:
       - name: Run lint
         run: npm run lint
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
   build:
     name: build
     runs-on: ubuntu-latest

@@ -300,10 +300,31 @@ function buildConsensus(raw: RawGroup[], blocks: Block[]): FinalGroup[] {
   }
   const components = new Map<number, number[]>();
   articles.forEach((_, i) => { const r = find(i); const x = components.get(r) || []; x.push(i); components.set(r, x); });
-  for (const ids of components.values()) if (new Set(ids.map((i) => articles[i].pass_kind)).size < 2) throw new ReviewRequiredError('One-model-only visual article has no independent support.');
-  const roots = [...components.keys()].sort((a, b) => Math.min(...components.get(a)!.flatMap((i) => articles[i].block_indices)) - Math.min(...components.get(b)!.flatMap((i) => articles[i].block_indices)));
+  const rejectedSingletonRoots = new Set<number>();
+  const rejectedSingletonGroups: RawGroup[] = [];
+  for (const [root, ids] of components.entries()) {
+    const support = new Set(ids.map((i) => articles[i].pass_kind)).size;
+    if (support >= 2) continue;
+    if (ids.length !== 1) throw new ReviewRequiredError('One-model-only visual article has no independent support.');
+    const singleton = articles[ids[0]];
+    const contradictedByBothOtherPasses = PASS_KINDS.filter((pass) => pass !== singleton.pass_kind).every((pass) => {
+      const nonArticleGroups = raw.filter((g) => g.pass_kind === pass && g.group_kind === 'non_article');
+      return singleton.block_indices.every((blockIndex) => nonArticleGroups.some((g) => g.block_indices.includes(blockIndex)));
+    });
+    if (!contradictedByBothOtherPasses) throw new ReviewRequiredError('One-model-only visual article has no independent support.');
+    rejectedSingletonRoots.add(root);
+    rejectedSingletonGroups.push(singleton);
+  }
+  const allRoots = [...components.keys()].sort((a, b) => Math.min(...components.get(a)!.flatMap((i) => articles[i].block_indices)) - Math.min(...components.get(b)!.flatMap((i) => articles[i].block_indices)));
+  const roots = allRoots.filter((root) => !rejectedSingletonRoots.has(root));
   const componentId = new Map<number, string>(); roots.forEach((r, i) => componentId.set(r, `A${i + 1}`));
-  const nodeLabel = new Map<number, string>(); articles.forEach((_, i) => nodeLabel.set(i, componentId.get(find(i))!));
+  const rejectedId = new Map<number, string>(); allRoots.filter((root) => rejectedSingletonRoots.has(root)).forEach((r, i) => rejectedId.set(r, `R${i + 1}`));
+  const nodeLabel = new Map<number, string>();
+  articles.forEach((_, i) => {
+    const root = find(i); const label = componentId.get(root) || rejectedId.get(root);
+    if (!label) throw new ReviewRequiredError('Internal visual component label missing.');
+    nodeLabel.set(i, label);
+  });
   const passLabels = new Map<PassKind, Map<number, string>>();
   for (const pass of PASS_KINDS) {
     const labels = new Map<number, string>();
@@ -323,6 +344,9 @@ function buildConsensus(raw: RawGroup[], blocks: Block[]): FinalGroup[] {
     if (ranked[0][1] < 2) throw new ReviewRequiredError(`Three-way visual tie at block ${b.block_index}.`);
     const list = winners.get(ranked[0][0]) || []; list.push(b.block_index); winners.set(ranked[0][0], list);
   }
+  for (const label of rejectedId.values()) {
+    if ((winners.get(label) || []).length) throw new ReviewRequiredError(`Rejected single-model article ${label} unexpectedly received majority blocks.`);
+  }
   const byIndex = new Map(blocks.map((b) => [b.block_index, b])); const out: FinalGroup[] = [];
   roots.forEach((root, idx) => {
     const label = componentId.get(root)!; const blockIds = (winners.get(label) || []).sort((a, b) => a - b); if (!blockIds.length) throw new ReviewRequiredError(`Supported article ${label} receives no majority blocks.`);
@@ -331,7 +355,8 @@ function buildConsensus(raw: RawGroup[], blocks: Block[]): FinalGroup[] {
     const hints = members.map((g) => parseHint(g.reason)).filter(Boolean); const articleBlocks = blockIds.map((id) => byIndex.get(id)).filter(Boolean) as Block[];
     out.push({ seq: idx + 1, group_kind: 'article', block_indices: blockIds, headline_anchor: chooseAnchor(hints, articleBlocks), non_article_role: '', confidence, reason: `three-pass block-majority visual consensus; support=${support}/3; hints=${hints.join(' | ')}` });
   });
-  const non = (winners.get('N') || []).sort((a, b) => a - b); if (non.length) out.push({ seq: out.length + 1, group_kind: 'non_article', block_indices: non, headline_anchor: '', non_article_role: 'three_pass_visual_majority_non_article', confidence: 0.99, reason: 'three-pass block-majority non-article complement' });
+  const rejectedEvidence = rejectedSingletonGroups.map((g) => `${g.pass_kind}:${g.group_fingerprint}`).sort().join(',');
+  const non = (winners.get('N') || []).sort((a, b) => a - b); if (non.length) out.push({ seq: out.length + 1, group_kind: 'non_article', block_indices: non, headline_anchor: '', non_article_role: 'three_pass_visual_majority_non_article', confidence: 0.99, reason: `three-pass block-majority non-article complement; rejected_single_model_articles=${rejectedSingletonGroups.length}; rejected_evidence=${rejectedEvidence}` });
   return out.sort((a, b) => Math.min(...a.block_indices) - Math.min(...b.block_indices)).map((g, i) => ({ ...g, seq: i + 1 }));
 }
 async function normalizeConsensus(job: ClaimedJob, blocks: Block[]) {

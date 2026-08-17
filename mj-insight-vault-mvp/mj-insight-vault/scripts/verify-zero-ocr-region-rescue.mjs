@@ -66,4 +66,5 @@ assert(sql.includes("pass_kind='adjudicator' and model='gpt-5.6-sol'"), 'Promoti
 assert(sql.includes("set status='queued'"), 'Successful promotional exclusion must resume the existing inventory consensus without clearing its verified pass receipts.');
 assert(/revoke all on function public\.apply_region_ocr_promotional_false_positive_v1/.test(sql), 'Promotional exclusion RPC must be hidden from public roles.');
 
+// No-op source touch to retrigger the canonical Vercel Preview after the prior rate-limit failure.
 console.log('verify-zero-ocr-region-rescue: ok');

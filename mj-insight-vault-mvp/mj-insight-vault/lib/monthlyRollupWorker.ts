@@ -84,7 +84,7 @@ const REQUEST_CHAR_BUDGET = boundedNumber(process.env.MONTHLY_ROLLUP_REQUEST_CHA
 const CHUNK_MAX_ARTICLES = boundedNumber(process.env.MONTHLY_ROLLUP_CHUNK_MAX_ARTICLES, 24, 5, 40);
 const REDUCE_MAX_ITEMS = boundedNumber(process.env.MONTHLY_ROLLUP_REDUCE_MAX_ITEMS, 8, 2, 16);
 const CALL_TIMEOUT_MS = boundedNumber(process.env.MONTHLY_ROLLUP_TIMEOUT_MS, 120_000, 30_000, 210_000);
-const LEASE_SECONDS = boundedNumber(process.env.MONTHLY_ROLLUP_LEASE_SECONDS, 210, 60, 480);
+const LEASE_SECONDS = boundedNumber(process.env.MONTHLY_ROLLUP_LEASE_SECONDS, 270, 270, 480);
 const MAX_FAILURES = boundedNumber(process.env.MONTHLY_ROLLUP_MAX_FAILURES, 4, 1, 8);
 
 class LeaseLostError extends Error {

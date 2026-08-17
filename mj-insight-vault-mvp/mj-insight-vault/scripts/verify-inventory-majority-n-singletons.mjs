@@ -53,4 +53,5 @@ assert(/for update of j skip locked/i.test(sql), 'Targeted retry selection must 
 assert(/revoke all on function public\.prepare_inventory_majority_n_retry_v1/.test(sql), 'Targeted retry RPC must be hidden from public roles.');
 assert(/grant execute on function public\.prepare_inventory_majority_n_retry_v1/.test(sql) && /to service_role/.test(sql), 'Only service_role may execute targeted retry RPC.');
 
+// No-op source touch to retrigger the canonical Vercel Preview after the prior rate-limit failure.
 console.log('verify-inventory-majority-n-singletons: ok');

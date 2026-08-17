@@ -99,4 +99,5 @@ for (const testCase of dateCases) {
   assert(actual === testCase.expected, `monthKeyFromDate(${JSON.stringify(testCase.input)}) expected ${testCase.expected}, got ${actual}`);
 }
 
+// No-op source touch to retrigger the canonical Vercel Preview after the prior rate-limit failure.
 console.log('verify-rollup-logic: ok');

@@ -1,5 +1,13 @@
 # CLAUDE.md
 
+## Current MJ Completion Mission — Read First
+
+For the current MJ Insight Vault historical-freeze completion work, **read and follow `docs/MJ_CURRENT_FREEZE_COMPLETION_RUNBOOK.md` before doing any production work.**
+
+The mission is not finished at partial Inventory progress. The final goal is: finish the authoritative current freeze through **Article Inventory 540/540 with Inventory gate passed -> OCR Verification -> Classification -> Full Article Review -> Theme Candidate -> Full Census -> Theme Analysis -> formal Report**, then verify that the saved report is accessible in canonical Vercel Production and its article/evidence links work.
+
+Use Supabase project `wqbjtvepnavkqdshppau` as the authoritative production DB for this mission. Never use `umecmthqvvdcmwqfhgqf`. Always fetch fresh current-freeze state before acting; the checkpoint values in the runbook can become stale.
+
 ## Claude Code Working Rules
 
 Use `mj-insight-vault-mvp/mj-insight-vault` as the app root. Do not assume `package.json` exists at the repository root.
@@ -66,4 +74,3 @@ npm run test:local
 If a command cannot run because of local environment issues, report the exact reason and do not claim it passed.
 
 This file must remain consistent with `AGENTS.md`.
-

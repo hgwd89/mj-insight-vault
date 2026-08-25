@@ -16,7 +16,8 @@
     "test:db-formal-proof": "node scripts/verify-db-formal-proof.mjs",
     "test:ocr-rescue": "node scripts/verify-zero-ocr-region-rescue.mjs",
     "test:inventory-majority-n": "node scripts/verify-inventory-majority-n-singletons.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n"
+    "test:ocr-consensus-v11": "node scripts/verify-ocr-consensus-v11.mjs",
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
 import { getOpenAIKey } from '@/lib/openai';
-import { buildArticleBlockComposite, type ArticleBlockRect } from '@/lib/articleCrop';
+import { buildArticleBlockComposite, buildArticleReadingSegments, type ArticleBlockRect } from '@/lib/articleCrop';
 
 type JsonRecord = Record<string, unknown>;
 type PassKind = 'sol' | 'terra';
@@ -27,7 +27,11 @@ type LoadedInput = {
   sourceImageSha256: string;
   articles: ArticleInput[];
 };
-type Composite = Awaited<ReturnType<typeof buildArticleBlockComposite>> & { article_id: string; article: ArticleInput };
+type Composite = Awaited<ReturnType<typeof buildArticleBlockComposite>> & {
+  article_id: string;
+  article: ArticleInput;
+  reading: Awaited<ReturnType<typeof buildArticleReadingSegments>>;
+};
 
 class StructuralOutputError extends Error {}
 class ProviderError extends Error {
@@ -37,7 +41,7 @@ class ProviderError extends Error {
 
 const LEASE_SECONDS = 360;
 const CALL_TIMEOUT_MS = 150_000;
-const VISION_CHUNK = 4;
+const VISION_CHUNK = 1;
 const VISION_TEXT_BUDGET = 6000;
 
 function isRecord(value: unknown): value is JsonRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
@@ -119,7 +123,15 @@ async function buildComposites(input: LoadedInput, articles: ArticleInput[]) {
     if (composite.cropSpecSha256 !== article.crop_spec_sha256 || composite.cropImageSha256 !== article.crop_image_sha256) {
       throw new StructuralOutputError(`OCR consensus v11 crop fingerprint changed: ${article.article_id}`);
     }
-    result.push({ ...composite, article_id: article.article_id, article });
+    const reading = await buildArticleReadingSegments({
+      articleId: article.article_id,
+      compositeBuffer: composite.buffer,
+      compositeWidth: composite.width,
+      compositeHeight: composite.height,
+      compositeImageSha256: composite.cropImageSha256
+    });
+    if (!reading.segments.length) throw new StructuralOutputError(`OCR consensus v11 reading segmentation produced no segments: ${article.article_id}`);
+    result.push({ ...composite, article_id: article.article_id, article, reading });
   }
   return result;
 }
@@ -187,21 +199,49 @@ async function callIndependentVision(input: { model: string; passKind: PassKind;
   const role = input.passKind === 'sol' ? 'primary independent OCR transcriber' : 'second independent OCR transcriber using a different model';
   const instructions = [
     `You are a ${role} for Japanese newspaper and magazine article images.`,
-    'You are NOT given any candidate OCR. Transcribe only from the visible pixels in each supplied image.',
-    'Each image is a geometry-preserving mask of exactly one article. White areas are intentionally excluded. Never infer text from excluded areas.',
-    'Preserve visible characters, punctuation, decimals, percentages, dates, prices, quantities, company names, product names, and personal names. Never silently normalize or repair a token you cannot actually read.',
-    'Respect visible reading order. Horizontal text is left-to-right. Japanese vertical body text is top-to-bottom within a column and then across columns in the visually correct newspaper order, normally right-to-left unless the layout clearly indicates otherwise.',
-    'Do not interleave separate columns. Use line breaks to preserve meaningful paragraph or column boundaries. Do not summarize or paraphrase.',
-    'confidence is the confidence that YOUR transcription is materially faithful to the visible pixels. Lower it for genuinely unreadable, clipped, overlapping, or ambiguous text.',
+    'You are NOT given any candidate OCR. Transcribe only from the visible pixels in the supplied images.',
+    'For each ARTICLE_ID, the first image is an OVERVIEW of the complete geometry-preserving article mask. Use the overview only to understand layout, headline placement, and how the following strips relate to the full article.',
+    'After the overview, READING_SEGMENT images are supplied in explicit reading sequence. They are vertical strips cut at low-ink gutters and enlarged for legibility. For Japanese vertical body text, the segment sequence is rightmost to leftmost; within each segment read top-to-bottom.',
+    'Use the enlarged READING_SEGMENT images as the primary transcription evidence. Do not duplicate text merely because it is also visible in the overview.',
+    'White areas are intentionally excluded. Never infer text from excluded, clipped, blurred, or unreadable areas. Use the visible placeholder 〓 when characters are genuinely unreadable instead of inventing or paraphrasing text.',
+    'Preserve visible characters, punctuation, decimals, percentages, dates, prices, quantities, company names, product names, and personal names exactly as read. Never silently normalize, repair, summarize, or rewrite a token.',
+    'Do not interleave separate columns. Join the ordered segments into one transcription using line breaks where the article visibly changes paragraph, column, headline, caption, or section.',
+    'confidence is the confidence that YOUR transcription is materially faithful to the visible pixels. Lower it for unreadable, clipped, overlapping, uncertain, or layout-ambiguous text.',
     'visual_proper_nouns must contain only proper nouns copied verbatim from your own transcription that you can visibly confirm. If none are present, use not_applicable and an empty array. If an important proper noun is visible but unreadable, use failed.',
     'Return exactly one row for each supplied article_id and no others.'
   ].join('\n');
-  const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: JSON.stringify({ task: 'independent_visual_ocr_v11', pass_kind: input.passKind, articles: input.crops.map((crop, index) => ({ article_id: crop.article_id, image_sequence: index + 1, crop_image_sha256: crop.cropImageSha256 })) }) }];
+  const content: Array<Record<string, unknown>> = [{
+    type: 'input_text',
+    text: JSON.stringify({
+      task: 'independent_visual_ocr_v11_segmented',
+      pass_kind: input.passKind,
+      articles: input.crops.map((crop) => ({
+        article_id: crop.article_id,
+        crop_image_sha256: crop.cropImageSha256,
+        reading_order: crop.reading.readingOrder,
+        segmentation_version: crop.reading.version,
+        segmentation_spec_sha256: crop.reading.segmentationSpecSha256,
+        segment_count: crop.reading.segments.length
+      }))
+    })
+  }];
   for (const crop of input.crops) {
-    content.push({ type: 'input_text', text: `ARTICLE_ID=${crop.article_id}` });
+    content.push({ type: 'input_text', text: `ARTICLE_ID=${crop.article_id} IMAGE=OVERVIEW` });
     content.push({ type: 'input_image', image_url: `data:${crop.mimeType};base64,${crop.buffer.toString('base64')}`, detail: 'high' });
+    for (const segment of crop.reading.segments) {
+      content.push({
+        type: 'input_text',
+        text: `ARTICLE_ID=${crop.article_id} READING_SEGMENT=${segment.sequence}/${crop.reading.segments.length} ORDER=${crop.reading.readingOrder} BOUNDS=${segment.left},${segment.top},${segment.right},${segment.bottom}`
+      });
+      content.push({ type: 'input_image', image_url: `data:${segment.mimeType};base64,${segment.buffer.toString('base64')}`, detail: 'high' });
+    }
   }
-  const promptSha = sha256([input.model,input.passKind,instructions,...input.crops.map((crop) => `${crop.article_id}:${crop.cropImageSha256}`)].join('\n---\n'));
+  const promptSha = sha256([
+    input.model,
+    input.passKind,
+    instructions,
+    ...input.crops.map((crop) => `${crop.article_id}:${crop.cropImageSha256}:${crop.reading.segmentationSpecSha256}:${crop.reading.segments.map((segment) => segment.imageSha256).join(',')}`)
+  ].join('\n---\n'));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
   try {

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
-import { getOpenAIKey, VISION_MODEL } from '@/lib/openai';
+import { getOpenAIKey } from '@/lib/openai';
 import { runDocumentOcrBatch, VisionProviderError } from '@/lib/visionBatch';
-import { buildArticleBlockComposite, type ArticleBlockRect } from '@/lib/articleCrop';
+import { buildArticleBlockComposite, buildArticleBlockFragments, type ArticleBlockRect } from '@/lib/articleCrop';
 
 type JsonRecord = Record<string, unknown>;
 type PassKind = 'verifier' | 'critic';
@@ -36,11 +36,12 @@ class ProviderError extends Error {
 
 const CALL_TIMEOUT_MS = 150_000;
 const LEASE_SECONDS = 360;
-const GOOGLE_CROP_CHUNK = 16;
+const GOOGLE_ARTICLE_CHUNK = 4;
+const GOOGLE_IMAGE_BATCH = 16;
 const VISION_CHUNK = 4;
 const VISION_TEXT_BUDGET = 7000;
 
-function responseFormat(articleIds: string[]) {
+function responseFormat(candidates: Array<{ articleId: string; text: string }>) {
   return {
     type: 'json_schema',
     name: 'mj_visual_article_crop_verification',
@@ -49,21 +50,23 @@ function responseFormat(articleIds: string[]) {
       type: 'object', additionalProperties: false, required: ['articles'],
       properties: {
         articles: {
-          type: 'array', minItems: articleIds.length, maxItems: articleIds.length,
+          type: 'array', minItems: candidates.length, maxItems: candidates.length,
           items: {
             type: 'object', additionalProperties: false,
             required: ['article_id', 'transcription', 'confidence', 'proper_noun_status', 'visual_proper_nouns', 'reason'],
             properties: {
-              article_id: { type: 'string', enum: articleIds }, transcription: { type: 'string' },
+              article_id: { type: 'string', enum: candidates.map((item) => item.articleId) },
+              transcription: { type: 'string', enum: candidates.map((item) => item.text) },
               confidence: { type: 'number', minimum: 0, maximum: 1 },
               proper_noun_status: { type: 'string', enum: ['passed', 'not_applicable', 'failed'] },
-              visual_proper_nouns: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' }
+              visual_proper_nouns: { type: 'array', items: { type: 'string' } },
+              reason: { type: 'string' }
             }
           }
         }
       }
     }
-  };
+  } as const;
 }
 
 function isRecord(value: unknown): value is JsonRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
@@ -80,8 +83,8 @@ function extractResponseText(responseJson: unknown) {
   return (json.output || []).flatMap((item) => item.content || []).map((content) => text(content.text)).filter(Boolean).join('\n').trim();
 }
 function configuredModels() {
-  const verifier = process.env.OPENAI_OCR_VERIFY_MODEL?.trim() || VISION_MODEL;
-  const critic = process.env.OPENAI_OCR_VERIFY_CRITIC_MODEL?.trim() || (verifier === 'gpt-4o' ? 'gpt-4.1' : 'gpt-4o');
+  const verifier = process.env.OPENAI_OCR_VERIFY_MODEL_V2?.trim() || 'gpt-5.6-sol';
+  const critic = process.env.OPENAI_OCR_VERIFY_CRITIC_MODEL_V2?.trim() || 'gpt-5.6-terra';
   if (!verifier || !critic || verifier === critic) throw new StructuralOutputError('OCR verifier and critic models must be configured and distinct.');
   return { verifier, critic };
 }
@@ -141,16 +144,7 @@ async function loadInput(job: Job): Promise<LoadedInput> {
     p_byte_size: image.length
   });
   if (receiptError) throw receiptError;
-  return {
-    image,
-    mimeType: text(source.mime_type) || downloaded.data.type || 'image/jpeg',
-    width,
-    height,
-    articles,
-    storagePath,
-    sourceMode,
-    sourceImageSha256
-  };
+  return { image, mimeType: text(source.mime_type) || downloaded.data.type || 'image/jpeg', width, height, articles, storagePath, sourceMode, sourceImageSha256 };
 }
 
 async function buildComposites(input: LoadedInput, articles: ArticleVisualInput[]) {
@@ -170,37 +164,49 @@ async function existingCropRows(jobId: string) {
   if (error) throw error;
   return new Map((data || []).map((row) => {
     const receipt: CropReceipt = {
-      article_id: text(row.article_id),
-      crop_spec_sha256: text(row.crop_spec_sha256),
-      crop_image_sha256: text(row.crop_image_sha256),
-      source_mode: text(row.source_mode),
-      source_image_sha256: text(row.source_image_sha256),
-      crop_ocr_text: text(row.crop_ocr_text)
+      article_id: text(row.article_id), crop_spec_sha256: text(row.crop_spec_sha256), crop_image_sha256: text(row.crop_image_sha256),
+      source_mode: text(row.source_mode), source_image_sha256: text(row.source_image_sha256), crop_ocr_text: text(row.crop_ocr_text)
     };
     return [receipt.article_id, receipt] as const;
   }));
 }
 
+async function googleOcrArticleBlocks(input: LoadedInput, article: ArticleVisualInput) {
+  const fragments = await buildArticleBlockFragments({ imageBuffer: input.image, expectedWidth: input.width, expectedHeight: input.height, articleId: article.article_id, rects: article.block_rects });
+  const texts: string[] = [];
+  const raws: unknown[] = [];
+  for (let offset = 0; offset < fragments.length; offset += GOOGLE_IMAGE_BATCH) {
+    const chunk = fragments.slice(offset, offset + GOOGLE_IMAGE_BATCH);
+    const results = await runDocumentOcrBatch(chunk.map((fragment) => fragment.buffer));
+    if (results.length !== chunk.length) throw new ProviderError('Google block OCR response count mismatch.', true);
+    for (const result of results) {
+      texts.push(text(result.text));
+      raws.push(result.raw);
+    }
+  }
+  const combined = texts.filter(Boolean).join('\n').trim();
+  if (!combined) throw new StructuralOutputError(`ocr_crop_v9_empty_text article=${article.article_id}`);
+  return { text: combined, responseSha256: sha256(JSON.stringify(raws)) };
+}
+
 async function runGoogleCropChunk(job: Job, input: LoadedInput) {
   const existing = await existingCropRows(job.id);
-  const missing = input.articles.filter((article) => !existing.has(article.article_id)).slice(0, GOOGLE_CROP_CHUNK);
+  const missing = input.articles.filter((article) => !existing.has(article.article_id)).slice(0, GOOGLE_ARTICLE_CHUNK);
   if (!missing.length) return { complete: true, stored: 0 };
-  const crops = await buildComposites(input, missing);
-  const ocrResults = await runDocumentOcrBatch(crops.map((crop) => crop.buffer));
-  if (ocrResults.length !== crops.length) throw new ProviderError('Google crop OCR response count mismatch.', true);
-  const rows = crops.map((crop, index) => {
-    const ocr = ocrResults[index];
-    if (!ocr?.text?.trim()) throw new StructuralOutputError(`ocr_crop_v9_empty_text article=${crop.article_id}`);
-    return {
-      article_id: crop.article_id,
-      crop_spec_sha256: crop.cropSpecSha256,
-      crop_image_sha256: crop.cropImageSha256,
-      google_response_sha256: sha256(JSON.stringify(ocr.raw)),
+  const rows: Array<Record<string, unknown>> = [];
+  for (const article of missing) {
+    const composite = await buildArticleBlockComposite({ imageBuffer: input.image, expectedWidth: input.width, expectedHeight: input.height, articleId: article.article_id, rects: article.block_rects });
+    const ocr = await googleOcrArticleBlocks(input, article);
+    rows.push({
+      article_id: article.article_id,
+      crop_spec_sha256: composite.cropSpecSha256,
+      crop_image_sha256: composite.cropImageSha256,
+      google_response_sha256: ocr.responseSha256,
       crop_ocr_text: ocr.text,
       source_mode: input.sourceMode,
       source_image_sha256: input.sourceImageSha256
-    };
-  });
+    });
+  }
   const { data, error } = await supabaseAdmin.rpc('replace_ocr_crop_results_v9', { p_job_id: job.id, p_lease_token: job.lease_token, p_rows: rows });
   if (error) throw error;
   return data;
@@ -221,35 +227,37 @@ async function nextChunkIndex(jobId: string, passKind: PassKind) {
 async function callVisionChunk(input: { model: string; passKind: PassKind; crops: Composite[]; cropReceipts: Map<string, CropReceipt> }) {
   const apiKey = getOpenAIKey();
   if (!apiKey) throw new StructuralOutputError('OPENAI_API_KEY is not configured.');
-  const instructions = [
-    input.passKind === 'verifier' ? 'You are a visual newspaper OCR verifier.' : 'You are a second visual newspaper OCR verifier using a different model. Make your own visual check.',
-    'Each supplied image is an article-only composite made from the newspaper blocks belonging to one article.',
-    'For each image you are also given an UNTRUSTED_CANDIDATE_OCR produced independently from that exact image crop.',
-    'The pixels are the source of truth. Use the candidate OCR only as an alignment aid: preserve candidate characters when they are visibly supported, correct only discrepancies you can actually see, and never add words or facts that are not visible.',
-    'Return a complete transcription of all visible article text in reading order. Do not summarize, paraphrase, infer missing passages, or repair content from world knowledge.',
-    'The image preserves article block order with white gaps between blocks. Do not add text for the gaps.',
-    'Keep visible numbers, units, company names, product names, and personal names exactly as supported by the pixels.',
-    'visual_proper_nouns must list only proper nouns that also occur verbatim in your returned transcription.',
-    'If proper nouns are absent, use not_applicable. If a proper noun is visibly present but not reliably legible, use failed.',
-    'If the candidate OCR contains text that the image does not support, remove or correct it rather than copying it blindly.',
-    'If the image cannot support a faithful transcription with at least 0.85 confidence, return the honest lower confidence; the database will stop for review.',
-    'Return exactly one row for each supplied article_id and no others.'
-  ].join('\n');
-  const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: JSON.stringify({ task: 'visual_article_crop_ocr_verification', pass_kind: input.passKind, articles: input.crops.map((crop, index) => ({ article_id: crop.article_id, image_sequence: index + 1, crop_image_sha256: crop.cropImageSha256, region_quality_status: crop.region_quality_status })) }) }];
-  for (const crop of input.crops) {
+  const candidates = input.crops.map((crop) => {
     const receipt = input.cropReceipts.get(crop.article_id);
     if (!receipt) throw new StructuralOutputError(`OCR crop candidate missing before Vision verification: ${crop.article_id}`);
-    content.push({ type: 'input_text', text: `ARTICLE_ID=${crop.article_id}\nUNTRUSTED_CANDIDATE_OCR_START\n${receipt.crop_ocr_text}\nUNTRUSTED_CANDIDATE_OCR_END` });
+    return { articleId: crop.article_id, text: receipt.crop_ocr_text };
+  });
+  const instructions = [
+    input.passKind === 'verifier' ? 'You are a strict visual newspaper OCR auditor.' : 'You are a second independent visual newspaper OCR auditor using a different model.',
+    'Each image is a composite of the exact OCR blocks assigned to one article. You are also given candidate OCR produced independently from those same pixels.',
+    'This task is VALIDATION, not rewriting. The transcription field MUST be an exact character-for-character copy of the candidate OCR for that article, including its line breaks and apparent OCR mistakes. Do not correct, normalize, summarize, reorder, add, or delete any character in transcription.',
+    'Use the image only to judge whether the supplied candidate OCR is materially supported by the pixels. If the candidate materially disagrees with the image, set confidence below 0.85. If it is substantially faithful, set confidence at or above 0.85.',
+    'visual_proper_nouns must contain only proper-noun strings copied verbatim from the candidate transcription that you can visibly confirm in the image. Never normalize a name. If none can be confirmed, use not_applicable and an empty array. If a visible proper noun is too uncertain to verify, use failed.',
+    'Numbers, dates, prices, quantities, company names, product names and personal names are high-risk. Lower confidence below 0.85 if a material high-risk token in the candidate cannot be visually supported.',
+    'Return exactly one row for each supplied article_id and no others.'
+  ].join('\n');
+  const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: JSON.stringify({ task: 'visual_candidate_ocr_audit', pass_kind: input.passKind, articles: input.crops.map((crop, index) => ({ article_id: crop.article_id, image_sequence: index + 1, crop_image_sha256: crop.cropImageSha256, region_quality_status: crop.region_quality_status })) }) }];
+  for (const crop of input.crops) {
+    const receipt = input.cropReceipts.get(crop.article_id)!;
+    content.push({ type: 'input_text', text: `ARTICLE_ID=${crop.article_id}\nCANDIDATE_OCR_EXACT_COPY_REQUIRED_START\n${receipt.crop_ocr_text}\nCANDIDATE_OCR_EXACT_COPY_REQUIRED_END` });
     content.push({ type: 'input_image', image_url: `data:${crop.mimeType};base64,${crop.buffer.toString('base64')}`, detail: 'high' });
   }
   const promptSha = sha256([input.model, input.passKind, instructions, ...input.crops.map((crop) => {
-    const receipt = input.cropReceipts.get(crop.article_id);
-    return `${crop.article_id}:${crop.cropImageSha256}:${sha256(receipt?.crop_ocr_text || '')}`;
+    const receipt = input.cropReceipts.get(crop.article_id)!;
+    return `${crop.article_id}:${crop.cropImageSha256}:${sha256(receipt.crop_ocr_text)}`;
   })].join('\n---\n'));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: input.model, store: false, max_output_tokens: 12000, instructions, input: [{ role: 'user', content }], text: { format: responseFormat(input.crops.map((crop) => crop.article_id)) } }) });
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({ model: input.model, store: false, max_output_tokens: 12000, instructions, input: [{ role: 'user', content }], text: { format: responseFormat(candidates) } })
+    });
     const raw = await response.text();
     if (!response.ok) throw new ProviderError(`OpenAI OCR vision verification failed: ${response.status} ${response.statusText} ${raw.slice(0, 1800)}`, response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500);
     let json: JsonRecord;
@@ -290,10 +298,7 @@ function visionInputBinding(crops: Composite[], receipts: Map<string, CropReceip
   const lines = crops.map((crop) => {
     const receipt = receipts.get(crop.article_id);
     if (!receipt) throw new StructuralOutputError(`OCR crop binding receipt missing: ${crop.article_id}`);
-    return {
-      articleId: crop.article_id,
-      value: `${crop.article_id}:${receipt.crop_spec_sha256}:${receipt.crop_image_sha256}:${receipt.source_mode}:${receipt.source_image_sha256}`
-    };
+    return { articleId: crop.article_id, value: `${crop.article_id}:${receipt.crop_spec_sha256}:${receipt.crop_image_sha256}:${receipt.source_mode}:${receipt.source_image_sha256}` };
   }).sort((a, b) => a.articleId.localeCompare(b.articleId)).map((item) => item.value);
   return sha256(lines.join('|'));
 }
@@ -315,25 +320,20 @@ async function runVisionChunk(job: Job, input: LoadedInput, passKind: PassKind, 
   const rows = result.rows.map((raw) => {
     if (!isRecord(raw)) throw new StructuralOutputError('OCR verification response row is not an object');
     const articleId = text(raw.article_id);
-    if (!expected.has(articleId) || seen.has(articleId)) throw new StructuralOutputError('OCR verification response contains unknown or duplicate article');
+    if (!expected.has(articleId) || seen.has(articleId)) throw new ProviderError('OCR verification response contains unknown or duplicate article', true);
     seen.add(articleId);
+    const receipt = cropReceipts.get(articleId);
+    if (!receipt || text(raw.transcription) !== receipt.crop_ocr_text) throw new ProviderError(`OCR visual audit candidate echo mismatch article=${articleId}`, true);
     const confidence = Number(raw.confidence);
     if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new StructuralOutputError('OCR verification confidence invalid');
-    return { article_id: articleId, transcription: text(raw.transcription), confidence, proper_noun_status: text(raw.proper_noun_status), visual_proper_nouns: Array.isArray(raw.visual_proper_nouns) ? raw.visual_proper_nouns.map(text).filter(Boolean) : [], reason: text(raw.reason).slice(0, 1000) };
+    return { article_id: articleId, transcription: receipt.crop_ocr_text, confidence, proper_noun_status: text(raw.proper_noun_status), visual_proper_nouns: Array.isArray(raw.visual_proper_nouns) ? raw.visual_proper_nouns.map(text).filter(Boolean) : [], reason: text(raw.reason).slice(0, 1000) };
   });
-  if (rows.length !== expected.size || seen.size !== expected.size) throw new StructuralOutputError('OCR verification response row_count mismatch');
+  if (rows.length !== expected.size || seen.size !== expected.size) throw new ProviderError('OCR verification response row_count mismatch', true);
   const chunkIndex = await nextChunkIndex(job.id, passKind);
   const { data, error } = await supabaseAdmin.rpc('append_ocr_verification_vision_chunk_v7', {
-    p_job_id: job.id,
-    p_lease_token: job.lease_token,
-    p_pass_kind: passKind,
-    p_chunk_index: chunkIndex,
-    p_model: model,
-    p_provider_response_id: result.responseId,
-    p_prompt_sha256: result.promptSha,
-    p_response_sha256: result.responseSha,
-    p_input_binding_sha256: inputBindingSha256,
-    p_rows: rows
+    p_job_id: job.id, p_lease_token: job.lease_token, p_pass_kind: passKind, p_chunk_index: chunkIndex, p_model: model,
+    p_provider_response_id: result.responseId, p_prompt_sha256: result.promptSha, p_response_sha256: result.responseSha,
+    p_input_binding_sha256: inputBindingSha256, p_rows: rows
   });
   if (error) throw error;
   return data;

@@ -23,31 +23,12 @@ function finiteInt(value: number, label: string) {
   return Math.round(value);
 }
 
-export async function buildArticleBlockComposite(input: {
-  imageBuffer: Buffer;
-  expectedWidth: number;
-  expectedHeight: number;
-  articleId: string;
-  rects: ArticleBlockRect[];
-}) {
-  const expectedWidth = finiteInt(input.expectedWidth, 'expected width');
-  const expectedHeight = finiteInt(input.expectedHeight, 'expected height');
-  if (expectedWidth < 1 || expectedHeight < 1) throw new Error('article crop expected dimensions are invalid');
-  if (!input.articleId || !Array.isArray(input.rects) || !input.rects.length) throw new Error('article crop input is incomplete');
-
-  const metadata = await sharp(input.imageBuffer, { failOn: 'error' }).metadata();
-  const actualWidth = Number(metadata.width || 0);
-  const actualHeight = Number(metadata.height || 0);
-  if (actualWidth !== expectedWidth || actualHeight !== expectedHeight) {
-    throw new Error(`image dimension mismatch: expected=${expectedWidth}x${expectedHeight} actual=${actualWidth}x${actualHeight}`);
-  }
-
-  const ordered = [...input.rects].sort((a, b) => a.block_index - b.block_index);
+function normalizeRects(rects: ArticleBlockRect[], expectedWidth: number, expectedHeight: number) {
+  const ordered = [...rects].sort((a, b) => a.block_index - b.block_index);
   if (new Set(ordered.map((r) => r.block_index)).size !== ordered.length) {
     throw new Error('article crop block indices are duplicated');
   }
-
-  const normalized = ordered.map((rect) => {
+  return ordered.map((rect) => {
     const xMin = finiteInt(rect.x_min, 'x_min');
     const yMin = finiteInt(rect.y_min, 'y_min');
     const xMax = finiteInt(rect.x_max, 'x_max');
@@ -58,16 +39,55 @@ export async function buildArticleBlockComposite(input: {
     const right = Math.min(expectedWidth, xMax + PADDING_PX);
     const bottom = Math.min(expectedHeight, yMax + PADDING_PX);
     if (right <= left || bottom <= top) throw new Error(`article crop rectangle is outside image: block=${rect.block_index}`);
-    return {
-      block_index: rect.block_index,
-      left,
-      top,
-      width: right - left,
-      height: bottom - top
-    };
+    return { block_index: rect.block_index, left, top, width: right - left, height: bottom - top };
   });
+}
 
-  const fragments: Array<{ input: Buffer; left: number; top: number }> = [];
+async function validateSourceImage(imageBuffer: Buffer, expectedWidthValue: number, expectedHeightValue: number) {
+  const expectedWidth = finiteInt(expectedWidthValue, 'expected width');
+  const expectedHeight = finiteInt(expectedHeightValue, 'expected height');
+  if (expectedWidth < 1 || expectedHeight < 1) throw new Error('article crop expected dimensions are invalid');
+  const metadata = await sharp(imageBuffer, { failOn: 'error' }).metadata();
+  const actualWidth = Number(metadata.width || 0);
+  const actualHeight = Number(metadata.height || 0);
+  if (actualWidth !== expectedWidth || actualHeight !== expectedHeight) {
+    throw new Error(`image dimension mismatch: expected=${expectedWidth}x${expectedHeight} actual=${actualWidth}x${actualHeight}`);
+  }
+  return { expectedWidth, expectedHeight };
+}
+
+export async function buildArticleBlockFragments(input: {
+  imageBuffer: Buffer;
+  expectedWidth: number;
+  expectedHeight: number;
+  articleId: string;
+  rects: ArticleBlockRect[];
+}) {
+  if (!input.articleId || !Array.isArray(input.rects) || !input.rects.length) throw new Error('article crop input is incomplete');
+  const { expectedWidth, expectedHeight } = await validateSourceImage(input.imageBuffer, input.expectedWidth, input.expectedHeight);
+  const normalized = normalizeRects(input.rects, expectedWidth, expectedHeight);
+  const fragments = [] as Array<{ block_index: number; buffer: Buffer; mimeType: 'image/png'; imageSha256: string }>;
+  for (const rect of normalized) {
+    const buffer = await sharp(input.imageBuffer, { failOn: 'error' })
+      .extract({ left: rect.left, top: rect.top, width: rect.width, height: rect.height })
+      .png()
+      .toBuffer();
+    fragments.push({ block_index: rect.block_index, buffer, mimeType: 'image/png', imageSha256: sha256(buffer) });
+  }
+  return fragments;
+}
+
+export async function buildArticleBlockComposite(input: {
+  imageBuffer: Buffer;
+  expectedWidth: number;
+  expectedHeight: number;
+  articleId: string;
+  rects: ArticleBlockRect[];
+}) {
+  if (!input.articleId || !Array.isArray(input.rects) || !input.rects.length) throw new Error('article crop input is incomplete');
+  const { expectedWidth, expectedHeight } = await validateSourceImage(input.imageBuffer, input.expectedWidth, input.expectedHeight);
+  const normalized = normalizeRects(input.rects, expectedWidth, expectedHeight);
+
   const fragmentBuffers: Buffer[] = [];
   for (const rect of normalized) {
     fragmentBuffers.push(await sharp(input.imageBuffer, { failOn: 'error' })
@@ -82,6 +102,7 @@ export async function buildArticleBlockComposite(input: {
     throw new Error(`article crop composite dimensions are unsafe: ${canvasWidth}x${canvasHeight}`);
   }
 
+  const fragments: Array<{ input: Buffer; left: number; top: number }> = [];
   let top = MARGIN_PX;
   for (let i = 0; i < normalized.length; i += 1) {
     fragments.push({ input: fragmentBuffers[i], left: MARGIN_PX, top });

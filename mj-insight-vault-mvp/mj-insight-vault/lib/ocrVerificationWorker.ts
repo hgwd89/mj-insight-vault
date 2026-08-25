@@ -56,7 +56,7 @@ function responseFormat(candidates: Array<{ articleId: string; text: string }>) 
             required: ['article_id', 'transcription', 'confidence', 'proper_noun_status', 'visual_proper_nouns', 'reason'],
             properties: {
               article_id: { type: 'string', enum: candidates.map((item) => item.articleId) },
-              transcription: { type: 'string', enum: candidates.map((item) => item.text) },
+              transcription: { type: 'string' },
               confidence: { type: 'number', minimum: 0, maximum: 1 },
               proper_noun_status: { type: 'string', enum: ['passed', 'not_applicable', 'failed'] },
               visual_proper_nouns: { type: 'array', items: { type: 'string' } },

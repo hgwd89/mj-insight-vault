@@ -9,9 +9,8 @@ export type ArticleBlockRect = {
   y_max: number;
 };
 
-const CROP_VERSION = 'article_block_composite_v1';
-const PADDING_PX = 8;
-const GAP_PX = 14;
+export const ARTICLE_CROP_VERSION = 'article_geometry_mask_composite_v3';
+const PADDING_PX = 2;
 const MARGIN_PX = 12;
 
 function sha256(value: string | Buffer) {
@@ -39,7 +38,7 @@ function normalizeRects(rects: ArticleBlockRect[], expectedWidth: number, expect
     const right = Math.min(expectedWidth, xMax + PADDING_PX);
     const bottom = Math.min(expectedHeight, yMax + PADDING_PX);
     if (right <= left || bottom <= top) throw new Error(`article crop rectangle is outside image: block=${rect.block_index}`);
-    return { block_index: rect.block_index, left, top, width: right - left, height: bottom - top };
+    return { block_index: rect.block_index, left, top, right, bottom, width: right - left, height: bottom - top };
   });
 }
 
@@ -88,25 +87,27 @@ export async function buildArticleBlockComposite(input: {
   const { expectedWidth, expectedHeight } = await validateSourceImage(input.imageBuffer, input.expectedWidth, input.expectedHeight);
   const normalized = normalizeRects(input.rects, expectedWidth, expectedHeight);
 
-  const fragmentBuffers: Buffer[] = [];
-  for (const rect of normalized) {
-    fragmentBuffers.push(await sharp(input.imageBuffer, { failOn: 'error' })
-      .extract({ left: rect.left, top: rect.top, width: rect.width, height: rect.height })
-      .png()
-      .toBuffer());
-  }
-
-  const canvasWidth = Math.max(...normalized.map((r) => r.width)) + MARGIN_PX * 2;
-  const canvasHeight = normalized.reduce((sum, r) => sum + r.height, 0) + GAP_PX * Math.max(0, normalized.length - 1) + MARGIN_PX * 2;
+  const minLeft = Math.min(...normalized.map((r) => r.left));
+  const minTop = Math.min(...normalized.map((r) => r.top));
+  const maxRight = Math.max(...normalized.map((r) => r.right));
+  const maxBottom = Math.max(...normalized.map((r) => r.bottom));
+  const canvasWidth = maxRight - minLeft + MARGIN_PX * 2;
+  const canvasHeight = maxBottom - minTop + MARGIN_PX * 2;
   if (canvasWidth < 1 || canvasHeight < 1 || canvasWidth * canvasHeight > 120_000_000) {
     throw new Error(`article crop composite dimensions are unsafe: ${canvasWidth}x${canvasHeight}`);
   }
 
   const fragments: Array<{ input: Buffer; left: number; top: number }> = [];
-  let top = MARGIN_PX;
-  for (let i = 0; i < normalized.length; i += 1) {
-    fragments.push({ input: fragmentBuffers[i], left: MARGIN_PX, top });
-    top += normalized[i].height + (i < normalized.length - 1 ? GAP_PX : 0);
+  for (const rect of normalized) {
+    const buffer = await sharp(input.imageBuffer, { failOn: 'error' })
+      .extract({ left: rect.left, top: rect.top, width: rect.width, height: rect.height })
+      .png()
+      .toBuffer();
+    fragments.push({
+      input: buffer,
+      left: rect.left - minLeft + MARGIN_PX,
+      top: rect.top - minTop + MARGIN_PX
+    });
   }
 
   const buffer = await sharp({
@@ -119,13 +120,14 @@ export async function buildArticleBlockComposite(input: {
   }).composite(fragments).png().toBuffer();
 
   const cropSpecSha256 = sha256(JSON.stringify({
-    version: CROP_VERSION,
+    version: ARTICLE_CROP_VERSION,
     article_id: input.articleId,
     source_width: expectedWidth,
     source_height: expectedHeight,
     padding_px: PADDING_PX,
-    gap_px: GAP_PX,
     margin_px: MARGIN_PX,
+    geometry_origin: { x: minLeft, y: minTop },
+    geometry_bounds: { left: minLeft, top: minTop, right: maxRight, bottom: maxBottom },
     blocks: normalized
   }));
 

@@ -55,27 +55,6 @@ async function validateSourceImage(imageBuffer: Buffer, expectedWidthValue: numb
   return { expectedWidth, expectedHeight };
 }
 
-export async function buildArticleBlockFragments(input: {
-  imageBuffer: Buffer;
-  expectedWidth: number;
-  expectedHeight: number;
-  articleId: string;
-  rects: ArticleBlockRect[];
-}) {
-  if (!input.articleId || !Array.isArray(input.rects) || !input.rects.length) throw new Error('article crop input is incomplete');
-  const { expectedWidth, expectedHeight } = await validateSourceImage(input.imageBuffer, input.expectedWidth, input.expectedHeight);
-  const normalized = normalizeRects(input.rects, expectedWidth, expectedHeight);
-  const fragments = [] as Array<{ block_index: number; buffer: Buffer; mimeType: 'image/png'; imageSha256: string }>;
-  for (const rect of normalized) {
-    const buffer = await sharp(input.imageBuffer, { failOn: 'error' })
-      .extract({ left: rect.left, top: rect.top, width: rect.width, height: rect.height })
-      .png()
-      .toBuffer();
-    fragments.push({ block_index: rect.block_index, buffer, mimeType: 'image/png', imageSha256: sha256(buffer) });
-  }
-  return fragments;
-}
-
 export async function buildArticleBlockComposite(input: {
   imageBuffer: Buffer;
   expectedWidth: number;
@@ -139,4 +118,20 @@ export async function buildArticleBlockComposite(input: {
     cropSpecSha256,
     cropImageSha256: sha256(buffer)
   };
+}
+
+export async function buildArticleBlockFragments(input: {
+  imageBuffer: Buffer;
+  expectedWidth: number;
+  expectedHeight: number;
+  articleId: string;
+  rects: ArticleBlockRect[];
+}) {
+  const composite = await buildArticleBlockComposite(input);
+  return [{
+    block_index: -1,
+    buffer: composite.buffer,
+    mimeType: composite.mimeType,
+    imageSha256: composite.cropImageSha256
+  }];
 }

@@ -259,12 +259,12 @@ export async function buildArticleReadingSegments(input: {
   const ink = findInkBounds(data, info.width, info.height);
   let boundaries = whitespaceBoundaries(ink.columnInk, ink.left, ink.right, info.height);
   let ranges = segmentRanges(ink.left, ink.right, boundaries);
-  if (ranges.length === 1) {
+  if (ranges.length === 1 || ranges.length > MAX_READING_SEGMENTS) {
     boundaries = fallbackBoundaries(ink.columnInk, ink.left, ink.right);
     ranges = segmentRanges(ink.left, ink.right, boundaries);
   }
   if (ranges.length > MAX_READING_SEGMENTS) {
-    ranges = ranges.slice(ranges.length - MAX_READING_SEGMENTS);
+    ranges = [{ left: ink.left, right: ink.right }];
   }
 
   const ordered = [...ranges].sort((a, b) => b.left - a.left);

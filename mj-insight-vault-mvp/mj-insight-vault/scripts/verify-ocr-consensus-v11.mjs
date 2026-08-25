@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const root = process.cwd();
 const worker = fs.readFileSync(path.join(root, 'lib/ocrConsensusWorkerV11.ts'), 'utf8');
+const crop = fs.readFileSync(path.join(root, 'lib/articleCrop.ts'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'app/api/internal/ocr-consensus-v11/route.ts'), 'utf8');
 const migrationDir = path.join(root, 'supabase/migrations');
 const migrationNames = fs.readdirSync(migrationDir).filter((name) => name.endsWith('_add_ocr_consensus_v11_schema.sql'));
@@ -72,7 +73,8 @@ assert(
 const callFn = worker.slice(worker.indexOf('async function callIndependentVision'), worker.indexOf('function inputBinding'));
 assert(!/google_text/.test(callFn), 'callIndependentVision must never reference google_text in the request it sends to OpenAI.');
 assert(callFn.includes('You are NOT given any candidate OCR'), 'The vision instructions must explicitly tell the model it receives no candidate OCR.');
-assert(callFn.includes('crop.buffer.toString'), 'callIndependentVision must send only the geometry-preserving crop image, not any text candidate.');
+assert(callFn.includes('crop.buffer.toString'), 'callIndependentVision must retain a full geometry-preserving overview image.');
+assert(callFn.includes('segment.buffer.toString'), 'callIndependentVision must send enlarged reading-segment images as primary OCR evidence.');
 
 // G. article ID bijection: unknown/duplicate/missing rows must be rejected.
 const sanitizeFn = worker.slice(worker.indexOf('function sanitizeRows'), worker.indexOf('async function runPassChunk'));
@@ -102,6 +104,30 @@ assert(
   'configuredModels must reject identical Sol/Terra models at the application layer.'
 );
 assert(sql.includes("raise exception 'ocr_consensus_v11_independent_model_required'"), 'DB append must independently reject a pass whose model matches the other pass for the same job.');
+
+// K. Vertical newspaper OCR must use deterministic segmentation rather than whole-article-only OCR.
+assert(worker.includes('const VISION_CHUNK = 1;'), 'Segmented OCR canary must process one article per provider call to bound image count and isolate failures.');
+assert(worker.includes('buildArticleReadingSegments'), 'The OCR worker must derive reading segments after validating the stored v3 crop fingerprint.');
+assert(callFn.includes('IMAGE=OVERVIEW'), 'Each article must include an overview image for layout context.');
+assert(callFn.includes('READING_SEGMENT='), 'Each article must include explicitly sequenced reading-segment images.');
+assert(callFn.includes('rightmost to leftmost'), 'The prompt must state the Japanese vertical right-to-left segment order.');
+assert(callFn.includes('Do not duplicate text merely because it is also visible in the overview'), 'The prompt must prevent overview/segment duplicate transcription.');
+assert(callFn.includes('Use the visible placeholder 〓'), 'The prompt must require an unreadable-character placeholder rather than invention.');
+
+// L. Reading segmentation itself must be pixel-derived, deterministic, and have a no-gutter fallback.
+for (const invariant of [
+  "ARTICLE_READING_SEGMENT_VERSION = 'article_vertical_whitespace_segments_v1'",
+  '.greyscale().raw().toBuffer({ resolveWithObject: true })',
+  'function whitespaceBoundaries',
+  'function fallbackBoundaries',
+  "readingOrder: 'right_to_left_top_to_bottom'",
+  'sort((a, b) => b.left - a.left)',
+  'segmentationSpecSha256'
+]) {
+  assert(crop.includes(invariant), `Reading segmentation invariant missing: ${invariant}`);
+}
+assert(crop.includes('if (ranges.length === 1)'), 'A wide article without a clean whitespace gutter must fall back to low-ink target boundary splitting.');
+assert(crop.includes('segment.imageSha256'), 'Every reading segment must be content-addressed for reproducibility.');
 
 // Structural / safety invariants that must not regress.
 assert(route.includes('requireAppPassword(req)'), 'The v11 canary route must remain authenticated.');

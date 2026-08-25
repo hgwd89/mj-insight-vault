@@ -8,8 +8,25 @@ type JsonRecord = Record<string, unknown>;
 type PassKind = 'verifier' | 'critic';
 type ArticleVisualInput = { article_id: string; source_region_id: string; region_quality_status: string; block_rects: ArticleBlockRect[] };
 type Job = { id: string; partition_job_id: string; evidence_source_image_id: string; article_count: number; requires_second_pass: boolean; failure_count: number; lease_token: string };
-type LoadedInput = { image: Buffer; mimeType: string; width: number; height: number; articles: ArticleVisualInput[] };
+type LoadedInput = {
+  image: Buffer;
+  mimeType: string;
+  width: number;
+  height: number;
+  articles: ArticleVisualInput[];
+  storagePath: string;
+  sourceMode: 'ocr_derivative';
+  sourceImageSha256: string;
+};
 type Composite = Awaited<ReturnType<typeof buildArticleBlockComposite>> & { article_id: string; region_quality_status: string };
+type CropReceipt = {
+  article_id: string;
+  crop_spec_sha256: string;
+  crop_image_sha256: string;
+  source_mode: string;
+  source_image_sha256: string;
+  crop_ocr_text: string;
+};
 
 class StructuralOutputError extends Error {}
 class ProviderError extends Error {
@@ -20,7 +37,8 @@ class ProviderError extends Error {
 const CALL_TIMEOUT_MS = 150_000;
 const LEASE_SECONDS = 360;
 const GOOGLE_CROP_CHUNK = 16;
-const VISION_CHUNK = 12;
+const VISION_CHUNK = 4;
+const VISION_TEXT_BUDGET = 7000;
 
 const RESPONSE_FORMAT = {
   type: 'json_schema',
@@ -109,7 +127,28 @@ async function loadInput(job: Job): Promise<LoadedInput> {
   const downloaded = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(storagePath);
   if (downloaded.error) throw downloaded.error;
   if (!downloaded.data) throw new StructuralOutputError('OCR verification source image download returned no data.');
-  return { image: Buffer.from(await downloaded.data.arrayBuffer()), mimeType: text(source.mime_type) || downloaded.data.type || 'image/jpeg', width, height, articles };
+  const image = Buffer.from(await downloaded.data.arrayBuffer());
+  const sourceMode = 'ocr_derivative' as const;
+  const sourceImageSha256 = sha256(image);
+  const { error: receiptError } = await supabaseAdmin.rpc('record_ocr_verification_source_binary_receipt_v9', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token,
+    p_source_mode: sourceMode,
+    p_storage_path: storagePath,
+    p_content_sha256: sourceImageSha256,
+    p_byte_size: image.length
+  });
+  if (receiptError) throw receiptError;
+  return {
+    image,
+    mimeType: text(source.mime_type) || downloaded.data.type || 'image/jpeg',
+    width,
+    height,
+    articles,
+    storagePath,
+    sourceMode,
+    sourceImageSha256
+  };
 }
 
 async function buildComposites(input: LoadedInput, articles: ArticleVisualInput[]) {
@@ -122,9 +161,22 @@ async function buildComposites(input: LoadedInput, articles: ArticleVisualInput[
 }
 
 async function existingCropRows(jobId: string) {
-  const { data, error } = await supabaseAdmin.from('ocr_verification_crop_ocr_v4').select('article_id,crop_image_sha256').eq('job_id', jobId);
+  const { data, error } = await supabaseAdmin
+    .from('ocr_verification_crop_ocr_v4')
+    .select('article_id,crop_spec_sha256,crop_image_sha256,source_mode,source_image_sha256,crop_ocr_text')
+    .eq('job_id', jobId);
   if (error) throw error;
-  return new Map((data || []).map((row) => [text(row.article_id), text(row.crop_image_sha256)]));
+  return new Map((data || []).map((row) => {
+    const receipt: CropReceipt = {
+      article_id: text(row.article_id),
+      crop_spec_sha256: text(row.crop_spec_sha256),
+      crop_image_sha256: text(row.crop_image_sha256),
+      source_mode: text(row.source_mode),
+      source_image_sha256: text(row.source_image_sha256),
+      crop_ocr_text: text(row.crop_ocr_text)
+    };
+    return [receipt.article_id, receipt] as const;
+  }));
 }
 
 async function runGoogleCropChunk(job: Job, input: LoadedInput) {
@@ -136,10 +188,18 @@ async function runGoogleCropChunk(job: Job, input: LoadedInput) {
   if (ocrResults.length !== crops.length) throw new ProviderError('Google crop OCR response count mismatch.', true);
   const rows = crops.map((crop, index) => {
     const ocr = ocrResults[index];
-    if (!ocr?.text?.trim()) throw new StructuralOutputError(`ocr_crop_v4_empty_text article=${crop.article_id}`);
-    return { article_id: crop.article_id, crop_spec_sha256: crop.cropSpecSha256, crop_image_sha256: crop.cropImageSha256, google_response_sha256: sha256(JSON.stringify(ocr.raw)), crop_ocr_text: ocr.text };
+    if (!ocr?.text?.trim()) throw new StructuralOutputError(`ocr_crop_v9_empty_text article=${crop.article_id}`);
+    return {
+      article_id: crop.article_id,
+      crop_spec_sha256: crop.cropSpecSha256,
+      crop_image_sha256: crop.cropImageSha256,
+      google_response_sha256: sha256(JSON.stringify(ocr.raw)),
+      crop_ocr_text: ocr.text,
+      source_mode: input.sourceMode,
+      source_image_sha256: input.sourceImageSha256
+    };
   });
-  const { data, error } = await supabaseAdmin.rpc('replace_ocr_crop_results_v4', { p_job_id: job.id, p_lease_token: job.lease_token, p_rows: rows });
+  const { data, error } = await supabaseAdmin.rpc('replace_ocr_crop_results_v9', { p_job_id: job.id, p_lease_token: job.lease_token, p_rows: rows });
   if (error) throw error;
   return data;
 }
@@ -199,13 +259,48 @@ async function callVisionChunk(input: { model: string; passKind: PassKind; crops
   } finally { clearTimeout(timer); }
 }
 
+function chooseVisionArticles(input: LoadedInput, existing: Set<string>, receipts: Map<string, CropReceipt>) {
+  const selected: ArticleVisualInput[] = [];
+  let textBudget = 0;
+  for (const article of input.articles) {
+    if (existing.has(article.article_id)) continue;
+    const receipt = receipts.get(article.article_id);
+    if (!receipt) throw new StructuralOutputError(`OCR crop receipt missing before Vision verification: ${article.article_id}`);
+    const chars = receipt.crop_ocr_text.length;
+    if (chars <= 0) throw new StructuralOutputError(`OCR crop text missing before Vision verification: ${article.article_id}`);
+    if (chars > VISION_TEXT_BUDGET) throw new StructuralOutputError(`OCR crop text exceeds exact-transcription budget: ${article.article_id} chars=${chars}`);
+    if (selected.length && (selected.length >= VISION_CHUNK || textBudget + chars > VISION_TEXT_BUDGET)) break;
+    selected.push(article);
+    textBudget += chars;
+    if (selected.length >= VISION_CHUNK) break;
+  }
+  return selected;
+}
+
+function visionInputBinding(crops: Composite[], receipts: Map<string, CropReceipt>) {
+  const lines = crops.map((crop) => {
+    const receipt = receipts.get(crop.article_id);
+    if (!receipt) throw new StructuralOutputError(`OCR crop binding receipt missing: ${crop.article_id}`);
+    return {
+      articleId: crop.article_id,
+      value: `${crop.article_id}:${receipt.crop_spec_sha256}:${receipt.crop_image_sha256}:${receipt.source_mode}:${receipt.source_image_sha256}`
+    };
+  }).sort((a, b) => a.articleId.localeCompare(b.articleId)).map((item) => item.value);
+  return sha256(lines.join('|'));
+}
+
 async function runVisionChunk(job: Job, input: LoadedInput, passKind: PassKind, model: string) {
   const existing = await existingVisionArticleIds(job.id, passKind);
-  const missing = input.articles.filter((article) => !existing.has(article.article_id)).slice(0, VISION_CHUNK);
+  const cropReceipts = await existingCropRows(job.id);
+  const missing = chooseVisionArticles(input, existing, cropReceipts);
   if (!missing.length) return { complete: true, stored: 0 };
   const crops = await buildComposites(input, missing);
-  const cropReceipts = await existingCropRows(job.id);
-  for (const crop of crops) if (cropReceipts.get(crop.article_id) !== crop.cropImageSha256) throw new StructuralOutputError(`crop image fingerprint changed before Vision verification: ${crop.article_id}`);
+  for (const crop of crops) {
+    const receipt = cropReceipts.get(crop.article_id);
+    if (!receipt || receipt.crop_image_sha256 !== crop.cropImageSha256) throw new StructuralOutputError(`crop image fingerprint changed before Vision verification: ${crop.article_id}`);
+    if (receipt.source_mode !== input.sourceMode || receipt.source_image_sha256 !== input.sourceImageSha256) throw new StructuralOutputError(`source binary binding changed before Vision verification: ${crop.article_id}`);
+  }
+  const inputBindingSha256 = visionInputBinding(crops, cropReceipts);
   const result = await callVisionChunk({ model, passKind, crops });
   const expected = new Set(crops.map((crop) => crop.article_id)), seen = new Set<string>();
   const rows = result.rows.map((raw) => {
@@ -219,7 +314,18 @@ async function runVisionChunk(job: Job, input: LoadedInput, passKind: PassKind, 
   });
   if (rows.length !== expected.size || seen.size !== expected.size) throw new StructuralOutputError('OCR verification response row_count mismatch');
   const chunkIndex = await nextChunkIndex(job.id, passKind);
-  const { data, error } = await supabaseAdmin.rpc('append_ocr_verification_vision_chunk_v4', { p_job_id: job.id, p_lease_token: job.lease_token, p_pass_kind: passKind, p_chunk_index: chunkIndex, p_model: model, p_provider_response_id: result.responseId, p_prompt_sha256: result.promptSha, p_response_sha256: result.responseSha, p_rows: rows });
+  const { data, error } = await supabaseAdmin.rpc('append_ocr_verification_vision_chunk_v7', {
+    p_job_id: job.id,
+    p_lease_token: job.lease_token,
+    p_pass_kind: passKind,
+    p_chunk_index: chunkIndex,
+    p_model: model,
+    p_provider_response_id: result.responseId,
+    p_prompt_sha256: result.promptSha,
+    p_response_sha256: result.responseSha,
+    p_input_binding_sha256: inputBindingSha256,
+    p_rows: rows
+  });
   if (error) throw error;
   return data;
 }

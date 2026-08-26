@@ -125,5 +125,17 @@ jobs:
         run: npm ci
 
       - name: Run local tests
-        run: npm run test:local
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:local 2>&1 | tee test-local.log
+
+      - name: Upload local test failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-local-failure-log
+          path: mj-insight-vault-mvp/mj-insight-vault/test-local.log
+          if-no-files-found: error
+          retention-days: 3
 

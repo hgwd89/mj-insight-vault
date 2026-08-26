@@ -158,7 +158,7 @@ for (const clause of [
   assert(provenanceSql.includes(clause), `Provenance quality threshold/branch missing: ${clause}`);
 }
 assert(hardeningSql.includes('ocr_combined_region_quality_v20'), 'Consensus must combine OCR glyph quality with Inventory provenance quality.');
-assert(hardeningSql.includes("coalesce(p.provenance_quality_status,'low')='low'"), 'Missing provenance evidence must fail closed as low.');
+assert(/coalesce\(p\.provenance_quality_status\s*,\s*'low'\)\s*=\s*'low'/.test(hardeningSql), 'Missing provenance evidence must fail closed as low.');
 assert(hardeningSql.includes("v_region_quality in ('low','invalid')"), 'Low/invalid combined region must be explicitly blocked.');
 assert(hardeningSql.includes("v_region_quality in ('strong','review')"), 'Two-model pass must be restricted to strong/review combined regions.');
 

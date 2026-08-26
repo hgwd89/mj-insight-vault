@@ -1,6 +1,6 @@
 name: OCR V21 DB Probe
 
-# one-shot v5 pooler connectivity probe
+# one-shot v6 Supavisor cluster scan
 on:
   push:
     branches:
@@ -16,21 +16,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fetch read-only Supabase probe
-        id: probe
         shell: bash
         run: |
           set +e
           status=$(curl --silent --show-error \
-            --max-time 40 \
+            --max-time 20 \
             --output probe.json \
             --write-out '%{http_code}' \
             'https://wqbjtvepnavkqdshppau.supabase.co/functions/v1/ocr-v21-db-probe-20260826')
           curl_exit=$?
           echo "http_status=${status}" > probe-meta.txt
           echo "curl_exit=${curl_exit}" >> probe-meta.txt
-          if [ -s probe.json ]; then
-            python -m json.tool probe.json >/dev/null || true
-          fi
+          if [ -s probe.json ]; then python -m json.tool probe.json >/dev/null || true; fi
           exit 0
       - name: Upload probe result
         uses: actions/upload-artifact@v4

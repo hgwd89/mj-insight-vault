@@ -83,7 +83,7 @@ async function auditOne(input: { model:string;passKind:'sol'|'terra';articleId:s
     if(!output) throw new Error('segment candidate audit output missing');
     const parsed=JSON.parse(output) as JsonRecord;
     if(text(parsed.article_id)!==input.articleId) throw new Error('segment candidate audit article mismatch');
-    return {pass_kind:input.passKind,model:input.model,provider_response_id:text(json.id),prompt_sha256,response_sha256:sha256(raw),input_binding_sha256:binding,
+    return {pass_kind:input.passKind,model:input.model,provider_response_id:text(json.id),prompt_sha256:promptSha256,response_sha256:sha256(raw),input_binding_sha256:binding,
       candidate_supported:parsed.candidate_supported===true,confidence:Number(parsed.confidence),numeric_status:text(parsed.numeric_status),proper_noun_status:text(parsed.proper_noun_status),reason:text(parsed.reason).slice(0,1400)};
   } finally { clearTimeout(timer); }
 }

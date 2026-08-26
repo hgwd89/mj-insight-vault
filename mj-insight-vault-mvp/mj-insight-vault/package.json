@@ -20,10 +20,11 @@
     "test:ocr-segment-v16": "node scripts/verify-ocr-segment-v16.mjs",
     "test:ocr-piece-v18": "node scripts/verify-ocr-piece-v18.mjs",
     "test:ocr-canary-fidelity-v22": "node scripts/verify-ocr-canary-fidelity-v22.mjs",
+    "test:ocr-canary-recovery-readout-v23": "node scripts/verify-ocr-canary-recovery-readout-v23.mjs",
     "test:verified-pipeline-order": "node scripts/verify-verified-pipeline-order.mjs",
     "test:verified-ddl-drift": "node scripts/audit-verified-pipeline-ddl-drift.mjs",
     "test:verified-ddl-export": "node scripts/verify-verified-pipeline-ddl-export.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:verified-pipeline-order && npm run test:verified-ddl-drift && npm run test:verified-ddl-export"
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:ocr-canary-recovery-readout-v23 && npm run test:verified-pipeline-order && npm run test:verified-ddl-drift && npm run test:verified-ddl-export"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.106.0",

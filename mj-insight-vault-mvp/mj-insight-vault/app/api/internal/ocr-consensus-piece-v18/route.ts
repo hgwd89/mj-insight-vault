@@ -12,7 +12,8 @@ async function assertNoLegacyCanaryPieceReceipts() {
   const { data: jobs, error: jobsError } = await supabaseAdmin
     .from('ocr_consensus_jobs_v11')
     .select('id')
-    .eq('is_canary', true);
+    .eq('is_canary', true)
+    .in('status', ['queued', 'running']);
   if (jobsError) throw jobsError;
 
   const jobIds = (jobs || []).map((row) => String(row.id || '').trim()).filter(Boolean);

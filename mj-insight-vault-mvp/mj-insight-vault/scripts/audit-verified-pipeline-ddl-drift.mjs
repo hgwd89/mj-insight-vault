@@ -6,8 +6,16 @@ const libDir = path.join(root, 'lib');
 const migrationDir = path.join(root, 'supabase', 'migrations');
 
 const workerFiles = fs.readdirSync(libDir)
-  .filter((name) => /^verified.*Worker\.ts$/i.test(name))
+  .filter((name) => /^verified.*Worker(?:V\d+)?\.ts$/i.test(name))
   .sort();
+
+const sourceFiles = [
+  ...workerFiles.map((name) => ({ label: `lib/${name}`, path: path.join(libDir, name) })),
+  {
+    label: 'app/api/internal/verified-pipeline-scheduler/route.ts',
+    path: path.join(root, 'app', 'api', 'internal', 'verified-pipeline-scheduler', 'route.ts')
+  }
+];
 
 const migrationFiles = fs.readdirSync(migrationDir)
   .filter((name) => name.endsWith('.sql'))
@@ -25,13 +33,13 @@ function addOwner(map, key, file) {
   map.get(key).add(file);
 }
 
-for (const file of workerFiles) {
-  const source = fs.readFileSync(path.join(libDir, file), 'utf8');
+for (const file of sourceFiles) {
+  const source = fs.readFileSync(file.path, 'utf8');
   for (const match of source.matchAll(/\.rpc\(\s*['"`]([a-zA-Z0-9_]+)['"`]/g)) {
-    addOwner(rpcOwners, match[1], file);
+    addOwner(rpcOwners, match[1], file.label);
   }
   for (const match of source.matchAll(/\.from\(\s*['"`]([a-zA-Z0-9_]+)['"`]/g)) {
-    addOwner(relationOwners, match[1], file);
+    addOwner(relationOwners, match[1], file.label);
   }
 }
 
@@ -60,7 +68,10 @@ const missingFunctions = rpcNames.filter((name) => !hasFunctionDefinition(name))
 const missingFunctionGrants = rpcNames.filter((name) => hasFunctionDefinition(name) && !hasFunctionGrant(name));
 const missingRelations = relationNames.filter((name) => !hasRelationDefinition(name));
 
-// Measured on GitHub Actions at HEAD 68da11ff995179d136d3565486dc4a69a6e6d21a.
+// Initially measured on GitHub Actions at HEAD 68da11ff995179d136d3565486dc4a69a6e6d21a
+// for the six unversioned verified workers. The audit now scans the full verified execution
+// path, including versioned report workers and the scheduler route. Any newly measured gap
+// must be pinned only from CI evidence, never guessed from production behavior.
 // These are known production-only DDL objects and are NOT accepted as complete.
 // Once authoritative production PostgreSQL is reachable, extract the exact definitions,
 // reconcile them into repository migrations, and reduce both lists to zero in the same change.
@@ -141,6 +152,7 @@ const functionDelta = setDelta(missingFunctions, knownMissingFunctions);
 const relationDelta = setDelta(missingRelations, knownMissingRelations);
 
 const report = {
+  source_files: sourceFiles.map((file) => file.label),
   worker_files: workerFiles,
   rpc_count: rpcNames.length,
   relation_count: relationNames.length,

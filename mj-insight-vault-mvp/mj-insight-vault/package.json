@@ -26,7 +26,7 @@
     "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:verified-pipeline-order && npm run test:verified-ddl-drift && npm run test:verified-ddl-export"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1",
+    "@supabase/supabase-js": "2.106.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "next": "^16.3.1",

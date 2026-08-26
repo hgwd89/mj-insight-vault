@@ -68,10 +68,9 @@ const missingFunctions = rpcNames.filter((name) => !hasFunctionDefinition(name))
 const missingFunctionGrants = rpcNames.filter((name) => hasFunctionDefinition(name) && !hasFunctionGrant(name));
 const missingRelations = relationNames.filter((name) => !hasRelationDefinition(name));
 
-// Initially measured on GitHub Actions at HEAD 68da11ff995179d136d3565486dc4a69a6e6d21a
-// for the six unversioned verified workers. The audit now scans the full verified execution
-// path, including versioned report workers and the scheduler route. Any newly measured gap
-// must be pinned only from CI evidence, never guessed from production behavior.
+// Measured on GitHub Actions from the full verified execution path at HEAD
+// 86d9e269e385f79399024784098141fb7570d260. Any newly measured gap must be
+// pinned only from CI evidence, never guessed from production behavior.
 // These are known production-only DDL objects and are NOT accepted as complete.
 // Once authoritative production PostgreSQL is reachable, extract the exact definitions,
 // reconcile them into repository migrations, and reduce both lists to zero in the same change.
@@ -80,12 +79,17 @@ const knownMissingFunctions = [
   'claim_article_embedding_job_v5',
   'claim_source_grounded_duplicate_review_job_v7',
   'claim_verified_article_review_job_v6',
+  'claim_verified_pipeline_scheduler_run_v1',
   'claim_verified_theme_census_batch_v7',
   'claim_verified_theme_consolidation_job_v7',
+  'claim_verified_theme_report_final_job_v15',
+  'claim_verified_theme_report_note_job_v15',
   'claim_verified_theme_seed_chunk_job_v7',
   'complete_article_embedding_job_v5',
   'create_source_grounded_duplicate_audit_run_v6',
+  'create_verified_ocr_corpus_receipt_v5',
   'create_verified_theme_analysis_run_v7',
+  'create_verified_theme_report_run_v15',
   'enqueue_article_classification_jobs_v6',
   'enqueue_article_embedding_jobs_v5',
   'enqueue_verified_article_review_jobs_v6',
@@ -96,16 +100,23 @@ const knownMissingFunctions = [
   'fail_verified_article_review_job_v6',
   'fail_verified_theme_census_batch_v7',
   'fail_verified_theme_consolidation_job_v7',
+  'fail_verified_theme_report_final_job_v8',
+  'fail_verified_theme_report_note_job_v8',
   'fail_verified_theme_seed_chunk_job_v7',
   'finalize_source_grounded_duplicate_audit_v7',
+  'finish_verified_pipeline_scheduler_run_v1',
   'get_article_classification_input_v6',
   'get_source_grounded_duplicate_review_input_v7',
   'get_verified_article_review_input_v6',
   'get_verified_theme_census_input_v7',
   'get_verified_theme_consolidation_input_v7',
+  'get_verified_theme_report_final_input_v8',
+  'get_verified_theme_report_note_input_v8',
   'get_verified_theme_seed_chunk_input_v7',
   'populate_source_grounded_duplicate_candidates_v6',
   'prepare_verified_theme_consolidation_v7',
+  'prepare_verified_theme_report_final_v8',
+  'publish_verified_theme_report_to_chat_v15',
   'record_verified_article_review_corpus_receipt_v7',
   'record_verified_theme_analysis_proof_v8',
   'store_article_classification_pass_v6',
@@ -113,7 +124,10 @@ const knownMissingFunctions = [
   'store_verified_article_review_pass_v6',
   'store_verified_theme_census_pass_v7',
   'store_verified_theme_consolidation_pass_v7',
-  'store_verified_theme_seed_chunk_pass_v7'
+  'store_verified_theme_report_final_pass_v8',
+  'store_verified_theme_report_note_pass_v8',
+  'store_verified_theme_seed_chunk_pass_v7',
+  'verified_theme_report_integrity_v15'
 ].sort();
 
 const knownMissingRelations = [
@@ -121,17 +135,24 @@ const knownMissingRelations = [
   'article_embedding_jobs_v4',
   'article_embedding_quality_gate_v5',
   'current_verified_article_review_corpus_receipt_v7',
+  'current_verified_ocr_corpus_receipt_v5',
   'current_verified_theme_analysis_proof_v8',
+  'ocr_verification_gate_v2',
   'source_grounded_duplicate_audit_runs_v5',
   'source_grounded_duplicate_gate_v6',
   'source_grounded_duplicate_review_jobs_v7',
+  'strict_system_safety_audit_v24',
   'verified_article_review_gate_v6',
   'verified_article_review_jobs_v6',
+  'verified_pipeline_scheduler_state_v1',
+  'verified_theme_analysis_gate_v8',
   'verified_theme_analysis_runs_v7',
   'verified_theme_candidate_gate_v7',
   'verified_theme_census_batches_v7',
   'verified_theme_census_gate_v7',
   'verified_theme_consolidation_jobs_v7',
+  'verified_theme_report_runs_v8',
+  'verified_theme_reports_v8',
   'verified_theme_seed_chunk_jobs_v7'
 ].sort();
 

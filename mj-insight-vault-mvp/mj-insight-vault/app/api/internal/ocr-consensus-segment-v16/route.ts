@@ -19,8 +19,14 @@ export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
     await req.json().catch(() => ({}));
-    const result = await runOcrConsensusSegmentV16Step();
-    return Response.json({ ok: true, result, status: await getOcrConsensusSegmentV16Status() });
+    // Two independent worker steps run concurrently. claim_ocr_consensus_canary_v16
+    // uses FOR UPDATE SKIP LOCKED, so at most one step owns each canary page.
+    // Each OpenAI request inside a step still receives exactly one segment image.
+    const results = await Promise.all([
+      runOcrConsensusSegmentV16Step(),
+      runOcrConsensusSegmentV16Step()
+    ]);
+    return Response.json({ ok: true, results, status: await getOcrConsensusSegmentV16Status() });
   } catch (error) {
     return jsonError(error);
   }

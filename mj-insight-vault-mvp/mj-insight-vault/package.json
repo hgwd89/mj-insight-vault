@@ -21,7 +21,8 @@
     "test:ocr-piece-v18": "node scripts/verify-ocr-piece-v18.mjs",
     "test:ocr-canary-fidelity-v22": "node scripts/verify-ocr-canary-fidelity-v22.mjs",
     "test:verified-pipeline-order": "node scripts/verify-verified-pipeline-order.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:verified-pipeline-order"
+    "test:verified-ddl-drift": "node scripts/audit-verified-pipeline-ddl-drift.mjs",
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:verified-pipeline-order && npm run test:verified-ddl-drift"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

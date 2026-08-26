@@ -33,9 +33,15 @@ function errorMessage(error: unknown) {
 
 async function runWorkerBatch(stage: string, lanes: number, worker: () => Promise<unknown>) {
   const settled = await Promise.allSettled(Array.from({ length: lanes }, () => worker()));
+  const failures = settled.flatMap((item, lane) => item.status === 'rejected'
+    ? [{ lane, error: errorMessage(item.reason) }]
+    : []);
+  if (failures.length > 0) {
+    throw new Error(`${stage} worker lane failure: ${JSON.stringify(failures)}`);
+  }
   const results = settled.map((item, lane) => item.status === 'fulfilled'
     ? { lane, ok: true, result: item.value, stage: stepStage(item.value) }
-    : { lane, ok: false, error: errorMessage(item.reason), stage: 'lane_error' });
+    : { lane, ok: false, error: 'unreachable rejected lane', stage: 'lane_error' });
   const hasWorked = results.some((item) => item.stage !== 'idle' && item.stage !== 'blocked');
   const hasBlocked = results.some((item) => item.stage === 'blocked');
   const state: BatchState = hasWorked ? 'worked' : hasBlocked ? 'blocked' : 'idle';

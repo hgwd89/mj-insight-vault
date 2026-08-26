@@ -26,7 +26,7 @@ with target_functions(name) as (
     ('enqueue_verified_theme_census_v7'),
     ('fail_article_classification_job_v6'),
     ('fail_article_embedding_job_v5'),
-    ('fail_source_grounded_duplicate_review_v7'),
+    ('fail_source_grounded_duplicate_review_job_v7'),
     ('fail_verified_article_review_job_v6'),
     ('fail_verified_theme_census_batch_v7'),
     ('fail_verified_theme_consolidation_job_v7'),

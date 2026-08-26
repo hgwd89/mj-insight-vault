@@ -8,6 +8,10 @@ function assertIncludes(source, expected, label) {
   if (!source.includes(expected)) throw new Error(`${label}: missing ${JSON.stringify(expected)}`);
 }
 
+function assertExcludes(source, forbidden, label) {
+  if (source.includes(forbidden)) throw new Error(`${label}: forbidden ${JSON.stringify(forbidden)}`);
+}
+
 function assertOrdered(source, tokens, label) {
   let cursor = -1;
   for (const token of tokens) {
@@ -33,6 +37,44 @@ assertOrdered(scheduler, [
 ], 'verified pipeline dependency order must remain strict');
 assertIncludes(scheduler, "gate?.ocr_verification_gate !== 'passed'", 'verified OCR corpus receipt must require the OCR gate');
 assertIncludes(scheduler, "census?.census_gate !== 'passed'", 'theme analysis proof must require the census gate');
+assertIncludes(scheduler, 'requireAppPassword(req)', 'verified pipeline scheduler must remain authenticated');
+
+const verifiedEntrypoints = [
+  {
+    path: 'app/api/classification/worker/route.ts',
+    requiredImport: "@/lib/verifiedArticleClassificationWorker",
+    requiredCall: 'runVerifiedArticleClassificationWorkerStep',
+    forbiddenImports: ['@/lib/articleClassificationWorker', '@/lib/articleClassificationWorkerSafe']
+  },
+  {
+    path: 'app/api/article-review/worker/route.ts',
+    requiredImport: "@/lib/verifiedArticleReviewWorker",
+    requiredCall: 'runVerifiedArticleReviewWorkerStep',
+    forbiddenImports: []
+  },
+  {
+    path: 'app/api/theme-candidates/worker/route.ts',
+    requiredImport: "@/lib/verifiedThemeCandidateWorker",
+    requiredCall: 'runVerifiedThemeCandidateWorkerStep',
+    forbiddenImports: []
+  },
+  {
+    path: 'app/api/theme-census/worker/route.ts',
+    requiredImport: "@/lib/verifiedThemeCensusWorker",
+    requiredCall: 'runVerifiedThemeCensusWorkerStep',
+    forbiddenImports: []
+  }
+];
+
+for (const entrypoint of verifiedEntrypoints) {
+  const source = read(entrypoint.path);
+  assertIncludes(source, entrypoint.requiredImport, `${entrypoint.path} must use the verified worker`);
+  assertIncludes(source, entrypoint.requiredCall, `${entrypoint.path} must call the verified worker`);
+  assertIncludes(source, 'requireAppPassword(req)', `${entrypoint.path} must remain authenticated`);
+  for (const forbidden of entrypoint.forbiddenImports) {
+    assertExcludes(source, forbidden, `${entrypoint.path} must not fall back to legacy classification`);
+  }
+}
 
 const comparison = read('supabase/migrations/20260826135000_add_ocr_canary_method_comparison_v19.sql');
 assertIncludes(comparison, 'with (security_invoker = true)', 'OCR canary comparison view must be security invoker');
@@ -56,4 +98,4 @@ assertIncludes(postOcr, 'strict_system_safety_audit_v24', 'post-OCR drain must r
 assertIncludes(postOcr, 'request_verified_pipeline_scheduler_tick_v1()', 'post-OCR drain must use the canonical verified scheduler');
 assertIncludes(postOcr, "'* * * * *'", 'post-OCR drain must remove manual handoff delay');
 
-console.log('verified pipeline dependency-order regression checks passed');
+console.log('verified pipeline dependency-order and entrypoint regression checks passed');

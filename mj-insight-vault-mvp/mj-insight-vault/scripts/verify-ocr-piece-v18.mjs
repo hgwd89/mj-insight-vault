@@ -61,7 +61,8 @@ assert(worker.includes("supabaseAdmin.rpc('append_ocr_independent_piece_v18'"), 
 assert(!migration.includes('decide_ocr_consensus_article_v11'), 'v18 receipt migration must not alter consensus thresholds.');
 assert(migration.includes('block_index') && migration.includes('source_left'), 'Piece receipts must retain local geometry provenance.');
 assert(route.includes('requireAppPassword(req)'), 'v18 route must remain authenticated.');
-assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 2, 'Route source must contain exactly two parallel worker slots per round.');
-assert(route.includes('for (let round = 0; round < 2; round += 1)'), 'Route must cap each request at two rounds.');
+assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 2, 'Route source must contain exactly two parallel worker slots.');
+assert(!route.includes('for (let round = 0; round < 2; round += 1)'), 'Route must not run a second sequential round inside one Vercel request.');
+assert(route.includes('const rounds = [await Promise.all(['), 'Route must run exactly one two-worker parallel round per request.');
 
 console.log('verify-ocr-piece-v18: ok');

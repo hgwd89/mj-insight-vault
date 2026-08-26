@@ -10,6 +10,23 @@ with canary_jobs as (
 canary_ids as (
   select id from canary_jobs
 ),
+lease_summary as (
+  select
+    j.id as job_id,
+    j.status,
+    j.failure_count,
+    j.lease_token is not null as has_lease_token,
+    j.lease_expires_at,
+    case
+      when j.lease_expires_at is null then 'none'
+      when j.lease_expires_at > now() then 'active'
+      else 'expired'
+    end as lease_state,
+    j.error_message,
+    j.updated_at,
+    j.finished_at
+  from canary_jobs j
+),
 piece_summary as (
   select
     r.job_id,
@@ -71,6 +88,9 @@ select jsonb_build_object(
   'canary_job_count', (select count(*) from canary_jobs),
   'canary_jobs', coalesce((
     select jsonb_agg(to_jsonb(j) order by j.created_at,j.id) from canary_jobs j
+  ), '[]'::jsonb),
+  'lease_summary', coalesce((
+    select jsonb_agg(to_jsonb(l) order by l.job_id) from lease_summary l
   ), '[]'::jsonb),
   'piece_summary', coalesce((
     select jsonb_agg(to_jsonb(p) order by p.job_id,p.pass_kind,p.article_id,p.segmentation_version) from piece_summary p

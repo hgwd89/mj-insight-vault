@@ -47,6 +47,9 @@ const withoutComments = sql.replace(/^\s*--.*$/gm, '');
 const forbiddenMutation = /\b(insert|update|delete|alter|drop|truncate|grant|revoke|call|copy|do)\b/i;
 assert(!forbiddenMutation.test(withoutComments), 'Authoritative DDL export SQL must remain read-only.');
 assert((withoutComments.match(/;/g) || []).length === 1, 'Authoritative DDL export must remain a single read-only statement.');
+assert((withoutComments.match(/'public'::regnamespace/g) || []).length === 2, 'Authoritative DDL export must bind both function and relation catalog lookups directly to public schema.');
+assert(!/where\s+p\.oid\s+is\s+null\s+or\s+n\.nspname\s*=\s*'public'/i.test(withoutComments), 'Function export must not filter schema after a name-only join.');
+assert(!/where\s+c\.oid\s+is\s+null\s+or\s+n\.nspname\s*=\s*'public'/i.test(withoutComments), 'Relation export must not filter schema after a name-only join.');
 
 for (const invariant of [
   'pg_get_functiondef',
@@ -74,4 +77,4 @@ for (const invariant of [
   assert(sql.includes(invariant), `Authoritative DDL export invariant missing: ${invariant}`);
 }
 
-console.log('verify-verified-pipeline-ddl-export: ok (38 functions, 16 relations, read-only)');
+console.log('verify-verified-pipeline-ddl-export: ok (38 functions, 16 relations, read-only, public-schema bound)');

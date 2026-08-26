@@ -104,9 +104,10 @@ function_export as (
       '[]'::jsonb
     ) as matches
   from target_functions tf
-  left join pg_proc p on p.proname = tf.name
-  left join pg_namespace n on n.oid = p.pronamespace and n.nspname = 'public'
-  where p.oid is null or n.nspname = 'public'
+  left join pg_proc p
+    on p.proname = tf.name
+   and p.pronamespace = 'public'::regnamespace
+  left join pg_namespace n on n.oid = p.pronamespace
   group by tf.name
 ),
 relation_export as (
@@ -210,9 +211,10 @@ relation_export as (
       ), '[]'::jsonb)
     ) end as definition
   from target_relations tr
-  left join pg_class c on c.relname = tr.name
-  left join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
-  where c.oid is null or n.nspname = 'public'
+  left join pg_class c
+    on c.relname = tr.name
+   and c.relnamespace = 'public'::regnamespace
+  left join pg_namespace n on n.oid = c.relnamespace
 ),
 manifest as (
   select

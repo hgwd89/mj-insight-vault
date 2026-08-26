@@ -3,11 +3,14 @@ import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
 import { runDocumentOcrBatch } from '@/lib/visionBatch';
-import { buildArticleBlockComposite, buildArticleReadingSegments, type ArticleBlockRect } from '@/lib/articleCrop';
+import { buildArticleBlockComposite, type ArticleBlockRect } from '@/lib/articleCrop';
+import { buildArticleReadingSegmentsV15 } from '@/lib/articleReadingSegmentsV15';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
+
+const GOOGLE_IMAGE_BATCH = 16;
 
 type JsonRecord = Record<string, unknown>;
 type ArticleInput = {
@@ -135,7 +138,7 @@ async function runOne() {
       throw new Error(`OCR segment Google v14 crop fingerprint changed: ${article.article_id}`);
     }
 
-    const reading = await buildArticleReadingSegments({
+    const reading = await buildArticleReadingSegmentsV15({
       articleId: article.article_id,
       compositeBuffer: composite.buffer,
       compositeWidth: composite.width,
@@ -144,8 +147,14 @@ async function runOne() {
     });
     if (!reading.segments.length) throw new Error(`OCR segment Google v14 produced no reading segments: ${article.article_id}`);
 
-    const results = await runDocumentOcrBatch(reading.segments.map((segment) => segment.buffer));
-    if (results.length !== reading.segments.length) throw new Error(`OCR segment Google v14 response count mismatch: ${article.article_id}`);
+    const results: Awaited<ReturnType<typeof runDocumentOcrBatch>> = [];
+    for (let offset = 0; offset < reading.segments.length; offset += GOOGLE_IMAGE_BATCH) {
+      const chunk = reading.segments.slice(offset, offset + GOOGLE_IMAGE_BATCH);
+      const batch = await runDocumentOcrBatch(chunk.map((segment) => segment.buffer));
+      if (batch.length !== chunk.length) throw new Error(`OCR segment Google v14 response count mismatch: ${article.article_id}`);
+      results.push(...batch);
+    }
+    if (results.length !== reading.segments.length) throw new Error(`OCR segment Google v14 total response count mismatch: ${article.article_id}`);
     const segmentTexts = results.map((result) => text(result.text));
     const combined = segmentTexts.filter(Boolean).join('\n').trim();
     if (!combined) throw new Error(`OCR segment Google v14 returned empty text: ${article.article_id}`);
@@ -171,6 +180,7 @@ async function runOne() {
       article_id: article.article_id,
       segment_count: reading.segments.length,
       text_length: combined.length,
+      segmentation_version: reading.version,
       segmentation_spec_sha256: reading.segmentationSpecSha256,
       google_segment_text_sha256: row.google_segment_text_sha256
     };

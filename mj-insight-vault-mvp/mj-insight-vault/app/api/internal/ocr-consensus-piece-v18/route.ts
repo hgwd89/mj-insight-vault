@@ -20,15 +20,13 @@ export async function POST(req: NextRequest) {
     requireAppPassword(req);
     await req.json().catch(() => ({}));
 
-    const rounds = [];
-    for (let round = 0; round < 2; round += 1) {
-      const results = await Promise.all([
-        runOcrConsensusPieceV18Step(),
-        runOcrConsensusPieceV18Step()
-      ]);
-      rounds.push(results);
-      if (results.every((result) => result.claimed === 0)) break;
-    }
+    // Keep one request below the Vercel function ceiling. Two independent piece
+    // workers still run in parallel, but a second sequential round can push a
+    // healthy provider call past the 180s route limit and discard completed work.
+    const rounds = [await Promise.all([
+      runOcrConsensusPieceV18Step(),
+      runOcrConsensusPieceV18Step()
+    ])];
 
     return Response.json({ ok: true, rounds, status: await getOcrConsensusPieceV18Status() });
   } catch (error) {

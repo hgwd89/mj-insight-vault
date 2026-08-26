@@ -126,7 +126,7 @@ for (const invariant of [
 ]) {
   assert(crop.includes(invariant), `Reading segmentation invariant missing: ${invariant}`);
 }
-assert(crop.includes('if (ranges.length === 1)'), 'A wide article without a clean whitespace gutter must fall back to low-ink target boundary splitting.');
+assert(/if \(ranges\.length === 1(?: \|\| ranges\.length > MAX_READING_SEGMENTS)?\)/.test(crop), 'A wide article without a clean whitespace gutter must fall back to low-ink target boundary splitting.');
 assert(crop.includes('segment.imageSha256'), 'Every reading segment must be content-addressed for reproducibility.');
 
 // Structural / safety invariants that must not regress.

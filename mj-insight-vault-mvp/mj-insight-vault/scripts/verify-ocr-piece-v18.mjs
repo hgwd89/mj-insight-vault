@@ -8,6 +8,7 @@ const readingV21 = fs.readFileSync(path.join(root, 'lib/articleBlockReadingV21.t
 const route = fs.readFileSync(path.join(root, 'app/api/internal/ocr-consensus-piece-v18/route.ts'), 'utf8');
 const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826103000_add_block_local_piece_receipts_v18.sql'), 'utf8');
 const bindingMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826162500_harden_v21_piece_receipt_binding.sql'), 'utf8');
+const restartMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826163000_add_atomic_v21_canary_restart_v22.sql'), 'utf8');
 
 function assert(condition, message) { if (!condition) throw new Error(message); }
 
@@ -82,5 +83,23 @@ for (const invariant of [
   assert(bindingMigration.includes(invariant), `V21 DB piece-binding invariant missing: ${invariant}`);
 }
 assert(!bindingMigration.includes('decide_ocr_consensus_article_v11'), 'V21 binding hardening must not alter v11 consensus thresholds.');
+
+for (const invariant of [
+  'restart_ocr_consensus_canaries_v21_v22',
+  'ocr_consensus_v22_exactly_two_jobs_required',
+  'ocr_consensus_v22_job_set_not_bijective',
+  'ocr_consensus_v22_canary_only',
+  'ocr_consensus_v22_active_lease',
+  'requeue_ocr_consensus_canary_v12',
+  'ocr_consensus_v22_residual_current_evidence',
+  "jobname='ocr_consensus_piece_v18_canary_drain'",
+  'drain_ocr_consensus_piece_v18_canary_v1',
+  'kick_ocr_consensus_piece_canary_v18'
+]) {
+  assert(restartMigration.includes(invariant), `Atomic V21 canary restart invariant missing: ${invariant}`);
+}
+assert(restartMigration.includes("j.status not in ('failed','queued','running')"), 'Atomic restart must reject completed or unexpected job states.');
+assert(restartMigration.includes('j.failure_count<>0') && restartMigration.includes('j.lease_token is not null'), 'Atomic restart must verify clean queued state after archive/requeue.');
+assert(!restartMigration.includes('decide_ocr_consensus_article_v11'), 'Atomic restart must not alter v11 consensus thresholds.');
 
 console.log('verify-ocr-piece-v18: ok');

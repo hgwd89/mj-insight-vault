@@ -7,6 +7,7 @@ const bridge = fs.readFileSync(path.join(root, 'lib/articleBlockReadingV17.ts'),
 const readingV21 = fs.readFileSync(path.join(root, 'lib/articleBlockReadingV21.ts'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'app/api/internal/ocr-consensus-piece-v18/route.ts'), 'utf8');
 const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826103000_add_block_local_piece_receipts_v18.sql'), 'utf8');
+const bindingMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826162500_harden_v21_piece_receipt_binding.sql'), 'utf8');
 
 function assert(condition, message) { if (!condition) throw new Error(message); }
 
@@ -60,9 +61,25 @@ assert(worker.includes("supabaseAdmin.rpc('decide_ocr_consensus_article_v11'"), 
 assert(worker.includes("supabaseAdmin.rpc('append_ocr_independent_piece_v18'"), 'Piece-level receipt RPC must be used.');
 assert(!migration.includes('decide_ocr_consensus_article_v11'), 'v18 receipt migration must not alter consensus thresholds.');
 assert(migration.includes('block_index') && migration.includes('source_left'), 'Piece receipts must retain local geometry provenance.');
+
 assert(route.includes('requireAppPassword(req)'), 'v18 route must remain authenticated.');
 assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 2, 'Route source must contain exactly two parallel worker slots.');
 assert(!route.includes('for (let round = 0; round < 2; round += 1)'), 'Route must not run a second sequential round inside one Vercel request.');
 assert(route.includes('const rounds = [await Promise.all(['), 'Route must run exactly one two-worker parallel round per request.');
+assert(route.includes('async function assertNoLegacyCanaryPieceReceipts()'), 'Route must preflight persisted canary pieces before any worker call.');
+assert(route.indexOf('await assertNoLegacyCanaryPieceReceipts()') < route.indexOf('runOcrConsensusPieceV18Step()'), 'Legacy receipt preflight must run before the first external OCR worker can start.');
+assert(route.includes('ARTICLE_BLOCK_READING_VERSION_V21'), 'Route preflight must compare persisted receipts to the canonical V21 version constant.');
+assert(route.includes(".select('job_id,segmentation_version')"), 'Route preflight must inspect persisted segmentation versions.');
+assert(route.includes('Archive/requeue the canaries before resuming.'), 'Legacy receipt failure must direct operators to archive/requeue rather than silently resume.');
+
+for (const invariant of [
+  "'whole_block','vertical_segment','vertical_band','vertical_segment_band'",
+  'ocr_consensus_v21_segmentation_version_changed_within_article_pass',
+  'ocr_consensus_v21_segmentation_spec_changed_within_article_pass',
+  'ocr_consensus_v21_piece_count_changed_within_article_pass'
+]) {
+  assert(bindingMigration.includes(invariant), `V21 DB piece-binding invariant missing: ${invariant}`);
+}
+assert(!bindingMigration.includes('decide_ocr_consensus_article_v11'), 'V21 binding hardening must not alter v11 consensus thresholds.');
 
 console.log('verify-ocr-piece-v18: ok');

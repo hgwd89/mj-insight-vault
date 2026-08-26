@@ -38,6 +38,9 @@ assertOrdered(scheduler, [
 assertIncludes(scheduler, "gate?.ocr_verification_gate !== 'passed'", 'verified OCR corpus receipt must require the OCR gate');
 assertIncludes(scheduler, "census?.census_gate !== 'passed'", 'theme analysis proof must require the census gate');
 assertIncludes(scheduler, 'requireAppPassword(req)', 'verified pipeline scheduler must remain authenticated');
+assertIncludes(scheduler, 'const failures = settled.flatMap', 'verified pipeline scheduler must collect rejected worker lanes');
+assertIncludes(scheduler, 'if (failures.length > 0)', 'verified pipeline scheduler must fail closed on rejected worker lanes');
+assertIncludes(scheduler, 'worker lane failure', 'verified pipeline scheduler must surface rejected worker lanes');
 
 const verifiedEntrypoints = [
   {

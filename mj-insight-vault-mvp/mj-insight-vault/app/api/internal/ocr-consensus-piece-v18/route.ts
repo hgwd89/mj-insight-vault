@@ -19,11 +19,18 @@ export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
     await req.json().catch(() => ({}));
-    const results = await Promise.all([
-      runOcrConsensusPieceV18Step(),
-      runOcrConsensusPieceV18Step()
-    ]);
-    return Response.json({ ok: true, results, status: await getOcrConsensusPieceV18Status() });
+
+    const rounds = [];
+    for (let round = 0; round < 2; round += 1) {
+      const results = await Promise.all([
+        runOcrConsensusPieceV18Step(),
+        runOcrConsensusPieceV18Step()
+      ]);
+      rounds.push(results);
+      if (results.every((result) => result.claimed === 0)) break;
+    }
+
+    return Response.json({ ok: true, rounds, status: await getOcrConsensusPieceV18Status() });
   } catch (error) {
     return jsonError(error);
   }

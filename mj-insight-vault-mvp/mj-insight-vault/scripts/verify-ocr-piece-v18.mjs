@@ -69,6 +69,7 @@ assert(route.includes('const rounds = [await Promise.all(['), 'Route must run ex
 assert(route.includes('async function assertNoLegacyCanaryPieceReceipts()'), 'Route must preflight persisted canary pieces before any worker call.');
 assert(route.indexOf('await assertNoLegacyCanaryPieceReceipts()') < route.indexOf('runOcrConsensusPieceV18Step()'), 'Legacy receipt preflight must run before the first external OCR worker can start.');
 assert(route.includes('ARTICLE_BLOCK_READING_VERSION_V21'), 'Route preflight must compare persisted receipts to the canonical V21 version constant.');
+assert(route.includes(".in('status', ['queued', 'running'])"), 'Route preflight must inspect only runnable canaries, not completed historical canaries.');
 assert(route.includes(".select('job_id,segmentation_version')"), 'Route preflight must inspect persisted segmentation versions.');
 assert(route.includes('Archive/requeue the canaries before resuming.'), 'Legacy receipt failure must direct operators to archive/requeue rather than silently resume.');
 

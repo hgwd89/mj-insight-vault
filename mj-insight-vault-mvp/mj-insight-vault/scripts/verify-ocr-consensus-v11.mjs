@@ -22,7 +22,7 @@ const baseSql = fs.readFileSync(path.join(migrationDir, migrationNames[0]), 'utf
 const provenanceSql = fs.readFileSync(path.join(migrationDir, provenanceNames[0]), 'utf8');
 const hardeningSql = fs.readFileSync(path.join(migrationDir, provenanceGateNames[0]), 'utf8');
 const sql = `${baseSql}\n${provenanceSql}\n${hardeningSql}`;
-const decideStart = hardeningSql.lastIndexOf('function public.decide_ocr_consensus_article_v11');
+const decideStart = hardeningSql.indexOf('create or replace function public.decide_ocr_consensus_article_v11');
 assert(decideStart >= 0, 'Latest provenance hardening migration must replace decide_ocr_consensus_article_v11.');
 const decideFn = hardeningSql.slice(decideStart);
 

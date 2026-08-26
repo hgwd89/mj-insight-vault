@@ -19,6 +19,9 @@ assert(callFn.includes('output 〓 at that position instead of guessing'), 'Prom
 assert(callFn.includes('Do not improve Japanese grammar or make the fragment sound natural'), 'Prompt must prohibit natural-language repair.');
 assert(callFn.includes('Do not add sentence endings, particles, punctuation'), 'Prompt must prohibit sentence completion.');
 assert((callFn.match(/type: 'input_image'/g) || []).length === 1, 'Each model call must contain exactly one input image.');
+assert(worker.includes('const PIECE_MAX_OUTPUT_TOKENS = 8_000'), 'Piece output budget must remain large enough for GPT-5.6 structured output after reasoning.');
+assert(callFn.includes('max_output_tokens: PIECE_MAX_OUTPUT_TOKENS'), 'Piece model call must use the hardened output budget.');
+assert(callFn.includes('json.incomplete_details') && callFn.includes('incomplete_reason=') && callFn.includes('output_items='), 'Empty provider output must preserve incomplete-response diagnostics.');
 assert(worker.includes('buildArticleBlockReadingPiecesV17'), 'Worker must use block-local reading pieces.');
 assert(worker.includes("receipts.map((row) => row.transcription).join('\\n')"), 'Article text must be deterministic concatenation only.');
 assert(worker.includes('const confidence = Math.min(...receipts.map((row) => row.confidence))'), 'Article confidence must be minimum piece confidence.');
@@ -27,6 +30,7 @@ assert(worker.includes("supabaseAdmin.rpc('append_ocr_independent_piece_v18'"), 
 assert(!migration.includes('decide_ocr_consensus_article_v11'), 'v18 migration must not alter v11 gate thresholds.');
 assert(migration.includes('block_index') && migration.includes('source_left'), 'Piece receipts must retain local geometry provenance.');
 assert(route.includes('requireAppPassword(req)'), 'v18 route must remain authenticated.');
-assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 2, 'Route may run exactly two independent canary workers in parallel.');
+assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 2, 'Route source must contain exactly two parallel worker slots per round.');
+assert(route.includes('for (let round = 0; round < 2; round += 1)'), 'Route must cap each request at two rounds.');
 
 console.log('verify-ocr-piece-v18: ok');

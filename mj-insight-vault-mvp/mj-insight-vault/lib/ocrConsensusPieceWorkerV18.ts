@@ -62,6 +62,7 @@ class ProviderError extends Error {
 
 const LEASE_SECONDS = 360;
 const CALL_TIMEOUT_MS = 150_000;
+const PIECE_MAX_OUTPUT_TOKENS = 8_000;
 
 function isRecord(value: unknown): value is JsonRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 function text(value: unknown) { return value === null || value === undefined ? '' : String(value).trim(); }
@@ -241,14 +242,19 @@ async function callPieceVision(input: {
   try {
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ model: input.model, store: false, max_output_tokens: 3000, instructions, input: [{ role: 'user', content }], text: { format: pieceResponseFormat(p.sequence) } })
+      body: JSON.stringify({ model: input.model, store: false, max_output_tokens: PIECE_MAX_OUTPUT_TOKENS, instructions, input: [{ role: 'user', content }], text: { format: pieceResponseFormat(p.sequence) } })
     });
     const raw = await response.text();
     if (!response.ok) throw new ProviderError(`OpenAI OCR piece v18 failed: ${response.status} ${response.statusText} ${raw.slice(0, 1800)}`, response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500);
     let json: JsonRecord;
     try { json = JSON.parse(raw) as JsonRecord; } catch { throw new ProviderError('OpenAI OCR piece v18 response JSON is malformed.', true); }
     const responseId = text(json.id), output = extractResponseText(json);
-    if (!responseId || !output) throw new ProviderError('OpenAI OCR piece v18 response receipt or output is missing.', true);
+    if (!responseId || !output) {
+      const status = text(json.status) || 'unknown';
+      const incompleteReason = isRecord(json.incomplete_details) ? text(json.incomplete_details.reason) : '';
+      const outputItems = Array.isArray(json.output) ? json.output.length : 0;
+      throw new ProviderError(`OpenAI OCR piece v18 response receipt or output is missing: response_id=${responseId || 'missing'} status=${status} incomplete_reason=${incompleteReason || 'none'} output_items=${outputItems}`, true);
+    }
     let parsed: JsonRecord;
     try { parsed = JSON.parse(output) as JsonRecord; } catch { throw new StructuralOutputError('OpenAI OCR piece v18 structured output is malformed.'); }
     return { parsed, responseId, promptSha, responseSha: sha256(raw) };

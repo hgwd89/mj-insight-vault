@@ -38,9 +38,9 @@ begin
 
   select
     count(*)::integer,
-    count(*) filter(where j.is_canary is distinct from true)::integer,
-    count(*) filter(where j.status not in ('failed','queued','running'))::integer,
-    count(*) filter(where j.status='running' and j.lease_expires_at is not null and j.lease_expires_at>now())::integer
+    (count(*) filter(where j.is_canary is distinct from true))::integer,
+    (count(*) filter(where j.status not in ('failed','queued','running')))::integer,
+    (count(*) filter(where j.status='running' and j.lease_expires_at is not null and j.lease_expires_at>now()))::integer
   into v_target_count,v_noncanary_count,v_bad_status_count,v_active_lease_count
   from public.ocr_consensus_jobs_v11 j
   where j.id=any(p_job_ids);

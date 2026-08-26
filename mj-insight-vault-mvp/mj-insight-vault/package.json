@@ -19,8 +19,9 @@
     "test:ocr-consensus-v11": "node scripts/verify-ocr-consensus-v11.mjs",
     "test:ocr-segment-v16": "node scripts/verify-ocr-segment-v16.mjs",
     "test:ocr-piece-v18": "node scripts/verify-ocr-piece-v18.mjs",
+    "test:ocr-canary-fidelity-v22": "node scripts/verify-ocr-canary-fidelity-v22.mjs",
     "test:verified-pipeline-order": "node scripts/verify-verified-pipeline-order.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:verified-pipeline-order"
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:upload && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:verified-pipeline-order"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

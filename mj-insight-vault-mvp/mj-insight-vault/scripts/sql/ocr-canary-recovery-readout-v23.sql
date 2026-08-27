@@ -20,6 +20,11 @@ with canary_jobs as (
   from public.ocr_consensus_jobs_v11
   where is_canary is true
 ),
+recovery_candidate_jobs as (
+  select *
+  from canary_jobs
+  where status in ('failed','queued','running')
+),
 canary_ids as (
   select id from canary_jobs
 ),
@@ -98,15 +103,21 @@ select jsonb_build_object(
   'captured_at', now(),
   'database', current_database(),
   'server_version', current_setting('server_version'),
-  'expected_canary_job_count', 2,
-  'canary_job_count', (select count(*) from canary_jobs),
-  'canary_cardinality_matches_expected', ((select count(*) from canary_jobs) = 2),
-  'canary_cardinality_status', case
-    when (select count(*) from canary_jobs) = 2 then 'expected_two'
+  'all_canary_job_count', (select count(*) from canary_jobs),
+  'terminal_canary_job_count', (select count(*) from canary_jobs where status in ('completed','needs_review')),
+  'expected_recovery_candidate_job_count', 2,
+  'recovery_candidate_job_count', (select count(*) from recovery_candidate_jobs),
+  'recovery_candidate_cardinality_matches_expected', ((select count(*) from recovery_candidate_jobs) = 2),
+  'recovery_candidate_cardinality_status', case
+    when (select count(*) from recovery_candidate_jobs) = 2 then 'expected_two'
+    when (select count(*) from recovery_candidate_jobs) = 0 then 'no_recovery_candidates'
     else 'unexpected_count'
   end,
   'canary_jobs', coalesce((
     select jsonb_agg(to_jsonb(j) order by j.created_at,j.id) from canary_jobs j
+  ), '[]'::jsonb),
+  'recovery_candidate_jobs', coalesce((
+    select jsonb_agg(to_jsonb(j) order by j.created_at,j.id) from recovery_candidate_jobs j
   ), '[]'::jsonb),
   'lease_summary', coalesce((
     select jsonb_agg(to_jsonb(l) order by l.job_id) from lease_summary l

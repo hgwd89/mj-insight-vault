@@ -101,7 +101,7 @@ assert(!/const INTERNAL_MARKERS/.test(reportSafety), 'Report safety must not use
 assert(/\\n\\n【レポート要件】/.test(reportSafety), 'Report safety must recognize the appended requirements delimiter.');
 assert(!/evidence_matrix/.test(reportSafety), 'Report safety must preserve legitimate evidence_matrix user text.');
 assert(/sanitizeReportForDisplay/.test(reportsRoute) && /sanitizeReportForDisplay/.test(reportDetailRoute), 'Report list and detail APIs must sanitize persisted reports before returning them.');
-assert(/safeAnswerEnvelope/.test(reportFollowupRoute) && reportFollowupRoute.includes('return Response.json({ answer: safeAnswer'), 'Report follow-up API must sanitize both persisted and returned answers.');
+assert(/safeAnswerEnvelope/.test(reportFollowupRoute) && /return\s+Response\.json\(\{\s*answer:\s*safeAnswer\b/s.test(reportFollowupRoute), 'Report follow-up API must sanitize both persisted and returned answers.');
 assert(/sanitizeReportForDisplay/.test(chatCore) && /answer_json: safeAnswer/.test(chatCore), 'Legacy report save path must pass through the same storage safety boundary.');
 assert(/formal_report_quality_gate_failed/.test(no160) && /answer_json: safeAnswer/.test(no160), 'Formal report save must stop on quality-gate failure and persist only sanitized output.');
 assert(/qualityBlocked/.test(jobRun) && /stage: qualityBlocked/.test(jobRun) && jobRun.includes('qualityBlocked ? 409'), 'Job runner must expose quality-gate blocks as a retryable blocked state.');

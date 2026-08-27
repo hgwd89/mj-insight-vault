@@ -85,7 +85,13 @@ select jsonb_build_object(
   'captured_at', now(),
   'database', current_database(),
   'server_version', current_setting('server_version'),
+  'expected_canary_job_count', 2,
   'canary_job_count', (select count(*) from canary_jobs),
+  'canary_cardinality_matches_expected', ((select count(*) from canary_jobs) = 2),
+  'canary_cardinality_status', case
+    when (select count(*) from canary_jobs) = 2 then 'expected_two'
+    else 'unexpected_count'
+  end,
   'canary_jobs', coalesce((
     select jsonb_agg(to_jsonb(j) order by j.created_at,j.id) from canary_jobs j
   ), '[]'::jsonb),

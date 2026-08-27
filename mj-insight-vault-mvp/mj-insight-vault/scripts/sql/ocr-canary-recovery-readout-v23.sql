@@ -88,10 +88,12 @@ canonical_rows as (
   where v.source_consensus_job_id in (select id from recovery_candidate_ids)
 ),
 requeue_rows as (
-  select a.*
+  -- snapshot_json intentionally omitted: its archived job object may contain an old
+  -- raw lease token. Recovery only needs immutable archive identity/reason/timestamp.
+  select a.id,a.job_id,a.reason,a.created_at
   from public.ocr_consensus_requeue_archives_v12 a
   where a.job_id in (select id from recovery_candidate_ids)
-  order by a.created_at desc
+  order by a.created_at desc,a.id desc
 ),
 resume_rows as (
   select r.*

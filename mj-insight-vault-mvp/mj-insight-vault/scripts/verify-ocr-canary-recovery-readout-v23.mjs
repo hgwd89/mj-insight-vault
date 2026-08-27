@@ -56,6 +56,7 @@ for (const invariant of [
   "'unexpected_count'",
   "'method_comparison_v19_all_marked'",
   "'fidelity_v22_all_marked'",
+  'select a.id,a.job_id,a.reason,a.created_at',
   'current_database()',
   "current_setting('server_version')"
 ]) {
@@ -85,7 +86,7 @@ assert(/'fidelity_v22'[\s\S]*?ocr_canary_fidelity_v22\s+f[\s\S]*?where\s+f\.cons
 assert(/'method_comparison_v19_all_marked'[\s\S]*?ocr_canary_method_comparison_v19\s+c/i.test(sql), 'All-marked method comparison audit must remain available.');
 assert(/'fidelity_v22_all_marked'[\s\S]*?ocr_canary_fidelity_v22\s+f/i.test(sql), 'All-marked fidelity audit must remain available.');
 
-// The readout may expose whether a lease exists, but never the lease token itself.
+// The readout may expose whether a current lease exists, but never a lease token.
 // canary_jobs is serialized wholesale below, so its projection must be explicitly
 // sanitized rather than SELECT * from ocr_consensus_jobs_v11.
 assert(!/canary_jobs\s+as\s*\(\s*select\s+\*/is.test(sql), 'Recovery readout must not serialize raw OCR consensus job rows.');
@@ -94,10 +95,18 @@ assert(canaryProjection.length > 0, 'Recovery readout canary_jobs projection mus
 assert(!/\blease_token\s*(?:,|\bas\b)/i.test(canaryProjection), 'Recovery readout must not project the raw lease token.');
 assert(/\blease_token\s+is\s+not\s+null\s+as\s+has_lease_token\b/i.test(canaryProjection), 'Recovery readout must expose only lease-token presence.');
 
+// Requeue snapshots serialize the historical raw job row and may therefore contain
+// an old lease token. Only immutable archive identity metadata is safe/useful here.
+const requeueProjection = sql.match(/requeue_rows\s+as\s*\((.*?)\)\s*,\s*resume_rows/is)?.[1] || '';
+assert(requeueProjection.length > 0, 'Recovery readout requeue projection must be parseable.');
+assert(!/\ba\.\*/i.test(requeueProjection), 'Recovery readout must not serialize whole requeue archive rows.');
+assert(!/\bsnapshot_json\b/i.test(requeueProjection.replace(/^\s*--.*$/gm, '')), 'Recovery readout must not expose archived snapshot_json.');
+assert(/select\s+a\.id\s*,\s*a\.job_id\s*,\s*a\.reason\s*,\s*a\.created_at/i.test(requeueProjection), 'Recovery readout must expose only sanitized requeue archive identity metadata.');
+
 // Do not pin historical canary IDs or a single segmentation version: the whole point
 // is to discover authoritative marked-canary state and detect stale/mixed evidence.
 assert(!/d7a9cd1d-a2af-4a44-8285-a633e1837dc5/i.test(sql), 'Recovery readout must not pin a historical canary job ID.');
 assert(!/e1c8a911-070a-49d7-8439-abd4654a2a43/i.test(sql), 'Recovery readout must not pin a historical canary job ID.');
 assert(!/segmentation_version\s*=\s*'article_block_local_vertical_segments_v2'/i.test(sql), 'Recovery readout must expose version drift instead of filtering it away.');
 
-console.log('verify-ocr-canary-recovery-readout-v23: ok (read-only, lease-token redacted, recovery evidence scoped, all-marked audit preserved)');
+console.log('verify-ocr-canary-recovery-readout-v23: ok (read-only, lease/snapshot secrets redacted, recovery evidence scoped, all-marked audit preserved)');

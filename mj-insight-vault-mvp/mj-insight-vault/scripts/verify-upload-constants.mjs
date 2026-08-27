@@ -51,13 +51,15 @@ assert(/source_image_already_has_active_articles/.test(atomicMigration), 'Normal
 assert(/p_replace_existing/.test(atomicMigration) && /source_image_reprocessed/.test(atomicMigration), 'Reprocessing must replace old articles inside the same transaction.');
 assert(/exception when unique_violation/.test(atomicMigration), 'Concurrent duplicate insertion must be converted into an auditable duplicate result.');
 assert(/enrichment_status/.test(atomicMigration) && /embedding_failed/.test(atomicMigration), 'Embedding state must be separate from article commit state.');
-assert(/commitSourceImageArticles/.test(processRoute), 'Initial processing must use the atomic commit helper.');
-assert(/replaceExisting: false/.test(processRoute), 'Initial processing must reject accidental append behavior.');
-assert(!/\.from\('articles'\)[\s\S]*?\.insert/.test(processRoute), 'Initial processing must not insert articles one by one.');
-assert(/commitSourceImageArticles/.test(reprocessRoute) && /replaceExisting: true/.test(reprocessRoute), 'Reprocessing must use atomic replacement.');
-assert(!/softDeleteOldArticles/.test(reprocessRoute), 'Reprocessing must not delete old articles before a successful replacement commit.');
-assert(/old_articles_preserved: true/.test(reprocessRoute), 'Reprocess failure response must state that prior articles remain intact.');
-assert(/enrichCommittedArticles/.test(processRoute) && /enrichCommittedArticles/.test(reprocessRoute), 'Embedding must run only after atomic article commit.');
+
+for (const [name, source] of [['process', processRoute], ['reprocess', reprocessRoute]]) {
+  assert(/handleOcrOnly/.test(source), `${name} must delegate to the gated OCR-only path while OCR Verification is not authoritative.`);
+  assert(!/commitSourceImageArticles/.test(source), `${name} must not commit articles before the OCR gate passes.`);
+  assert(!/enrichCommittedArticles/.test(source), `${name} must not enrich articles before the OCR gate passes.`);
+  assert(!/persistCommittedArticleProvenance/.test(source), `${name} must not persist formal article provenance before the OCR gate passes.`);
+  assert(!/\.from\('articles'\)[\s\S]*?\.insert/.test(source), `${name} must not insert articles directly.`);
+}
+
 assert(/upsert\(/.test(commitHelper) && /onConflict: 'article_id'/.test(commitHelper), 'Embedding writes must be idempotent.');
 assert(/recordEnrichmentFailure/.test(commitHelper), 'Embedding failures must be persisted without rolling back articles.');
 
@@ -65,7 +67,6 @@ assert(/source_ocr_sha256/.test(provenanceMigration) && /analysis_text_sha256/.t
 assert(/legacy_vision_llm_reconstruction/.test(provenanceMigration), 'Existing reconstructed articles must be explicitly classified as legacy reconstruction.');
 assert(/provenance_status in \('traceable', 'legacy_traceable'\)/.test(provenanceMigration), 'Formal corpus view must exclude untraceable articles.');
 assert(/article_provenance_audit_v1/.test(provenanceMigration), 'Article provenance hashes must be auditable against current stored text.');
-assert(/persistCommittedArticleProvenance/.test(processRoute) && /persistCommittedArticleProvenance/.test(reprocessRoute), 'Both ingestion paths must persist provenance before enrichment.');
 assert(/createHash\('sha256'\)/.test(commitHelper), 'Runtime provenance must use SHA-256.');
 assert(/vision_llm_reconstruction/.test(commitHelper) && /text_llm_segmentation/.test(commitHelper) && /raw_ocr_fallback/.test(commitHelper), 'Runtime provenance must distinguish all article text paths.');
 assert(/provenance_status: 'traceable'/.test(commitHelper), 'New articles must be explicitly marked traceable after provenance persistence.');

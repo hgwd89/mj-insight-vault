@@ -99,6 +99,8 @@ async function saveFollowupReport(args: {
   followupQuery: string;
   answer: Record<string, unknown>;
   articleIds: string[];
+  parentFormalReport: boolean;
+  evidenceSource: 'formal_corpus_articles_v1' | 'articles';
 }) {
   const answerText = typeof args.answer.answer_text === 'string' ? args.answer.answer_text : JSON.stringify(args.answer);
 
@@ -112,9 +114,11 @@ async function saveFollowupReport(args: {
         parent_report_id: args.parentReportId,
         parent_user_query: args.originalQuery,
         followup_query: args.followupQuery,
-        report_chat: true
+        report_chat: true,
+        parent_formal_report: args.parentFormalReport,
+        evidence_source: args.evidenceSource,
+        formal_corpus_only: args.parentFormalReport
       },
-
       related_article_ids: args.articleIds
     })
     .select('*')
@@ -152,21 +156,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const safeReport = sanitizeReportForDisplay(report);
     const articleIds = Array.isArray(safeReport.related_article_ids) ? safeReport.related_article_ids : [];
+    const formalReport = report.is_formal_report === true;
+    const evidenceSource = formalReport ? 'formal_corpus_articles_v1' : 'articles';
     let articles: LinkedArticle[] = [];
 
     if (articleIds.length > 0) {
-      const { data, error } = await supabaseAdmin
-        .from('articles')
-        .select('id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)')
-        .in('id', articleIds);
+      const result = formalReport
+        ? await supabaseAdmin
+          .from('formal_corpus_articles_v1')
+          .select('id, headline, article_date, ocr_text, status, created_at')
+          .in('id', articleIds)
+        : await supabaseAdmin
+          .from('articles')
+          .select('id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)')
+          .in('id', articleIds);
 
-      if (error) throw error;
+      if (result.error) throw result.error;
 
-      const byId = new Map(((data || []) as RelatedArticle[]).map((article) => [article.id, article]));
+      const rows = (result.data || []) as RelatedArticle[];
+      const byId = new Map(rows.map((article) => [article.id, article]));
       articles = articleIds
         .map((articleId: string) => byId.get(articleId))
         .filter(isRelatedArticle)
         .map((article: RelatedArticle) => addArticleLinks(article));
+
+      if (formalReport && articles.length !== articleIds.length) {
+        const resolvedIds = new Set(rows.map((article) => String(article.id)));
+        const missingIds = articleIds.filter((articleId: string) => !resolvedIds.has(articleId));
+        throw new Error(`formal report chat evidence is no longer present in formal_corpus_articles_v1: ${missingIds.join(',')}`);
+      }
     }
 
     const openai = getOpenAI();
@@ -177,7 +195,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           answer_text: 'OPENAI_API_KEYが未設定のため、レポートへの追加質問に回答できません。',
           model_used: model
         },
-        followup_report: null
+        followup_report: null,
+        evidence_source: evidenceSource,
+        formal_corpus_only: formalReport
       });
     }
 
@@ -211,7 +231,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             report_id: report.id,
             original_user_query: safeReport.user_query,
             answer_text: getReportAnswerText(safeReport),
-            answer_json: safeReport.answer_json || null
+            answer_json: safeReport.answer_json || null,
+            evidence_source: evidenceSource,
+            formal_corpus_only: formalReport
           },
           followup_query: query,
           related_articles: articlePayload
@@ -236,10 +258,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       originalQuery: safeReport.user_query,
       followupQuery: query,
       answer: safeAnswer,
-      articleIds: articles.map((article) => article.id)
+      articleIds: articles.map((article) => article.id),
+      parentFormalReport: formalReport,
+      evidenceSource
     });
 
-    return Response.json({ answer: safeAnswer, followup_report: followup });
+    return Response.json({
+      answer: safeAnswer,
+      followup_report: followup,
+      evidence_source: evidenceSource,
+      formal_corpus_only: formalReport
+    });
   } catch (error) {
     return jsonError(error);
   }

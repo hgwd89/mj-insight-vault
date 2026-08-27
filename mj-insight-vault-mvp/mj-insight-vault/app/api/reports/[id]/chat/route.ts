@@ -93,6 +93,17 @@ function getReportAnswerText(report: Record<string, unknown>) {
   return '';
 }
 
+function usesFormalCorpusEvidence(report: Record<string, unknown>) {
+  if (report.is_formal_report === true) return true;
+
+  const answerJson = report.answer_json;
+  if (!answerJson || typeof answerJson !== 'object' || Array.isArray(answerJson)) return false;
+
+  const metadata = answerJson as Record<string, unknown>;
+  return metadata.formal_corpus_only === true
+    && metadata.evidence_source === 'formal_corpus_articles_v1';
+}
+
 async function saveFollowupReport(args: {
   parentReportId: string;
   originalQuery: string;
@@ -156,12 +167,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const safeReport = sanitizeReportForDisplay(report);
     const articleIds = Array.isArray(safeReport.related_article_ids) ? safeReport.related_article_ids : [];
-    const formalReport = report.is_formal_report === true;
-    const evidenceSource = formalReport ? 'formal_corpus_articles_v1' : 'articles';
+    const formalCorpusOnly = usesFormalCorpusEvidence(report as Record<string, unknown>);
+    const evidenceSource = formalCorpusOnly ? 'formal_corpus_articles_v1' : 'articles';
     let articles: LinkedArticle[] = [];
 
     if (articleIds.length > 0) {
-      const result = formalReport
+      const result = formalCorpusOnly
         ? await supabaseAdmin
           .from('formal_corpus_articles_v1')
           .select('id, headline, article_date, ocr_text, status, created_at')
@@ -180,10 +191,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         .filter(isRelatedArticle)
         .map((article: RelatedArticle) => addArticleLinks(article));
 
-      if (formalReport && articles.length !== articleIds.length) {
+      if (formalCorpusOnly && articles.length !== articleIds.length) {
         const resolvedIds = new Set(rows.map((article) => String(article.id)));
         const missingIds = articleIds.filter((articleId: string) => !resolvedIds.has(articleId));
-        throw new Error(`formal report chat evidence is no longer present in formal_corpus_articles_v1: ${missingIds.join(',')}`);
+        throw new Error(`formal-corpus report chat evidence is no longer present in formal_corpus_articles_v1: ${missingIds.join(',')}`);
       }
     }
 
@@ -197,7 +208,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         },
         followup_report: null,
         evidence_source: evidenceSource,
-        formal_corpus_only: formalReport
+        formal_corpus_only: formalCorpusOnly
       });
     }
 
@@ -233,7 +244,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             answer_text: getReportAnswerText(safeReport),
             answer_json: safeReport.answer_json || null,
             evidence_source: evidenceSource,
-            formal_corpus_only: formalReport
+            formal_corpus_only: formalCorpusOnly
           },
           followup_query: query,
           related_articles: articlePayload
@@ -259,7 +270,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       followupQuery: query,
       answer: safeAnswer,
       articleIds: articles.map((article) => article.id),
-      parentFormalReport: formalReport,
+      parentFormalReport: formalCorpusOnly,
       evidenceSource
     });
 
@@ -267,7 +278,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       answer: safeAnswer,
       followup_report: followup,
       evidence_source: evidenceSource,
-      formal_corpus_only: formalReport
+      formal_corpus_only: formalCorpusOnly
     });
   } catch (error) {
     return jsonError(error);

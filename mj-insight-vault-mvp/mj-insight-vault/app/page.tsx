@@ -1,22 +1,19 @@
 import Link from 'next/link';
-import { Upload, MessageSquare, Tags, Newspaper } from 'lucide-react';
+import { Database, Upload } from 'lucide-react';
 
 const tiles = [
-  { href: '/upload', title: '画像アップロード', body: 'MJ画像を投入し、OCRと記事候補化を実行します。', icon: Upload },
-  { href: '/articles', title: '記事一覧', body: '蓄積した記事を確認し、不要記事・重複候補を整理します。', icon: Newspaper },
-  { href: '/chat', title: 'チャット分析', body: '蓄積記事から生活者変化・業界課題・手法適性を分析します。', icon: MessageSquare },
-  { href: '/tags', title: 'タグ管理', body: '業界、生活者圧力、行動変化、手法タグを追加・編集します。', icon: Tags }
+  { href: '/upload', title: '画像を保存してOCR', body: '新しい画像をストックし、Google OCRを1枚ずつ実行します。', icon: Upload },
+  { href: '/ocr-stock', title: 'OCRストック', body: '保存済み画像とOCR本文を確認・コピーし、未処理だけ再実行します。', icon: Database }
 ];
 
 export default function HomePage() {
   return (
     <div className="space-y-6">
       <div className="card p-6">
-        <p className="text-sm font-semibold text-zinc-500">MJ Insight Vault</p>
-        <h1 className="mt-2 text-2xl font-black tracking-tight">MJ記事をリサーチ仮説DBに変換する</h1>
+        <p className="text-sm font-semibold text-emerald-700">OCR-only 低負荷モード</p>
+        <h1 className="mt-2 text-2xl font-black tracking-tight">MJ資料を保存して、OCR本文までストックする</h1>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-600">
-          キャプチャ画像を保存し、OCRで記事候補化。通常は「記事一覧」で整理し、
-          チャットで生活者変化・リサーチ課題・提案書ネタへ変換します。
+          無料Nano compute向けに処理を縮退しています。現在は画像保管とGoogle OCRだけを使い、記事候補化、Embedding、分類、テーマ分析、レポート生成、538件一括OCRは実行しません。
         </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
@@ -25,7 +22,7 @@ export default function HomePage() {
           return (
             <Link key={tile.href} href={tile.href} className="card p-5 hover:border-zinc-400">
               <div className="flex items-start gap-4">
-                <div className="rounded-2xl bg-amber-100 p-3"><Icon className="h-5 w-5" /></div>
+                <div className="rounded-2xl bg-emerald-100 p-3"><Icon className="h-5 w-5" /></div>
                 <div>
                   <h2 className="font-bold">{tile.title}</h2>
                   <p className="mt-1 text-sm leading-6 text-zinc-600">{tile.body}</p>

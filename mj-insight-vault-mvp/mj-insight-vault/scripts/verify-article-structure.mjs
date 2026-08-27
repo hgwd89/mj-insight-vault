@@ -15,6 +15,7 @@ const segmentation = read('lib/articleSegmentation.ts');
 const text = read('lib/text.ts');
 const processRoute = read('app/api/source-images/[id]/process/route.ts');
 const reprocessRoute = read('app/api/source-images/[id]/reprocess/route.ts');
+const ocrOnlyRoute = read('app/api/source-images/[id]/ocr-only/route.ts');
 const articlesApi = read('app/api/articles/route.ts');
 const articleDetailApi = read('app/api/articles/[id]/route.ts');
 const fixtures = JSON.parse(read('scripts/fixtures/article-structure-cases.json'));
@@ -54,9 +55,21 @@ assert(!/【GPT画像構造化失敗】/.test(segmentation), 'GPT structuring fa
 assert(/fallbackArticle\(normalizedOcr\)/.test(segmentation), 'Fallback article must use clean OCR text.');
 
 assert(/normalizeOcrText/.test(text), 'OCR text normalization helper is missing.');
-assert(/ocr_text_raw/.test(processRoute) && /ocr_json/.test(processRoute), 'OCR raw text and OCR JSON must be stored on process.');
-assert(/ocr_text_raw/.test(reprocessRoute) && /ocr_json/.test(reprocessRoute), 'OCR raw text and OCR JSON must be stored on reprocess.');
-assert(/source_image_id/.test(processRoute) && /batch_id/.test(processRoute), 'Created articles must retain source image and batch linkage.');
+
+// Nano-safe mode must fail closed: the public process/reprocess endpoints may OCR source
+// images but must not segment, commit, enrich, classify, or report until the authoritative
+// OCR rollout gate has passed and the gated downstream pipeline takes over.
+for (const [name, route] of [['process', processRoute], ['reprocess', reprocessRoute]]) {
+  assert(/handleOcrOnly/.test(route) && /POST\s*=\s*handleOcrOnly/.test(route), `${name} must delegate to the OCR-only route.`);
+  assert(!/segmentArticlesFromImage|commitSourceImageArticles|enrichCommittedArticles/.test(route), `${name} must not bypass the OCR verification gate.`);
+}
+
+assert(/ocr_text_raw/.test(ocrOnlyRoute), 'OCR-only processing must store normalized OCR text.');
+assert(!/ocr_json\s*:/.test(ocrOnlyRoute), 'Nano OCR-only processing must not persist raw provider JSON.');
+assert(/raw_provider_json_written:\s*false/.test(ocrOnlyRoute), 'OCR-only response must state that raw provider JSON was not written.');
+assert(/articles_created:\s*0/.test(ocrOnlyRoute), 'OCR-only processing must not create articles.');
+assert(!/segmentArticlesFromImage|commitSourceImageArticles|enrichCommittedArticles/.test(ocrOnlyRoute), 'OCR-only route must not start formal downstream work.');
+
 assert(/source_images(?:![^(]+)?\(id, file_name, storage_path, mime_type\)/.test(articlesApi), 'Articles API should expose source image metadata.');
 assert(/article_tags/.test(articleDetailApi), 'Article detail API should preserve article tags.');
 

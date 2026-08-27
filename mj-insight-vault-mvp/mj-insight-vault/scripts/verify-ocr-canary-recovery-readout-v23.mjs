@@ -34,7 +34,13 @@ for (const invariant of [
   'failed_output_contracts',
   'failed_proper_noun_checks',
   'receipts_with_unreadable_marker',
+  'lease_summary',
+  'has_lease_token',
   'lease_expires_at',
+  'lease_state',
+  "'active'",
+  "'expired'",
+  "'none'",
   'current_database()',
   "current_setting('server_version')"
 ]) {

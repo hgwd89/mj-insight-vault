@@ -9,6 +9,7 @@ const route = fs.readFileSync(path.join(root, 'app/api/internal/ocr-consensus-pi
 const migration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826103000_add_block_local_piece_receipts_v18.sql'), 'utf8');
 const bindingMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826162500_harden_v21_piece_receipt_binding.sql'), 'utf8');
 const restartMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20260826163000_add_atomic_v21_canary_restart_v22.sql'), 'utf8');
+const drainHardeningMigration = fs.readFileSync(path.join(root, 'supabase/migrations/20260827022000_harden_v18_canary_drain_failed_state_v25.sql'), 'utf8');
 
 function assert(condition, message) { if (!condition) throw new Error(message); }
 
@@ -101,5 +102,24 @@ for (const invariant of [
 assert(restartMigration.includes("j.status not in ('failed','queued','running')"), 'Atomic restart must reject completed or unexpected job states.');
 assert(restartMigration.includes('j.failure_count<>0') && restartMigration.includes('j.lease_token is not null'), 'Atomic restart must verify clean queued state after archive/requeue.');
 assert(!restartMigration.includes('decide_ocr_consensus_article_v11'), 'Atomic restart must not alter v11 consensus thresholds.');
+
+// Expired-lease recovery must never report completion when retry exhaustion leaves
+// a failed canary behind. Failed canaries are an operator-visible hard stop.
+for (const invariant of [
+  "count(*) filter(where status='failed')",
+  'v_failed>0',
+  "'status','blocked_failed'",
+  "'failed',v_failed",
+  "jobname='ocr_consensus_piece_v18_canary_drain'",
+  "cron.unschedule('ocr_consensus_piece_v18_canary_drain')",
+  "jsonb_build_object('status','complete','cron_unscheduled',true,'failed',0)"
+]) {
+  assert(drainHardeningMigration.includes(invariant), `Canary drain fail-close invariant missing: ${invariant}`);
+}
+assert(
+  drainHardeningMigration.indexOf('if v_failed>0 then') < drainHardeningMigration.indexOf('if v_active=0 then'),
+  'Canary drain must distinguish failed canaries before declaring completion.'
+);
+assert(!drainHardeningMigration.includes('decide_ocr_consensus_article_v11'), 'Canary drain hardening must not alter consensus thresholds.');
 
 console.log('verify-ocr-piece-v18: ok');

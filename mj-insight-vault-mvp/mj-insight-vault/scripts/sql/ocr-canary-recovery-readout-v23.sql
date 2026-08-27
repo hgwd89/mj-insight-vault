@@ -25,8 +25,8 @@ recovery_candidate_jobs as (
   from canary_jobs
   where status in ('failed','queued','running')
 ),
-canary_ids as (
-  select id from canary_jobs
+recovery_candidate_ids as (
+  select id from recovery_candidate_jobs
 ),
 lease_summary as (
   select
@@ -43,7 +43,7 @@ lease_summary as (
     j.error_message,
     j.updated_at,
     j.finished_at
-  from canary_jobs j
+  from recovery_candidate_jobs j
 ),
 piece_summary as (
   select
@@ -60,7 +60,7 @@ piece_summary as (
     count(*) filter (where r.proper_noun_status = 'failed')::integer as failed_proper_noun_checks,
     count(*) filter (where position('〓' in r.transcription) > 0)::integer as receipts_with_unreadable_marker
   from public.ocr_independent_segment_receipts_v16 r
-  where r.job_id in (select id from canary_ids)
+  where r.job_id in (select id from recovery_candidate_ids)
   group by r.job_id,r.pass_kind,r.article_id,r.segmentation_version
 ),
 transcription_summary as (
@@ -75,28 +75,28 @@ transcription_summary as (
     position('〓' in t.transcription) > 0 as has_unreadable_marker,
     t.created_at
   from public.ocr_independent_transcriptions_v11 t
-  where t.job_id in (select id from canary_ids)
+  where t.job_id in (select id from recovery_candidate_ids)
 ),
 decision_rows as (
   select d.*
   from public.ocr_consensus_decisions_v11 d
-  where d.job_id in (select id from canary_ids)
+  where d.job_id in (select id from recovery_candidate_ids)
 ),
 canonical_rows as (
   select v.*
   from public.article_ocr_verifications_v11 v
-  where v.source_consensus_job_id in (select id from canary_ids)
+  where v.source_consensus_job_id in (select id from recovery_candidate_ids)
 ),
 requeue_rows as (
   select a.*
   from public.ocr_consensus_requeue_archives_v12 a
-  where a.job_id in (select id from canary_ids)
+  where a.job_id in (select id from recovery_candidate_ids)
   order by a.created_at desc
 ),
 resume_rows as (
   select r.*
   from public.ocr_consensus_resume_receipts_v19 r
-  where r.job_id in (select id from canary_ids)
+  where r.job_id in (select id from recovery_candidate_ids)
   order by r.created_at desc
 )
 select jsonb_build_object(
@@ -135,9 +135,19 @@ select jsonb_build_object(
     select jsonb_agg(to_jsonb(v) order by v.source_consensus_job_id,v.article_id) from canonical_rows v
   ), '[]'::jsonb),
   'method_comparison_v19', coalesce((
+    select jsonb_agg(to_jsonb(c))
+    from public.ocr_canary_method_comparison_v19 c
+    where c.consensus_job_id in (select id from recovery_candidate_ids)
+  ), '[]'::jsonb),
+  'method_comparison_v19_all_marked', coalesce((
     select jsonb_agg(to_jsonb(c)) from public.ocr_canary_method_comparison_v19 c
   ), '[]'::jsonb),
   'fidelity_v22', coalesce((
+    select jsonb_agg(to_jsonb(f))
+    from public.ocr_canary_fidelity_v22 f
+    where f.consensus_job_id in (select id from recovery_candidate_ids)
+  ), '[]'::jsonb),
+  'fidelity_v22_all_marked', coalesce((
     select jsonb_agg(to_jsonb(f)) from public.ocr_canary_fidelity_v22 f
   ), '[]'::jsonb),
   'ocr_verification_gate_v2', coalesce((

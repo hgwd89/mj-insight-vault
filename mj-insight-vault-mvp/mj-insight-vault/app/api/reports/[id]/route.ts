@@ -31,22 +31,36 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     let related_articles: unknown[] = [];
     const allArticleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
     const articleIds = allArticleIds.slice(0, limit);
+    const formalReport = report.is_formal_report === true;
 
     if (articleIds.length > 0) {
-      const result = includeOcr
-        ? await supabaseAdmin
-          .from('articles')
-          .select('id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)')
-          .in('id', articleIds)
-        : await supabaseAdmin
-          .from('articles')
-          .select('id, headline, article_date, status, created_at, article_tags(tag_type, tag_name)')
-          .in('id', articleIds);
+      // Formal reports must resolve their evidence from the same verified corpus contract used
+      // during full-corpus analysis. Reading mutable raw `articles` here can make a saved formal
+      // proof point at evidence that no longer belongs to the verified corpus.
+      const evidenceSource = formalReport ? 'formal_corpus_articles_v1' : 'articles';
+      const select = formalReport
+        ? includeOcr
+          ? 'id, headline, article_date, ocr_text, status, created_at'
+          : 'id, headline, article_date, status, created_at'
+        : includeOcr
+          ? 'id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)'
+          : 'id, headline, article_date, status, created_at, article_tags(tag_type, tag_name)';
+
+      const result = await supabaseAdmin
+        .from(evidenceSource)
+        .select(select)
+        .in('id', articleIds);
 
       if (result.error) throw result.error;
 
       const byId = new Map((result.data || []).map((article) => [article.id, article]));
       related_articles = articleIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
+
+      if (formalReport && related_articles.length !== articleIds.length) {
+        const resolvedIds = new Set((result.data || []).map((article) => String(article.id)));
+        const missingIds = articleIds.filter((articleId: string) => !resolvedIds.has(articleId));
+        throw new Error(`formal report evidence is no longer present in formal_corpus_articles_v1: ${missingIds.join(',')}`);
+      }
     }
 
     return Response.json({
@@ -56,7 +70,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         total_related_ids: allArticleIds.length,
         returned: related_articles.length,
         include_ocr: includeOcr,
-        limit
+        limit,
+        evidence_source: formalReport ? 'formal_corpus_articles_v1' : 'articles',
+        formal_corpus_only: formalReport
       }
     });
   } catch (error) {

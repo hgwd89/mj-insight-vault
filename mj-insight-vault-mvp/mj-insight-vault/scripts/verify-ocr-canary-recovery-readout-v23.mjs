@@ -35,6 +35,7 @@ for (const invariant of [
   'failed_proper_noun_checks',
   'receipts_with_unreadable_marker',
   'lease_summary',
+  'lease_token is not null as has_lease_token',
   'has_lease_token',
   'lease_expires_at',
   'lease_state',
@@ -52,6 +53,15 @@ for (const invariant of [
   assert(sql.includes(invariant), `Recovery readout invariant missing: ${invariant}`);
 }
 
+// The readout may expose whether a lease exists, but never the lease token itself.
+// canary_jobs is serialized wholesale below, so its projection must be explicitly
+// sanitized rather than SELECT * from ocr_consensus_jobs_v11.
+assert(!/canary_jobs\s+as\s*\(\s*select\s+\*/is.test(sql), 'Recovery readout must not serialize raw OCR consensus job rows.');
+const canaryProjection = sql.match(/canary_jobs\s+as\s*\((.*?)\)\s*,\s*canary_ids/is)?.[1] || '';
+assert(canaryProjection.length > 0, 'Recovery readout canary_jobs projection must be parseable.');
+assert(!/\blease_token\s*(?:,|\bas\b)/i.test(canaryProjection), 'Recovery readout must not project the raw lease token.');
+assert(/\blease_token\s+is\s+not\s+null\s+as\s+has_lease_token\b/i.test(canaryProjection), 'Recovery readout must expose only lease-token presence.');
+
 // Do not pin historical canary IDs or a single segmentation version: the whole point
 // is to discover authoritative marked-canary state and detect stale/mixed evidence.
 // Cardinality is reported separately and must visibly fail closed when it is not two.
@@ -59,4 +69,4 @@ assert(!/d7a9cd1d-a2af-4a44-8285-a633e1837dc5/i.test(sql), 'Recovery readout mus
 assert(!/e1c8a911-070a-49d7-8439-abd4654a2a43/i.test(sql), 'Recovery readout must not pin a historical canary job ID.');
 assert(!/segmentation_version\s*=\s*'article_block_local_vertical_segments_v2'/i.test(sql), 'Recovery readout must expose version drift instead of filtering it away.');
 
-console.log('verify-ocr-canary-recovery-readout-v23: ok (single read-only statement, marked canaries, cardinality guard, full recovery evidence)');
+console.log('verify-ocr-canary-recovery-readout-v23: ok (read-only, lease-token redacted, cardinality guard, full recovery evidence)');

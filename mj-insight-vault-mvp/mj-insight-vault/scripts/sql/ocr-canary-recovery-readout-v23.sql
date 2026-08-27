@@ -3,7 +3,20 @@
 -- production database after connectivity returns, before any restart or 538-job rollout.
 
 with canary_jobs as (
-  select *
+  select
+    id,
+    source_job_id,
+    pipeline_version,
+    article_count,
+    is_canary,
+    status,
+    failure_count,
+    lease_token is not null as has_lease_token,
+    lease_expires_at,
+    error_message,
+    created_at,
+    updated_at,
+    finished_at
   from public.ocr_consensus_jobs_v11
   where is_canary is true
 ),
@@ -15,7 +28,7 @@ lease_summary as (
     j.id as job_id,
     j.status,
     j.failure_count,
-    j.lease_token is not null as has_lease_token,
+    j.has_lease_token,
     j.lease_expires_at,
     case
       when j.lease_expires_at is null then 'none'

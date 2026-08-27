@@ -58,6 +58,20 @@ async function currentSchedulerState() {
   return { state, system_safety_gate: safety?.system_safety_gate || null };
 }
 
+async function currentOcrConsensusFullRolloutGate() {
+  const { data, error } = await supabaseAdmin
+    .from('ocr_consensus_full_rollout_gate_v28')
+    .select('rollout_gate,reason,release_receipt_id,cohort_id')
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    rollout_gate: String(data?.rollout_gate || ''),
+    reason: String(data?.reason || ''),
+    release_receipt_id: data?.release_receipt_id ? String(data.release_receipt_id) : null,
+    cohort_id: data?.cohort_id ? String(data.cohort_id) : null
+  };
+}
+
 async function claimSchedulerRun() {
   const { data, error } = await supabaseAdmin.rpc('claim_verified_pipeline_scheduler_run_v1', {
     p_lease_seconds: SCHEDULER_LEASE_SECONDS
@@ -131,6 +145,12 @@ async function nextQueuedReportJob() {
 
 async function runStrictPipelineTick() {
   const trace: Array<{ stage: string; result: unknown }> = [];
+
+  const ocrConsensusRollout = await currentOcrConsensusFullRolloutGate();
+  trace.push({ stage: 'ocr_consensus_full_rollout_gate', result: ocrConsensusRollout });
+  if (ocrConsensusRollout.rollout_gate !== 'passed') {
+    return { stage: 'blocked', blocked_at: 'ocr_consensus_full_rollout', gate: ocrConsensusRollout, trace };
+  }
 
   const ocr = await runWorkerBatch('ocr_verification', 2, runOcrVerificationWorkerStep);
   trace.push({ stage: 'ocr_verification', result: ocr });

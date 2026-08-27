@@ -41,6 +41,11 @@ for (const invariant of [
   "'active'",
   "'expired'",
   "'none'",
+  "'expected_canary_job_count', 2",
+  'canary_cardinality_matches_expected',
+  'canary_cardinality_status',
+  "'expected_two'",
+  "'unexpected_count'",
   'current_database()',
   "current_setting('server_version')"
 ]) {
@@ -48,9 +53,10 @@ for (const invariant of [
 }
 
 // Do not pin historical canary IDs or a single segmentation version: the whole point
-// is to discover authoritative current state and detect legacy/mixed evidence.
+// is to discover authoritative marked-canary state and detect stale/mixed evidence.
+// Cardinality is reported separately and must visibly fail closed when it is not two.
 assert(!/d7a9cd1d-a2af-4a44-8285-a633e1837dc5/i.test(sql), 'Recovery readout must not pin a historical canary job ID.');
 assert(!/e1c8a911-070a-49d7-8439-abd4654a2a43/i.test(sql), 'Recovery readout must not pin a historical canary job ID.');
 assert(!/segmentation_version\s*=\s*'article_block_local_vertical_segments_v2'/i.test(sql), 'Recovery readout must expose version drift instead of filtering it away.');
 
-console.log('verify-ocr-canary-recovery-readout-v23: ok (single read-only statement, current canaries only, full recovery evidence)');
+console.log('verify-ocr-canary-recovery-readout-v23: ok (single read-only statement, marked canaries, cardinality guard, full recovery evidence)');

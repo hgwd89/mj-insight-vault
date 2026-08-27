@@ -32,7 +32,6 @@ assert(bridge.includes('buildArticleBlockReadingPiecesV21 as buildArticleBlockRe
 assert(bridge.includes('ARTICLE_BLOCK_READING_VERSION_V21 as ARTICLE_BLOCK_READING_VERSION_V17'), 'Compatibility version export must point to the V21 persisted version.');
 assert(readingV21.includes("ARTICLE_BLOCK_READING_VERSION_V21 = 'article_block_local_vertical_segments_v2'"), 'V21 must persist a new segmentation version so v1 receipts cannot mix silently.');
 
-// V21 must split extremely tall/narrow OCR blocks on horizontal low-ink gaps.
 for (const invariant of [
   'TALL_COLUMN_MIN_HEIGHT = 260',
   'TALL_COLUMN_MIN_ASPECT = 4.5',
@@ -65,15 +64,17 @@ assert(!migration.includes('decide_ocr_consensus_article_v11'), 'v18 receipt mig
 assert(migration.includes('block_index') && migration.includes('source_left'), 'Piece receipts must retain local geometry provenance.');
 
 assert(route.includes('requireAppPassword(req)'), 'v18 route must remain authenticated.');
-assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 2, 'Route source must contain exactly two parallel worker slots.');
+assert((route.match(/runOcrConsensusPieceV18Step\(\)/g) || []).length === 1, 'Nano canary route must execute exactly one worker step per HTTP request.');
+assert(!route.includes('Promise.all(['), 'Nano canary route must not fan out multiple OCR workers inside one request.');
 assert(!route.includes('for (let round = 0; round < 2; round += 1)'), 'Route must not run a second sequential round inside one Vercel request.');
-assert(route.includes('const rounds = [await Promise.all(['), 'Route must run exactly one two-worker parallel round per request.');
-assert(route.includes('async function assertNoLegacyCanaryPieceReceipts()'), 'Route must preflight persisted canary pieces before any worker call.');
-assert(route.indexOf('await assertNoLegacyCanaryPieceReceipts()') < route.indexOf('const rounds = [await Promise.all(['), 'Legacy receipt preflight must run before the parallel OCR worker round starts.');
-assert(route.includes('ARTICLE_BLOCK_READING_VERSION_V21'), 'Route preflight must compare persisted receipts to the canonical V21 version constant.');
-assert(route.includes(".in('status', ['queued', 'running'])"), 'Route preflight must inspect only runnable canaries, not completed historical canaries.');
-assert(route.includes(".select('job_id,segmentation_version')"), 'Route preflight must inspect persisted segmentation versions.');
-assert(route.includes('Archive/requeue the canaries before resuming.'), 'Legacy receipt failure must direct operators to archive/requeue rather than silently resume.');
+assert(route.includes(".from('ocr_consensus_canary_runtime_v32')"), 'Route must bind execution to the explicit Nano canary runtime.');
+assert(route.includes('if (!runtime?.active)'), 'Route must remain paused without an explicitly active canary cohort.');
+assert(route.includes('if (allowed.size !== 2)'), 'Route must require an exact two-job canary binding.');
+assert(route.includes(".eq('is_canary', true)"), 'Route runtime preflight must inspect canaries only.');
+assert(route.includes(".in('status', ['queued', 'running'])"), 'Route runtime preflight must inspect runnable canaries only.');
+assert(route.includes('active canary job(s) outside the bound cohort'), 'Route must fail closed on runnable canaries outside the bound cohort.');
+assert(route.indexOf('const runtime = await getNanoCanaryRuntime()') < route.indexOf('const result = await runOcrConsensusPieceV18Step()'), 'Runtime scope validation must happen before the OCR worker call.');
+assert(route.includes('full_rollout_execution: false'), 'Route must explicitly keep full rollout execution disabled.');
 
 for (const invariant of [
   "'whole_block','vertical_segment','vertical_band','vertical_segment_band'",
@@ -103,8 +104,6 @@ assert(restartMigration.includes("j.status not in ('failed','queued','running')"
 assert(restartMigration.includes('j.failure_count<>0') && restartMigration.includes('j.lease_token is not null'), 'Atomic restart must verify clean queued state after archive/requeue.');
 assert(!restartMigration.includes('decide_ocr_consensus_article_v11'), 'Atomic restart must not alter v11 consensus thresholds.');
 
-// Expired-lease recovery must never report completion when retry exhaustion leaves
-// a failed canary behind. Failed canaries are an operator-visible hard stop.
 for (const invariant of [
   "count(*) filter(where status='failed')",
   'v_failed>0',

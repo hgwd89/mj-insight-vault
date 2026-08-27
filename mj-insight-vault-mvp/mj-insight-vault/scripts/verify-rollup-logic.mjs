@@ -77,8 +77,8 @@ assert(/invalid_ready_months/.test(rollupPage), 'Rollup UI must expose invalid l
 
 assert(/update public\.monthly_rollups/.test(atomicArticleMigration), 'Atomic article creation must stale affected rollup months in the same transaction.');
 assert(/v_affected_dates/.test(atomicArticleMigration), 'Atomic replacement must include both retired and newly created article months.');
-assert(/stale_rollup_months/.test(processRoute), 'New OCR article response must expose invalidated rollup months.');
-assert(/stale_rollup_months/.test(reprocessRoute), 'Reprocess response must expose invalidated rollup months.');
+assert(/handleOcrOnly/.test(processRoute) && !/stale_rollup_months/.test(processRoute), 'OCR-only process must not claim rollup invalidation before an article commit occurs.');
+assert(/handleOcrOnly/.test(reprocessRoute) && !/stale_rollup_months/.test(reprocessRoute), 'OCR-only reprocess must not claim rollup invalidation before an article commit occurs.');
 assert(/buildMonthlyRollupContext/.test(chatRouteNo160), 'Chat analysis route must build monthly rollup context.');
 assert(!/buildMonthlyRollupContext/.test(chatJobRun), 'Chat job run must not inject monthly rollup context separately.');
 assert(/runChatAnalysis/.test(chatJobRun), 'Chat job run must use the shared chat analysis route.');

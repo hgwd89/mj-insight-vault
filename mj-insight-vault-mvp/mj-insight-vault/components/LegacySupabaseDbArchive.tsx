@@ -41,18 +41,20 @@ export function LegacySupabaseDbArchive() {
     await jsonOrError(bootstrap);
   }
 
-  async function loadStatus() {
+  async function loadStatus(): Promise<string[]> {
     await ensureNeonSession();
     const res = await fetch('/api/cloud-stock/import-supabase-db', {
       headers: { 'x-app-password': appPassword }
     });
     const json = await jsonOrError(res);
-    const essential = Array.isArray(json.essential_tables) ? json.essential_tables.map(String) : [];
+    const essential: string[] = Array.isArray(json.essential_tables)
+      ? json.essential_tables.map((value: unknown) => String(value))
+      : [];
     const rows = Array.isArray(json.status) ? json.status as TableStatus[] : [];
     setTables(essential);
     setStatus(rows);
     if (!progress.length) {
-      setProgress(essential.map((table) => ({ table, status: '待機', archived: 0 })));
+      setProgress(essential.map((table: string) => ({ table, status: '待機', archived: 0 })));
     }
     setMessage(`Neon退避済み ${rows.reduce((sum, row) => sum + Number(row.archived_count || 0), 0)}行。Supabase削除releaseは未許可です。`);
     return essential;
@@ -72,7 +74,7 @@ export function LegacySupabaseDbArchive() {
     setMessage('必須DBデータの退避を開始します。Supabase側は読み取りのみです。');
 
     try {
-      const essential = tables.length ? tables : await loadStatus();
+      const essential: string[] = tables.length ? tables : await loadStatus();
       for (const table of essential) {
         patchProgress(table, { status: '処理中', archived: 0, error: undefined });
         let offset = 0;

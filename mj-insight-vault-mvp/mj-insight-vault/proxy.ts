@@ -7,6 +7,7 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/auth') return method === 'GET' || method === 'POST' || method === 'DELETE';
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/upload') return method === 'POST';
+  if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
   return false;
 }
 
@@ -22,7 +23,7 @@ export function proxy(request: NextRequest) {
 
   return NextResponse.json({
     ok: false,
-    error: 'MJ Insight Vault is running in free cloud-stock mode. Only Google Drive + Neon stock APIs are enabled. Supabase writes, OCR, classification, analysis, reports, and full rollout remain locked.',
+    error: 'MJ Insight Vault is running in free cloud-stock mode. Only Google Drive + Neon stock APIs and the read-only legacy Supabase Storage import are enabled. Supabase writes, OCR, classification, analysis, reports, and full rollout remain locked.',
     mode: 'ocr_only',
     storage_mode: 'google_drive_neon',
     supabase_mode: 'legacy_frozen',

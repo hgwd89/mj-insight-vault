@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
 import { supabaseAdmin, STORAGE_BUCKET } from '@/lib/supabaseAdmin';
-import { backupImageToGoogleDrive, resolveWritableGoogleDriveFolder } from '@/lib/googleDriveBackup';
+import {
+  backupImageToGoogleDrive,
+  findGoogleDriveFileByName,
+  resolveWritableGoogleDriveFolder
+} from '@/lib/googleDriveBackup';
 import { GOOGLE_DRIVE_ORIGINALS_FOLDER_ID } from '@/lib/neonCloud';
 
 export const runtime = 'nodejs';
@@ -120,6 +124,28 @@ export async function POST(req: NextRequest) {
     const results: Array<Record<string, unknown>> = [];
     for (const sourcePath of requested) {
       try {
+        const driveFileName = legacyDriveName(sourcePath);
+        const originalFileName = sourcePath.split('/').filter(Boolean).pop() || sourcePath;
+        const existing = await findGoogleDriveFileByName(destination.folderId, driveFileName);
+        if (existing.error) throw new Error(existing.error);
+
+        if (existing.found && existing.file_id) {
+          results.push({
+            ok: true,
+            reused: true,
+            source_path: sourcePath,
+            source_bucket: STORAGE_BUCKET,
+            original_file_name: originalFileName,
+            mime_type: existing.mime_type || null,
+            file_size_bytes: existing.size ?? null,
+            drive_file_id: existing.file_id,
+            drive_folder_id: destination.folderId,
+            drive_file_name: existing.file_name || driveFileName,
+            web_view_link: existing.web_view_link || null
+          });
+          continue;
+        }
+
         const { data, error } = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(sourcePath);
         if (error || !data) throw new Error(error?.message || 'Supabase Storage download returned no data.');
         const buffer = Buffer.from(await data.arrayBuffer());
@@ -131,7 +157,7 @@ export async function POST(req: NextRequest) {
         const mimeType = data.type || 'application/octet-stream';
         const drive = await backupImageToGoogleDrive({
           buffer,
-          fileName: legacyDriveName(sourcePath),
+          fileName: driveFileName,
           mimeType,
           batchId: `legacy-supabase-${STORAGE_BUCKET}`.slice(0, 120),
           index: Number.parseInt(hash.slice(0, 8), 16),
@@ -142,14 +168,15 @@ export async function POST(req: NextRequest) {
 
         results.push({
           ok: true,
+          reused: false,
           source_path: sourcePath,
           source_bucket: STORAGE_BUCKET,
-          original_file_name: sourcePath.split('/').filter(Boolean).pop() || sourcePath,
+          original_file_name: originalFileName,
           mime_type: mimeType,
           file_size_bytes: buffer.length,
           drive_file_id: drive.file_id,
           drive_folder_id: drive.folder_id || destination.folderId,
-          drive_file_name: legacyDriveName(sourcePath),
+          drive_file_name: driveFileName,
           web_view_link: drive.web_view_link || null
         });
       } catch (error) {
@@ -163,7 +190,8 @@ export async function POST(req: NextRequest) {
 
     return Response.json({
       ok: results.every((row) => row.ok === true),
-      copied: results.filter((row) => row.ok === true).length,
+      copied: results.filter((row) => row.ok === true && row.reused !== true).length,
+      reused: results.filter((row) => row.ok === true && row.reused === true).length,
       failed: results.filter((row) => row.ok !== true).length,
       source_deleted: false,
       downstream_started: false,

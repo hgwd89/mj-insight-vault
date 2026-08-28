@@ -8,6 +8,7 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/upload') return method === 'POST';
   if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
+  if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
   return false;
 }
 

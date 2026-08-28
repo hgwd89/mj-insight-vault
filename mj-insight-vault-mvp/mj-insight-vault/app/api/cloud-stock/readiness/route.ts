@@ -1,10 +1,11 @@
-import { resolveWritableGoogleDriveFolder } from '@/lib/googleDriveBackup';
+import { getGoogleDriveBackupConfig, resolveWritableGoogleDriveFolder } from '@/lib/googleDriveBackup';
 import { GOOGLE_DRIVE_ORIGINALS_FOLDER_ID, NEON_DATA_API_URL } from '@/lib/neonCloud';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  const config = getGoogleDriveBackupConfig();
   const destination = await resolveWritableGoogleDriveFolder(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID);
   return Response.json({
     ok: destination.ok,
@@ -16,6 +17,7 @@ export async function GET() {
       writable: destination.ok,
       active_folder_id: destination.ok ? destination.folderId : null,
       preferred_folder_used: destination.ok ? destination.folderId === GOOGLE_DRIVE_ORIGINALS_FOLDER_ID : false,
+      service_account_email: config.clientEmail || null,
       error: destination.ok ? null : destination.error
     },
     neon: {

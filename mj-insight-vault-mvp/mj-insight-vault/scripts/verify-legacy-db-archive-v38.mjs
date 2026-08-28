@@ -9,6 +9,9 @@ function requireText(source, text, label) {
 function forbidText(source, text, label) {
   if (source.includes(text)) throw new Error(`${label}: forbidden ${text}`);
 }
+function forbidPattern(source, pattern, label) {
+  if (pattern.test(source)) throw new Error(`${label}: forbidden pattern ${pattern}`);
+}
 
 const route = read('app/api/cloud-stock/import-supabase-db/route.ts');
 const ui = read('components/LegacySupabaseDbArchive.tsx');
@@ -39,16 +42,20 @@ for (const text of [
   'source_deleted: false',
   'downstream_started: false'
 ]) requireText(route, text, 'essential DB archive route');
+
+for (const pattern of [
+  /supabaseAdmin[\s\S]{0,400}\.delete\(/,
+  /supabaseAdmin[\s\S]{0,400}\.update\(/,
+  /supabaseAdmin[\s\S]{0,400}\.insert\(/,
+  /supabaseAdmin[\s\S]{0,400}\.upsert\(/,
+  /supabaseAdmin[\s\S]{0,400}storage[\s\S]{0,300}\.remove\(/
+]) forbidPattern(route, pattern, 'Supabase DB rescue must remain source-read-only');
 for (const forbidden of [
-  '.delete(',
-  '.remove(',
-  '.update(',
-  '.insert(',
   "method: 'DELETE'",
   'runDocumentOcr',
   'segmentArticlesFromImage',
   'openai'
-]) forbidText(route, forbidden, 'Supabase DB rescue must remain source-read-only and downstream-closed');
+]) forbidText(route, forbidden, 'Supabase DB rescue must remain downstream-closed');
 
 for (const text of [
   '/api/cloud-stock/import-supabase-db',

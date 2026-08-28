@@ -1,6 +1,11 @@
 import { LegacySupabaseImport } from '@/components/LegacySupabaseImport';
+import { LegacySupabaseDbArchive } from '@/components/LegacySupabaseDbArchive';
 
-// Production redeploy receipt: legacy import remains read-only and idempotent.
 export default function LegacyImportPage() {
-  return <LegacySupabaseImport />;
+  return (
+    <div className="space-y-5">
+      <LegacySupabaseImport />
+      <LegacySupabaseDbArchive />
+    </div>
+  );
 }

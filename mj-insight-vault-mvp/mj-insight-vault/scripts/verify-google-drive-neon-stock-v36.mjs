@@ -11,6 +11,7 @@ function forbidText(source, text, label) {
 }
 
 const cloudPage = read('app/cloud-stock/page.tsx');
+const cloudBootstrap = read('components/CloudStockAutoBootstrap.tsx');
 const cloudUi = read('components/CloudStockVault.tsx');
 const statusRoute = read('app/api/cloud-stock/status/route.ts');
 const authRoute = read('app/api/cloud-stock/auth/route.ts');
@@ -23,7 +24,15 @@ const passwordGate = read('components/PasswordGate.tsx');
 const uploadPage = read('app/upload/page.tsx');
 const migration = read('neon/migrations/20260828093000_google_drive_neon_stock_v36.sql');
 
-requireText(cloudPage, 'CloudStockVault', 'cloud stock page');
+requireText(cloudPage, 'CloudStockAutoBootstrap', 'cloud stock page');
+for (const text of [
+  '/api/cloud-stock/auth',
+  "action: 'auto'",
+  'window.location.reload()',
+  'CloudStockVault'
+]) requireText(cloudBootstrap, text, 'automatic Neon session bootstrap');
+forbidText(cloudBootstrap, 'localStorage', 'Neon session must not be stored in localStorage');
+
 for (const text of [
   '/api/cloud-stock/auth',
   '/api/cloud-stock/upload',
@@ -42,6 +51,14 @@ for (const route of [statusRoute, authRoute, uploadRoute, filesRoute]) {
   forbidText(route, 'supabaseAdmin', 'cloud APIs must not depend on Supabase');
   forbidText(route, '@supabase/', 'cloud APIs must not import Supabase');
 }
+
+for (const text of [
+  'deriveOwnerCredentials',
+  "action === 'auto'",
+  'createHash',
+  'setNeonSessionCookie'
+]) requireText(authRoute, text, 'server-derived Neon owner auth');
+forbidText(authRoute, 'password: appPassword', 'APP_PASSWORD itself must never be sent to Neon');
 
 for (const text of [
   'GOOGLE_DRIVE_ORIGINALS_FOLDER_ID',

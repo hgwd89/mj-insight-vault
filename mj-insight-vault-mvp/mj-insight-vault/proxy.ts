@@ -9,30 +9,23 @@ function allowedCloudStockRequest(method: string, path: string) {
   return false;
 }
 
-function allowedOcrOnlyRequest(request: NextRequest) {
+function allowedLowCostStockRequest(request: NextRequest) {
   const method = request.method.toUpperCase();
   const path = request.nextUrl.pathname;
-
-  if (allowedCloudStockRequest(method, path)) return true;
-
-  if (method === 'GET' && path === '/api/batches') return true;
-  if (method === 'GET' && /^\/api\/ocr-stock\/batches\/[^/]+$/.test(path)) return true;
-
-  if (method !== 'POST') return false;
-  if (path === '/api/upload' || path === '/api/upload/start' || path === '/api/upload/image') return true;
-  if (/^\/api\/source-images\/[^/]+\/ocr-only$/.test(path)) return true;
-
-  return false;
+  return allowedCloudStockRequest(method, path);
 }
 
 export function proxy(request: NextRequest) {
   if (!isOcrOnlyMode()) return NextResponse.next();
-  if (allowedOcrOnlyRequest(request)) return NextResponse.next();
+  if (allowedLowCostStockRequest(request)) return NextResponse.next();
 
   return NextResponse.json({
     ok: false,
-    error: 'MJ Insight Vault is running in low-cost stock mode. Google Drive + Neon stock APIs and legacy OCR-only safety routes are enabled; full downstream remains locked.',
+    error: 'MJ Insight Vault is running in free cloud-stock mode. Only Google Drive + Neon stock APIs are enabled. Supabase writes, OCR, classification, analysis, reports, and full rollout remain locked.',
     mode: 'ocr_only',
+    storage_mode: 'google_drive_neon',
+    supabase_mode: 'legacy_frozen',
+    ocr_execution_locked: true,
     full_pipeline_locked: true
   }, { status: 423 });
 }

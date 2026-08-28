@@ -27,6 +27,15 @@ type CopyResult = {
   error?: string;
 };
 
+type RescueStatus = {
+  copied: number;
+  verified: number;
+  deleted: number;
+  retained_in_supabase: number;
+  copied_bytes: number;
+  deletion_released: boolean;
+};
+
 function formatBytes(bytes: number | null | undefined) {
   const value = Number(bytes || 0);
   if (!value) return '-';
@@ -48,6 +57,7 @@ export function LegacySupabaseImport() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(0);
   const [failed, setFailed] = useState<Array<{ path: string; error: string }>>([]);
+  const [rescueStatus, setRescueStatus] = useState<RescueStatus | null>(null);
   const totalBytes = objects.reduce((sum, item) => sum + (item.size || 0), 0);
 
   async function ensureNeonSession() {
@@ -59,6 +69,22 @@ export function LegacySupabaseImport() {
       body: JSON.stringify({ action: 'auto' })
     });
     await jsonOrError(bootstrap);
+  }
+
+  async function loadRescueStatus() {
+    await ensureNeonSession();
+    const res = await fetch('/api/cloud-stock/legacy-status', {
+      headers: { 'x-app-password': appPassword }
+    });
+    const json = await jsonOrError(res);
+    setRescueStatus({
+      copied: Number(json.copied || 0),
+      verified: Number(json.verified || 0),
+      deleted: Number(json.deleted || 0),
+      retained_in_supabase: Number(json.retained_in_supabase || 0),
+      copied_bytes: Number(json.copied_bytes || 0),
+      deletion_released: json.deletion_released === true
+    });
   }
 
   async function scan() {
@@ -73,6 +99,7 @@ export function LegacySupabaseImport() {
       const rows = Array.isArray(json.objects) ? json.objects as LegacyObject[] : [];
       setObjects(rows);
       setMessage(`${rows.length}件を検出しました。既知容量 ${formatBytes(json.total_bytes_known)}。Supabase側は削除しません。`);
+      await loadRescueStatus().catch(() => null);
     } catch (error) {
       setObjects([]);
       setMessage(`確認失敗：${error instanceof Error ? error.message : String(error)}`);
@@ -156,6 +183,7 @@ export function LegacySupabaseImport() {
       }
 
       setFailed(failures);
+      await loadRescueStatus().catch(() => null);
       setMessage(`完了：Drive + SHA-256検証 + Neon ${successCount}件 / 要確認 ${failures.length}件。Supabase原本はそのまま残しています。`);
     } catch (error) {
       setMessage(`移行停止：${error instanceof Error ? error.message : String(error)}`);
@@ -180,16 +208,34 @@ export function LegacySupabaseImport() {
           <button className="btn btn-primary" type="button" disabled={busy || !objects.length} onClick={migrateAll}>
             {busy ? '処理中…' : `${objects.length}件をDrive + Neonへ複製`}
           </button>
+          <button className="btn" type="button" disabled={busy} onClick={() => loadRescueStatus().catch((error) => setMessage(`Neon確認失敗：${error instanceof Error ? error.message : String(error)}`))}>
+            Neon退避状況を確認
+          </button>
         </div>
         <p className="mt-3 text-sm leading-6 text-zinc-700">{message || 'まず「保存済み原本を確認」を押してください。'}</p>
         {objects.length > 0 && (
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
             <div className="rounded-xl bg-zinc-50 p-3"><b>{objects.length}</b><br />Supabase Storage原本</div>
             <div className="rounded-xl bg-zinc-50 p-3"><b>{formatBytes(totalBytes)}</b><br />既知容量</div>
-            <div className="rounded-xl bg-zinc-50 p-3"><b>{copied}</b><br />Drive + SHA検証 + Neon完了</div>
+            <div className="rounded-xl bg-zinc-50 p-3"><b>{copied}</b><br />今回のDrive + SHA検証 + Neon完了</div>
           </div>
         )}
       </div>
+
+      {rescueStatus && (
+        <div className="card p-5">
+          <h2 className="font-bold">永続退避ステータス</h2>
+          <div className="mt-3 grid gap-3 text-sm md:grid-cols-4">
+            <div className="rounded-xl bg-zinc-50 p-3"><b>{rescueStatus.copied}</b><br />Neon登録済み</div>
+            <div className="rounded-xl bg-zinc-50 p-3"><b>{rescueStatus.verified}</b><br />SHA検証済み</div>
+            <div className="rounded-xl bg-zinc-50 p-3"><b>{formatBytes(rescueStatus.copied_bytes)}</b><br />退避済み容量</div>
+            <div className="rounded-xl bg-zinc-50 p-3"><b>{rescueStatus.deleted}</b><br />Supabase削除済み</div>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-zinc-600">
+            削除release: {rescueStatus.deletion_released ? '許可済み' : '未許可'}。現在はSupabase削除を実行しません。
+          </p>
+        </div>
+      )}
 
       {failed.length > 0 && (
         <div className="card p-5">

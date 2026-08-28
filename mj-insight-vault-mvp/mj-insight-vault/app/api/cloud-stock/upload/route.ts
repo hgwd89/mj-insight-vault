@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
-import { backupImageToGoogleDrive } from '@/lib/googleDriveBackup';
+import { backupImageToGoogleDrive, resolveWritableGoogleDriveFolder } from '@/lib/googleDriveBackup';
 import {
   GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
   neonDataFetch,
@@ -46,6 +46,15 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: 'JPG / PNG / WebP / PDFのみ保存できます。' }, { status: 400 });
     }
 
+    const destination = await resolveWritableGoogleDriveFolder(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID);
+    if (!destination.ok) {
+      return Response.json({
+        error: `Google Driveに書き込み可能なフォルダがありません。${destination.error}`,
+        service_account_email: destination.serviceAccountEmail || null,
+        preferred_folder_id: GOOGLE_DRIVE_ORIGINALS_FOLDER_ID
+      }, { status: 503 });
+    }
+
     const buffer = Buffer.from(await file.arrayBuffer());
     const drive = await backupImageToGoogleDrive({
       buffer,
@@ -53,20 +62,20 @@ export async function POST(req: NextRequest) {
       mimeType: isPdf ? 'application/pdf' : mimeType,
       batchId: `cloud-${new Date().toISOString().slice(0, 10)}`,
       index: Date.now(),
-      folderId: GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
+      folderId: destination.folderId,
       description: 'MJ Insight Vault canonical original; Google Drive + Neon stock mode.'
     });
 
     if (!drive.ok || !drive.file_id) {
       return Response.json({
         error: drive.error || 'Google Driveへの保存に失敗しました。',
-        drive_folder_id: GOOGLE_DRIVE_ORIGINALS_FOLDER_ID
+        drive_folder_id: destination.folderId
       }, { status: 502 });
     }
 
     const record = {
       drive_file_id: drive.file_id,
-      drive_folder_id: drive.folder_id || GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
+      drive_folder_id: drive.folder_id || destination.folderId,
       file_name: file.name.slice(0, 500),
       mime_type: isPdf ? 'application/pdf' : mimeType,
       file_size_bytes: file.size,
@@ -90,7 +99,8 @@ export async function POST(req: NextRequest) {
         neon_registered: true,
         drive: {
           file_id: drive.file_id,
-          folder_id: drive.folder_id || GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
+          folder_id: drive.folder_id || destination.folderId,
+          preferred_folder_used: destination.folderId === GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
           web_view_link: drive.web_view_link || null
         },
         row: Array.isArray(inserted) ? inserted[0] || null : inserted,
@@ -104,7 +114,7 @@ export async function POST(req: NextRequest) {
         neon_registered: false,
         recovery: {
           drive_file_id: drive.file_id,
-          drive_folder_id: drive.folder_id || GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
+          drive_folder_id: drive.folder_id || destination.folderId,
           file_name: file.name,
           mime_type: record.mime_type,
           file_size_bytes: file.size,

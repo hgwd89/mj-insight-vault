@@ -50,7 +50,8 @@ for (const text of ['segmentArticlesFromImage', 'commitSourceImageArticles', 'en
 requireText(processRoute, 'export const POST = handleOcrOnly', 'legacy process endpoint delegates only to OCR-only');
 
 requireText(uploadPage, '<UploadFormOcrOnly />', 'upload page');
-requireText(uploadPage, '538件一括OCRは停止', 'upload mode disclosure');
+requireText(uploadPage, '538件一括OCRは実行しません', 'upload mode disclosure');
+requireText(uploadPage, '/local-stock', 'free local stock entry point');
 requireText(uploadForm, '/ocr-only', 'upload OCR endpoint');
 forbidText(uploadForm, '/process', 'upload must not invoke full processing');
 requireText(uploadForm, '1枚ずつ', 'sequential OCR');

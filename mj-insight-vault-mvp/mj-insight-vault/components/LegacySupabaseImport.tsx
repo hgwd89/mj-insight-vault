@@ -12,7 +12,12 @@ type LegacyObject = {
 
 type CopyResult = {
   ok: boolean;
+  reused?: boolean;
+  content_verified?: boolean;
   source_path: string;
+  source_bucket?: string;
+  source_sha256?: string;
+  drive_sha256?: string;
   original_file_name?: string;
   mime_type?: string;
   file_size_bytes?: number;
@@ -77,7 +82,12 @@ export function LegacySupabaseImport() {
   }
 
   async function registerNeon(row: CopyResult) {
-    if (!row.drive_file_id || !row.original_file_name) throw new Error('Drive copy receipt is incomplete.');
+    if (!row.drive_file_id || !row.original_file_name || !row.source_bucket || !row.source_sha256 || row.content_verified !== true) {
+      throw new Error('Drive copy receipt is incomplete or not hash-verified.');
+    }
+    if (row.drive_sha256 !== row.source_sha256) {
+      throw new Error('Drive copy SHA-256 does not match Supabase source.');
+    }
     const res = await fetch('/api/cloud-stock/files', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
@@ -87,7 +97,12 @@ export function LegacySupabaseImport() {
         file_name: row.original_file_name,
         mime_type: row.mime_type,
         file_size_bytes: row.file_size_bytes,
-        memo: `legacy_supabase_path:${row.source_path}`
+        memo: `legacy_supabase_path:${row.source_path}`,
+        legacy_source_provider: 'supabase_storage',
+        legacy_source_bucket: row.source_bucket,
+        legacy_source_path: row.source_path,
+        legacy_source_sha256: row.source_sha256,
+        legacy_copy_verified: true
       })
     });
     await jsonOrError(res);
@@ -107,7 +122,7 @@ export function LegacySupabaseImport() {
 
       for (let i = 0; i < objects.length; i += 2) {
         const batch = objects.slice(i, i + 2);
-        setMessage(`Google Driveへ複製中 ${i + 1}〜${Math.min(i + batch.length, objects.length)} / ${objects.length}…`);
+        setMessage(`Google Driveへ複製・SHA-256検証中 ${i + 1}〜${Math.min(i + batch.length, objects.length)} / ${objects.length}…`);
 
         try {
           const res = await fetch('/api/cloud-stock/import-supabase', {
@@ -119,8 +134,8 @@ export function LegacySupabaseImport() {
           const results = Array.isArray(json.results) ? json.results as CopyResult[] : [];
 
           for (const result of results) {
-            if (!result.ok) {
-              failures.push({ path: result.source_path, error: result.error || 'Drive copy failed' });
+            if (!result.ok || result.content_verified !== true) {
+              failures.push({ path: result.source_path, error: result.error || 'Drive copy verification failed' });
               continue;
             }
             try {
@@ -130,7 +145,7 @@ export function LegacySupabaseImport() {
             } catch (error) {
               failures.push({
                 path: result.source_path,
-                error: `Drive保存済み・Neon登録失敗: ${error instanceof Error ? error.message : String(error)}`
+                error: `Drive保存・ハッシュ検証済み / Neon登録失敗: ${error instanceof Error ? error.message : String(error)}`
               });
             }
           }
@@ -141,7 +156,7 @@ export function LegacySupabaseImport() {
       }
 
       setFailed(failures);
-      setMessage(`完了：Drive + Neon ${successCount}件 / 要確認 ${failures.length}件。Supabase原本はそのまま残しています。`);
+      setMessage(`完了：Drive + SHA-256検証 + Neon ${successCount}件 / 要確認 ${failures.length}件。Supabase原本はそのまま残しています。`);
     } catch (error) {
       setMessage(`移行停止：${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -154,7 +169,7 @@ export function LegacySupabaseImport() {
       <div className="card p-5">
         <h1 className="text-xl font-black">Supabase → Google Drive 移行</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          旧Supabase Storageの原本をGoogle Drive「01 Originals」へ複製し、成功したDriveファイルをNeon検索DBへ登録します。
+          旧Supabase Storageの原本をGoogle Drive「01 Originals」へ複製し、SHA-256で内容一致を検証してからNeon検索DBへ登録します。
           Supabase側のデータは削除しません。OCR・分類・Reportも起動しません。
         </p>
       </div>
@@ -171,7 +186,7 @@ export function LegacySupabaseImport() {
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
             <div className="rounded-xl bg-zinc-50 p-3"><b>{objects.length}</b><br />Supabase Storage原本</div>
             <div className="rounded-xl bg-zinc-50 p-3"><b>{formatBytes(totalBytes)}</b><br />既知容量</div>
-            <div className="rounded-xl bg-zinc-50 p-3"><b>{copied}</b><br />Drive + Neon完了</div>
+            <div className="rounded-xl bg-zinc-50 p-3"><b>{copied}</b><br />Drive + SHA検証 + Neon完了</div>
           </div>
         )}
       </div>

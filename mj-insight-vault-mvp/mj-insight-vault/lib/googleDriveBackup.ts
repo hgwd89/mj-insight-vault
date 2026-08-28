@@ -9,11 +9,12 @@ type GoogleServiceAccount = {
   token_uri?: string;
 };
 
-type DriveBackupResult = {
+export type DriveBackupResult = {
   ok: boolean;
   skipped?: boolean;
   file_id?: string;
   web_view_link?: string;
+  folder_id?: string;
   error?: string;
 };
 
@@ -27,20 +28,22 @@ function base64Url(input: string | Buffer) {
     .replace(/\//g, '_');
 }
 
-function getCredentials(): GoogleServiceAccount {
+function parseCredentials(): GoogleServiceAccount | null {
   const raw = process.env.GOOGLE_CLOUD_CREDENTIALS;
-  if (!raw) throw new Error('GOOGLE_CLOUD_CREDENTIALS is not configured.');
+  if (!raw) return null;
 
-  let credentials: GoogleServiceAccount;
   try {
-    credentials = JSON.parse(raw);
+    return JSON.parse(raw) as GoogleServiceAccount;
   } catch {
-    throw new Error('GOOGLE_CLOUD_CREDENTIALS is not valid JSON.');
+    return null;
   }
+}
 
+function getCredentials(): GoogleServiceAccount {
+  const credentials = parseCredentials();
+  if (!credentials) throw new Error('GOOGLE_CLOUD_CREDENTIALS is not configured or is invalid JSON.');
   if (!credentials.client_email) throw new Error('GOOGLE_CLOUD_CREDENTIALS is missing client_email.');
   if (!credentials.private_key) throw new Error('GOOGLE_CLOUD_CREDENTIALS is missing private_key.');
-
   return credentials;
 }
 
@@ -80,14 +83,15 @@ async function getDriveAccessToken() {
 }
 
 export function getGoogleDriveBackupConfig() {
+  const credentials = parseCredentials();
   const folderId = (process.env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || process.env.GOOGLE_DRIVE_FOLDER_ID || '').trim();
   const enabled = (process.env.GOOGLE_DRIVE_BACKUP_ENABLED || '').trim().toLowerCase();
-  const hasCredentials = Boolean(process.env.GOOGLE_CLOUD_CREDENTIALS?.trim());
 
   return {
     enabled: enabled === 'true' || enabled === '1' || Boolean(folderId),
     folderId,
-    hasCredentials
+    hasCredentials: Boolean(credentials?.client_email && credentials?.private_key),
+    clientEmail: credentials?.client_email || ''
   };
 }
 
@@ -97,11 +101,14 @@ export async function backupImageToGoogleDrive(args: {
   mimeType: string;
   batchId: string;
   index: number;
+  folderId?: string;
+  description?: string;
 }): Promise<DriveBackupResult> {
   const config = getGoogleDriveBackupConfig();
+  const folderId = (args.folderId || config.folderId || '').trim();
 
-  if (!config.enabled) return { ok: true, skipped: true };
-  if (!config.folderId) return { ok: false, error: 'GOOGLE_DRIVE_BACKUP_FOLDER_ID is not configured.' };
+  if (!args.folderId && !config.enabled) return { ok: true, skipped: true };
+  if (!folderId) return { ok: false, error: 'Google Drive destination folder is not configured.' };
   if (!config.hasCredentials) return { ok: false, error: 'GOOGLE_CLOUD_CREDENTIALS is not configured.' };
 
   try {
@@ -109,8 +116,8 @@ export async function backupImageToGoogleDrive(args: {
     const boundary = `mj-vault-${crypto.randomUUID()}`;
     const metadata = {
       name: args.fileName,
-      parents: [config.folderId],
-      description: `MJ Insight Vault backup. batch_id=${args.batchId}; index=${args.index}`,
+      parents: [folderId],
+      description: args.description || `MJ Insight Vault original. batch_id=${args.batchId}; index=${args.index}`,
       appProperties: {
         source: 'mj-insight-vault',
         batch_id: args.batchId,
@@ -136,11 +143,11 @@ export async function backupImageToGoogleDrive(args: {
     });
 
     const text = await res.text();
-    if (!res.ok) return { ok: false, error: `Google Drive upload failed: ${res.status} ${text}` };
+    if (!res.ok) return { ok: false, folder_id: folderId, error: `Google Drive upload failed: ${res.status} ${text}` };
 
     const json = JSON.parse(text) as { id?: string; webViewLink?: string };
-    return { ok: true, file_id: json.id, web_view_link: json.webViewLink };
+    return { ok: true, file_id: json.id, web_view_link: json.webViewLink, folder_id: folderId };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'Google Drive upload failed' };
+    return { ok: false, folder_id: folderId, error: error instanceof Error ? error.message : 'Google Drive upload failed' };
   }
 }

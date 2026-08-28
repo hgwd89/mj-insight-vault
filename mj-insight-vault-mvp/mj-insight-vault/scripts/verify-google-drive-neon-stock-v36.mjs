@@ -18,6 +18,7 @@ const uploadRoute = read('app/api/cloud-stock/upload/route.ts');
 const filesRoute = read('app/api/cloud-stock/files/route.ts');
 const neon = read('lib/neonCloud.ts');
 const drive = read('lib/googleDriveBackup.ts');
+const proxy = read('proxy.ts');
 const passwordGate = read('components/PasswordGate.tsx');
 const uploadPage = read('app/upload/page.tsx');
 const migration = read('neon/migrations/20260828093000_google_drive_neon_stock_v36.sql');
@@ -45,6 +46,7 @@ for (const route of [statusRoute, authRoute, uploadRoute, filesRoute]) {
 for (const text of [
   'GOOGLE_DRIVE_ORIGINALS_FOLDER_ID',
   'backupImageToGoogleDrive',
+  'resolveWritableGoogleDriveFolder',
   'requireNeonJwt',
   "neonDataFetch('vault_source_files",
   'drive_saved: true',
@@ -67,10 +69,26 @@ for (const text of [
   "GOOGLE_DRIVE_ORIGINALS_FOLDER_ID = '1C6LBMMZmrP6hdRoOmomz7BMoFXxPZ1QQ'"
 ]) requireText(neon, text, 'Neon secure gateway');
 
-requireText(drive, 'folderId?: string', 'Drive explicit canonical folder support');
-requireText(drive, 'clientEmail', 'Drive service account diagnosability');
+for (const text of [
+  'folderId?: string',
+  'clientEmail',
+  'inspectGoogleDriveFolder',
+  'resolveWritableGoogleDriveFolder',
+  'config.folderId.trim()'
+]) requireText(drive, text, 'Drive canonical/fallback resolution');
+
+for (const text of [
+  "path === '/api/cloud-stock/status'",
+  "path === '/api/cloud-stock/auth'",
+  "path === '/api/cloud-stock/files'",
+  "path === '/api/cloud-stock/upload'",
+  'full_pipeline_locked: true'
+]) requireText(proxy, text, 'low-cost proxy cloud-stock allow-list');
+forbidText(proxy, "path === '/api/chat'", 'full downstream must remain blocked');
+
 requireText(statusRoute, "storage_mode: 'google_drive_neon'", 'cloud stock status');
 requireText(statusRoute, "supabase_mode: 'legacy_frozen'", 'Supabase freeze status');
+requireText(statusRoute, 'resolveWritableGoogleDriveFolder', 'authenticated Drive readiness probe');
 requireText(passwordGate, "fetch('/api/cloud-stock/status'", 'password gate no longer waits for Supabase');
 forbidText(passwordGate, "fetch('/api/batches'", 'password gate must not use Supabase batches');
 requireText(uploadPage, 'href="/cloud-stock"', 'canonical upload navigation');

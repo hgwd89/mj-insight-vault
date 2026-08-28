@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isOcrOnlyMode } from './lib/pipelineMode';
 
 function allowedCloudStockRequest(method: string, path: string) {
+  if (path === '/api/cloud-stock/readiness') return method === 'GET';
   if (path === '/api/cloud-stock/status') return method === 'GET';
   if (path === '/api/cloud-stock/auth') return method === 'GET' || method === 'POST' || method === 'DELETE';
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';

@@ -32,7 +32,7 @@ for (const text of [
   '/source-images\\/[^/]+\\/ocr-only',
   'status: 423',
   'full_pipeline_locked: true'
-]) requireText(proxy, text, 'OCR-only API allow-list');
+]) requireText(proxy, text, 'legacy OCR-only API allow-list');
 forbidText(proxy, "'/api/chat'", 'OCR-only proxy must be allow-list based');
 
 for (const text of [
@@ -43,18 +43,21 @@ for (const text of [
   'raw_provider_json_written: false',
   'articles_created: 0',
   ".in('ocr_status', ['queued', 'failed'])"
-]) requireText(ocrRoute, text, 'OCR-only route');
+]) requireText(ocrRoute, text, 'legacy OCR-only route');
 for (const text of ['segmentArticlesFromImage', 'commitSourceImageArticles', 'enrichCommittedArticles', 'ocr_json: ocr.raw']) {
-  forbidText(ocrRoute, text, 'OCR-only route isolation');
+  forbidText(ocrRoute, text, 'legacy OCR-only route isolation');
 }
 requireText(processRoute, 'export const POST = handleOcrOnly', 'legacy process endpoint delegates only to OCR-only');
 
-requireText(uploadPage, '<UploadFormOcrOnly />', 'upload page');
-requireText(uploadPage, '538件一括OCRは実行しません', 'upload mode disclosure');
-requireText(uploadPage, '/local-stock', 'free local stock entry point');
-requireText(uploadForm, '/ocr-only', 'upload OCR endpoint');
-forbidText(uploadForm, '/process', 'upload must not invoke full processing');
-requireText(uploadForm, '1枚ずつ', 'sequential OCR');
+requireText(uploadPage, '現在の正本ストック：Google Drive + Neon', 'new canonical upload mode');
+requireText(uploadPage, 'href="/cloud-stock"', 'cloud stock entry point');
+requireText(uploadPage, 'Supabaseは旧データ互換用に凍結', 'Supabase is legacy frozen');
+requireText(uploadPage, '538件一括OCRはこの経路から起動しません', 'bulk OCR remains stopped');
+forbidText(uploadPage, '<UploadFormOcrOnly />', 'legacy Supabase form must not be primary upload UI');
+
+requireText(uploadForm, '/ocr-only', 'legacy upload OCR endpoint remains OCR-only');
+forbidText(uploadForm, '/process', 'legacy upload must not invoke full processing');
+requireText(uploadForm, '1枚ずつ', 'legacy OCR remains sequential');
 
 requireText(stockApi, "select('id,batch_id,file_name,storage_path,mime_type,ocr_status,ocr_text_raw,error_message,created_at')", 'minimal stock projection');
 forbidText(stockApi, ".select('*')", 'stock API must not fetch raw OCR provider JSON');
@@ -68,4 +71,4 @@ for (const text of ['mj_ocr_only_cron_snapshot_v30', 'from cron.job', 'cron.unsc
 forbidText(migration.toLowerCase(), 'delete from public.', 'migration must preserve user data');
 forbidText(migration.toLowerCase(), 'truncate ', 'migration must preserve user data');
 
-console.log('OCR-only free-mode v30 invariants passed');
+console.log('legacy OCR-only v30 freeze invariants passed');

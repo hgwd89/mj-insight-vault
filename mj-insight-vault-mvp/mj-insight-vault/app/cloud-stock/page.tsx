@@ -1,5 +1,5 @@
-import { CloudStockVault } from '@/components/CloudStockVault';
+import { CloudStockAutoBootstrap } from '@/components/CloudStockAutoBootstrap';
 
 export default function CloudStockPage() {
-  return <CloudStockVault />;
+  return <CloudStockAutoBootstrap />;
 }

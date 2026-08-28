@@ -26,6 +26,16 @@ export type DriveFolderProbe = {
   error?: string;
 };
 
+export type DriveFileLookup = {
+  found: boolean;
+  file_id?: string;
+  file_name?: string;
+  web_view_link?: string;
+  mime_type?: string;
+  size?: number | null;
+  error?: string;
+};
+
 let cachedToken: { accessToken: string; expiresAt: number } | null = null;
 let cachedWritableFolder: { folderId: string; expiresAt: number } | null = null;
 
@@ -91,6 +101,10 @@ async function getDriveAccessToken() {
   return cachedToken.accessToken;
 }
 
+function driveQueryLiteral(value: string) {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 export function getGoogleDriveBackupConfig() {
   const credentials = parseCredentials();
   const folderId = (process.env.GOOGLE_DRIVE_BACKUP_FOLDER_ID || process.env.GOOGLE_DRIVE_FOLDER_ID || '').trim();
@@ -131,6 +145,49 @@ export async function inspectGoogleDriveFolder(folderId: string): Promise<DriveF
     };
   } catch (error) {
     return { ok: false, folderId: cleanId, error: error instanceof Error ? error.message : 'Drive folder probe failed.' };
+  }
+}
+
+export async function findGoogleDriveFileByName(folderId: string, fileName: string): Promise<DriveFileLookup> {
+  const cleanFolderId = folderId.trim();
+  const cleanFileName = fileName.trim();
+  if (!cleanFolderId || !cleanFileName) return { found: false, error: 'Drive folder ID or file name is empty.' };
+
+  const config = getGoogleDriveBackupConfig();
+  if (!config.hasCredentials) return { found: false, error: 'GOOGLE_CLOUD_CREDENTIALS is not configured.' };
+
+  try {
+    const accessToken = await getDriveAccessToken();
+    const params = new URLSearchParams({
+      q: `name = '${driveQueryLiteral(cleanFileName)}' and '${driveQueryLiteral(cleanFolderId)}' in parents and trashed = false`,
+      spaces: 'drive',
+      pageSize: '10',
+      fields: 'files(id,name,webViewLink,mimeType,size)',
+      includeItemsFromAllDrives: 'true',
+      supportsAllDrives: 'true'
+    });
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      cache: 'no-store'
+    });
+    const text = await response.text();
+    if (!response.ok) return { found: false, error: `Drive file lookup failed: ${response.status} ${text}` };
+    const json = JSON.parse(text) as {
+      files?: Array<{ id?: string; name?: string; webViewLink?: string; mimeType?: string; size?: string }>;
+    };
+    const file = json.files?.[0];
+    if (!file?.id) return { found: false };
+    const size = Number(file.size);
+    return {
+      found: true,
+      file_id: file.id,
+      file_name: file.name || cleanFileName,
+      web_view_link: file.webViewLink,
+      mime_type: file.mimeType,
+      size: Number.isFinite(size) ? size : null
+    };
+  } catch (error) {
+    return { found: false, error: error instanceof Error ? error.message : 'Drive file lookup failed.' };
   }
 }
 

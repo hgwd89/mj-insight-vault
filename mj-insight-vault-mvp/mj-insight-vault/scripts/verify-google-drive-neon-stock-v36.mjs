@@ -13,10 +13,13 @@ function forbidText(source, text, label) {
 const cloudPage = read('app/cloud-stock/page.tsx');
 const cloudBootstrap = read('components/CloudStockAutoBootstrap.tsx');
 const cloudUi = read('components/CloudStockVault.tsx');
+const legacyUi = read('components/LegacySupabaseImport.tsx');
 const statusRoute = read('app/api/cloud-stock/status/route.ts');
+const readinessRoute = read('app/api/cloud-stock/readiness/route.ts');
 const authRoute = read('app/api/cloud-stock/auth/route.ts');
 const uploadRoute = read('app/api/cloud-stock/upload/route.ts');
 const filesRoute = read('app/api/cloud-stock/files/route.ts');
+const legacyImportRoute = read('app/api/cloud-stock/import-supabase/route.ts');
 const neon = read('lib/neonCloud.ts');
 const drive = read('lib/googleDriveBackup.ts');
 const proxy = read('proxy.ts');
@@ -91,17 +94,45 @@ for (const text of [
   'clientEmail',
   'inspectGoogleDriveFolder',
   'resolveWritableGoogleDriveFolder',
+  'findGoogleDriveFileByName',
   'config.folderId.trim()'
-]) requireText(drive, text, 'Drive canonical/fallback resolution');
+]) requireText(drive, text, 'Drive canonical/fallback/idempotent resolution');
 
 for (const text of [
   "path === '/api/cloud-stock/status'",
   "path === '/api/cloud-stock/auth'",
   "path === '/api/cloud-stock/files'",
   "path === '/api/cloud-stock/upload'",
+  "path === '/api/cloud-stock/import-supabase'",
   'full_pipeline_locked: true'
 ]) requireText(proxy, text, 'low-cost proxy cloud-stock allow-list');
 forbidText(proxy, "path === '/api/chat'", 'full downstream must remain blocked');
+
+for (const text of [
+  'supabaseAdmin.storage.from(STORAGE_BUCKET).list',
+  'supabaseAdmin.storage.from(STORAGE_BUCKET).download',
+  'findGoogleDriveFileByName',
+  'reused: true',
+  'source_deleted: false',
+  'downstream_started: false',
+  'MAX_BATCH_OBJECTS = 2'
+]) requireText(legacyImportRoute, text, 'legacy Supabase read-only idempotent import');
+for (const forbidden of [
+  '.remove(',
+  '.delete(',
+  'runDocumentOcr',
+  'segmentArticlesFromImage',
+  'commitSourceImageArticles',
+  'enrichCommittedArticles'
+]) forbidText(legacyImportRoute, forbidden, 'legacy import must never delete source or start downstream');
+for (const text of [
+  'Supabase → Google Drive 移行',
+  'Supabase側のデータは削除しません',
+  '/api/cloud-stock/import-supabase',
+  '/api/cloud-stock/files'
+]) requireText(legacyUi, text, 'legacy import UI safety contract');
+requireText(readinessRoute, 'probeLegacySupabaseStorage', 'public non-secret legacy storage probe');
+requireText(readinessRoute, 'legacy_supabase_storage: legacyStorage', 'legacy storage readiness disclosure');
 
 requireText(statusRoute, "storage_mode: 'google_drive_neon'", 'cloud stock status');
 requireText(statusRoute, "supabase_mode: 'legacy_frozen'", 'Supabase freeze status');

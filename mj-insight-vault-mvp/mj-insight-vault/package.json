@@ -15,6 +15,7 @@
     "test:upload": "node scripts/verify-upload-constants.mjs",
     "test:ocr-only-free-mode-v30": "node scripts/verify-ocr-only-free-mode-v30.mjs",
     "test:local-stock-v35": "node scripts/verify-local-stock-v35.mjs",
+    "test:google-drive-neon-stock-v36": "node scripts/verify-google-drive-neon-stock-v36.mjs",
     "test:integrity": "node scripts/verify-integrity-loop.mjs",
     "test:db-formal-proof": "node scripts/verify-db-formal-proof.mjs",
     "test:ocr-rescue": "node scripts/verify-zero-ocr-region-rescue.mjs",
@@ -33,7 +34,7 @@
     "test:verified-pipeline-order": "node scripts/verify-verified-pipeline-order.mjs",
     "test:verified-ddl-drift": "node scripts/audit-verified-pipeline-ddl-drift.mjs",
     "test:verified-ddl-export": "node scripts/verify-verified-pipeline-ddl-export.mjs",
-    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:report-evidence-links-v34 && npm run test:upload && npm run test:ocr-only-free-mode-v30 && npm run test:local-stock-v35 && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:ocr-canary-recovery-readout-v23 && npm run test:ocr-canary-cohort-v26 && npm run test:ocr-full-rollout-locked-v27 && npm run test:ocr-full-rollout-gate-v28 && npm run test:ocr-nano-canary-runtime-v32 && npm run test:ocr-nano-canary-runtime-v33 && npm run test:retired-ocr-routes-v24 && npm run test:verified-pipeline-order && npm run test:verified-ddl-drift && npm run test:verified-ddl-export"
+    "test:local": "npm run test:structure && npm run test:rollup && npm run test:report && npm run test:report-pipeline && npm run test:report-evidence-links-v34 && npm run test:upload && npm run test:ocr-only-free-mode-v30 && npm run test:local-stock-v35 && npm run test:google-drive-neon-stock-v36 && npm run test:integrity && npm run test:db-formal-proof && npm run test:ocr-rescue && npm run test:inventory-majority-n && npm run test:ocr-consensus-v11 && npm run test:ocr-segment-v16 && npm run test:ocr-piece-v18 && npm run test:ocr-canary-fidelity-v22 && npm run test:ocr-canary-recovery-readout-v23 && npm run test:ocr-canary-cohort-v26 && npm run test:ocr-full-rollout-locked-v27 && npm run test:ocr-full-rollout-gate-v28 && npm run test:ocr-nano-canary-runtime-v32 && npm run test:ocr-nano-canary-runtime-v33 && npm run test:retired-ocr-routes-v24 && npm run test:verified-pipeline-order && npm run test:verified-ddl-drift && npm run test:verified-ddl-export"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.106.0",

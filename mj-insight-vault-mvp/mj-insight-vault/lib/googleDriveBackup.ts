@@ -18,7 +18,16 @@ export type DriveBackupResult = {
   error?: string;
 };
 
+export type DriveFolderProbe = {
+  ok: boolean;
+  folderId: string;
+  name?: string;
+  canAddChildren?: boolean;
+  error?: string;
+};
+
 let cachedToken: { accessToken: string; expiresAt: number } | null = null;
+let cachedWritableFolder: { folderId: string; expiresAt: number } | null = null;
 
 function base64Url(input: string | Buffer) {
   return Buffer.from(input)
@@ -93,6 +102,64 @@ export function getGoogleDriveBackupConfig() {
     hasCredentials: Boolean(credentials?.client_email && credentials?.private_key),
     clientEmail: credentials?.client_email || ''
   };
+}
+
+export async function inspectGoogleDriveFolder(folderId: string): Promise<DriveFolderProbe> {
+  const cleanId = folderId.trim();
+  if (!cleanId) return { ok: false, folderId: '', error: 'Drive folder ID is empty.' };
+
+  const config = getGoogleDriveBackupConfig();
+  if (!config.hasCredentials) return { ok: false, folderId: cleanId, error: 'GOOGLE_CLOUD_CREDENTIALS is not configured.' };
+
+  try {
+    const accessToken = await getDriveAccessToken();
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}?fields=id,name,mimeType,capabilities(canAddChildren)&supportsAllDrives=true`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      cache: 'no-store'
+    });
+    const text = await response.text();
+    if (!response.ok) return { ok: false, folderId: cleanId, error: `Drive folder probe failed: ${response.status} ${text}` };
+    const json = JSON.parse(text) as { id?: string; name?: string; mimeType?: string; capabilities?: { canAddChildren?: boolean } };
+    const isFolder = json.mimeType === 'application/vnd.google-apps.folder';
+    const canAddChildren = Boolean(json.capabilities?.canAddChildren);
+    return {
+      ok: isFolder && canAddChildren,
+      folderId: json.id || cleanId,
+      name: json.name,
+      canAddChildren,
+      error: isFolder && canAddChildren ? undefined : 'Service account can read the item but cannot add children.'
+    };
+  } catch (error) {
+    return { ok: false, folderId: cleanId, error: error instanceof Error ? error.message : 'Drive folder probe failed.' };
+  }
+}
+
+export async function resolveWritableGoogleDriveFolder(preferredFolderId: string) {
+  const now = Date.now();
+  if (cachedWritableFolder && cachedWritableFolder.expiresAt > now) {
+    return { ok: true, folderId: cachedWritableFolder.folderId, cached: true } as const;
+  }
+
+  const config = getGoogleDriveBackupConfig();
+  const candidates = Array.from(new Set([preferredFolderId.trim(), config.folderId.trim()].filter(Boolean)));
+  const failures: DriveFolderProbe[] = [];
+
+  for (const folderId of candidates) {
+    const probe = await inspectGoogleDriveFolder(folderId);
+    if (probe.ok) {
+      cachedWritableFolder = { folderId: probe.folderId, expiresAt: now + 5 * 60_000 };
+      return { ok: true, folderId: probe.folderId, probe, cached: false } as const;
+    }
+    failures.push(probe);
+  }
+
+  return {
+    ok: false,
+    folderId: '',
+    failures,
+    serviceAccountEmail: config.clientEmail,
+    error: failures.map((failure) => `${failure.folderId}: ${failure.error || 'not writable'}`).join(' / ') || 'No writable Google Drive folder is configured.'
+  } as const;
 }
 
 export async function backupImageToGoogleDrive(args: {

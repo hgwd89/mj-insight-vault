@@ -23,7 +23,7 @@ export function useClearAppPassword() {
 }
 
 async function checkPassword(candidate: string) {
-  const res = await fetch('/api/batches', {
+  const res = await fetch('/api/cloud-stock/status', {
     method: 'GET',
     headers: {
       'x-app-password': candidate
@@ -40,7 +40,7 @@ async function checkPassword(candidate: string) {
   if (!res.ok) {
     return {
       ok: true,
-      message: 'パスコードは保存しました。ただしDB/API側で別エラーが出ています。'
+      message: 'パスコードは保存しました。クラウドストック状態の取得で別エラーが出ています。'
     };
   }
 

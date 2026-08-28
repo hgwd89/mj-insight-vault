@@ -66,7 +66,7 @@ async function getDriveAccessToken() {
 
   const unsignedJwt = `${base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${base64Url(JSON.stringify({
     iss: credentials.client_email,
-    scope: 'https://www.googleapis.com/auth/drive.file',
+    scope: 'https://www.googleapis.com/auth/drive',
     aud: tokenUri,
     exp: now + 3600,
     iat: now
@@ -78,7 +78,7 @@ async function getDriveAccessToken() {
   const tokenRes = await fetch(tokenUri, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt })
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth-grant-type:jwt-bearer', assertion: jwt })
   });
 
   const tokenText = await tokenRes.text();

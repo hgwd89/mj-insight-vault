@@ -42,11 +42,12 @@ for (const forbidden of [
   'commitSourceImageArticles',
   'enrichCommittedArticles',
   'openai'
-]) forbidText(vault, forbidden, 'free local stock must be network/API independent');
+]) forbidText(vault, forbidden, 'free local stock must remain network/API independent');
 
-requireText(upload, '無料ストック優先モード', 'upload free-mode disclosure');
-requireText(upload, 'Supabaseを復旧・課金しなくても', 'no-paid-recovery disclosure');
-requireText(upload, 'href="/local-stock"', 'free local stock navigation');
-requireText(upload, '538件一括OCRは実行しません', 'bulk OCR remains stopped');
+requireText(upload, '現在の正本ストック：Google Drive + Neon', 'canonical cloud stock disclosure');
+requireText(upload, 'href="/cloud-stock"', 'canonical cloud stock navigation');
+requireText(upload, 'href="/local-stock"', 'local fallback remains reachable');
+requireText(upload, '非常用ローカル退避', 'local stock must be explicitly fallback-only');
+requireText(upload, '538件一括OCRはこの経路から起動しません', 'bulk OCR remains stopped');
 
-console.log('free local stock v35 invariants passed');
+console.log('free local stock v35 fallback invariants passed');

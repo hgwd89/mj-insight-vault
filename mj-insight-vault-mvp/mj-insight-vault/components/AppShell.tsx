@@ -3,12 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { Database, Home, Upload } from 'lucide-react';
+import { ArchiveRestore, Cloud, Database, Home, Upload } from 'lucide-react';
 import { useClearAppPassword } from '@/components/PasswordGate';
 
 const nav = [
   { href: '/', label: 'Home', icon: Home },
   { href: '/upload', label: 'Upload', icon: Upload },
+  { href: '/cloud-stock', label: 'Cloud Stock', icon: Cloud },
+  { href: '/legacy-import', label: 'Legacy', icon: ArchiveRestore },
   { href: '/ocr-stock', label: 'OCR Stock', icon: Database }
 ];
 

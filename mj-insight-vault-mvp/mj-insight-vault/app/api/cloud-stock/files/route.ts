@@ -46,6 +46,16 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: 'drive_file_id and file_name are required' }, { status: 400 });
     }
 
+    const legacyProvider = text(body.legacy_source_provider, 100) || null;
+    const legacyBucket = text(body.legacy_source_bucket, 200) || null;
+    const legacyPath = text(body.legacy_source_path, 2000) || null;
+    const legacySha256 = text(body.legacy_source_sha256, 128) || null;
+    const legacyVerified = body.legacy_copy_verified === true;
+
+    if (legacyPath && (!legacyProvider || !legacyBucket || !/^[a-f0-9]{64}$/i.test(legacySha256 || '') || !legacyVerified)) {
+      return Response.json({ error: 'Legacy source provenance is incomplete or unverified.' }, { status: 400 });
+    }
+
     const row = {
       drive_file_id: driveFileId,
       drive_folder_id: text(body.drive_folder_id, 256) || GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
@@ -55,12 +65,17 @@ export async function POST(req: NextRequest) {
       article_date: nullableDate(body.article_date),
       memo: text(body.memo, 4000) || null,
       source_status: 'stored',
-      ocr_status: 'not_started'
+      ocr_status: 'not_started',
+      legacy_source_provider: legacyProvider,
+      legacy_source_bucket: legacyBucket,
+      legacy_source_path: legacyPath,
+      legacy_source_sha256: legacySha256,
+      legacy_copy_verified_at: legacyVerified ? new Date().toISOString() : null
     };
 
-    const response = await neonDataFetch('vault_source_files?select=id,drive_file_id,drive_folder_id,file_name,mime_type,file_size_bytes,article_date,memo,source_status,ocr_status,created_at', jwt, {
+    const response = await neonDataFetch('vault_source_files?on_conflict=drive_file_id&select=id,drive_file_id,drive_folder_id,file_name,mime_type,file_size_bytes,article_date,memo,source_status,ocr_status,legacy_source_provider,legacy_source_bucket,legacy_source_path,legacy_source_sha256,legacy_copy_verified_at,legacy_source_deleted_at,created_at', jwt, {
       method: 'POST',
-      headers: { prefer: 'return=representation' },
+      headers: { prefer: 'resolution=merge-duplicates,return=representation' },
       body: JSON.stringify(row)
     });
     const inserted = await parseUpstreamJson(response, 'Neonへの原本登録に失敗しました。');

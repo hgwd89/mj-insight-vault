@@ -1,40 +1,36 @@
 import Link from 'next/link';
-import { UploadFormOcrOnly } from '@/components/UploadFormOcrOnly';
 
 const GOOGLE_DRIVE_ORIGINALS = 'https://drive.google.com/drive/folders/1C6LBMMZmrP6hdRoOmomz7BMoFXxPZ1QQ';
 
 export default function UploadPage() {
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-sm leading-6 text-emerald-950">
-        <b>新しい正本ストック：Google Drive + Neon</b><br />
-        新しく追加する画像/PDFの原本はGoogle Driveの「MJ Insight Vault / 01 Originals」へ保存します。
-        検索・OCR・Inventory・Report用の構造化データは無料PostgresのNeonへ移行中です。Supabaseの復旧・課金は行いません。
+      <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-5 text-sm leading-6 text-emerald-950">
+        <b>現在の正本ストック：Google Drive + Neon</b><br />
+        新規資料はGoogle Driveへ原本保存し、Neonへ検索用メタデータを同時登録します。Supabaseは旧データ互換用に凍結し、新規保存では使用しません。
         <div className="mt-3 flex flex-wrap gap-2">
-          <a className="btn btn-primary" href={GOOGLE_DRIVE_ORIGINALS} target="_blank" rel="noreferrer">Google Driveへ原本を追加</a>
-          <Link className="btn" href="/local-stock">非常用ローカル退避</Link>
+          <Link className="btn btn-primary" href="/cloud-stock">クラウドストックを開く</Link>
+          <a className="btn" href={GOOGLE_DRIVE_ORIGINALS} target="_blank" rel="noreferrer">01 Originalsを直接開く</a>
         </div>
       </div>
 
       <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
-        <b>現在の安全制約</b><br />
-        Google Driveへの原本保存は使えます。Neonへの自動メタデータ登録・検索は配線中です。
-        それが完了するまでOCR、記事候補化、Embedding、分類、テーマ分析、レポート生成、538件一括OCRは実行しません。
+        <b>現在はストック専用</b><br />
+        OCR、記事候補化、Embedding、Classification、Theme Analysis、Report、538件一括OCRはこの経路から起動しません。
+        ただしNeon検索は、将来OCR本文が登録された時点で同じ検索画面から本文まで検索できる構造です。
       </div>
-
-      <div className="rounded-2xl border border-zinc-300 bg-zinc-50 p-4 text-sm leading-6 text-zinc-700">
-        <b>旧Supabase OCR-only経路（凍結）</b><br />
-        以下は既存データ互換のため残していますが、新規ストックの正本経路には使用しません。
-      </div>
-      <UploadFormOcrOnly />
 
       <div className="card p-5">
-        <h2 className="font-bold">保存先</h2>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <a className="btn btn-primary" href={GOOGLE_DRIVE_ORIGINALS} target="_blank" rel="noreferrer">Google Drive原本</a>
-          <Link className="btn" href="/local-stock">ブラウザ非常用退避</Link>
+        <h2 className="font-bold">保存先の役割</h2>
+        <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
+          <div className="rounded-xl border border-zinc-200 p-3"><b>Google Drive</b><br />画像/PDF原本の正本</div>
+          <div className="rounded-xl border border-zinc-200 p-3"><b>Neon</b><br />検索・OCR本文・Inventory・Report用DB</div>
+          <div className="rounded-xl border border-zinc-200 p-3"><b>IndexedDB</b><br />非常時の一時退避のみ</div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Link className="btn" href="/local-stock">非常用ローカル退避</Link>
           <Link className="btn" href="/ocr-stock">旧Supabase OCRストック</Link>
-          <Link className="btn" href="/batches">旧アップロード履歴</Link>
+          <Link className="btn" href="/batches">旧Supabase履歴</Link>
         </div>
       </div>
     </div>

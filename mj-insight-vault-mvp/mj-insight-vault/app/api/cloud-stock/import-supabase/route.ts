@@ -7,6 +7,7 @@ import {
   findGoogleDriveFileByName,
   resolveWritableGoogleDriveFolder
 } from '@/lib/googleDriveBackup';
+import { hashGoogleDriveFile } from '@/lib/googleDriveIntegrity';
 import { GOOGLE_DRIVE_ORIGINALS_FOLDER_ID } from '@/lib/neonCloud';
 
 export const runtime = 'nodejs';
@@ -126,18 +127,35 @@ export async function POST(req: NextRequest) {
       try {
         const driveFileName = legacyDriveName(sourcePath);
         const originalFileName = sourcePath.split('/').filter(Boolean).pop() || sourcePath;
+
+        const { data, error } = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(sourcePath);
+        if (error || !data) throw new Error(error?.message || 'Supabase Storage download returned no data.');
+        const buffer = Buffer.from(await data.arrayBuffer());
+        if (buffer.length > MAX_OBJECT_BYTES) {
+          throw new Error(`25MB上限を超えています: ${buffer.length} bytes`);
+        }
+        const sourceSha256 = createHash('sha256').update(buffer).digest('hex');
+        const mimeType = data.type || 'application/octet-stream';
+
         const existing = await findGoogleDriveFileByName(destination.folderId, driveFileName);
         if (existing.error) throw new Error(existing.error);
 
         if (existing.found && existing.file_id) {
+          const verified = await hashGoogleDriveFile(existing.file_id);
+          if (verified.sha256 !== sourceSha256 || verified.size !== buffer.length) {
+            throw new Error('Existing Drive copy does not match Supabase source; refusing reuse.');
+          }
           results.push({
             ok: true,
             reused: true,
+            content_verified: true,
             source_path: sourcePath,
             source_bucket: STORAGE_BUCKET,
+            source_sha256: sourceSha256,
+            drive_sha256: verified.sha256,
             original_file_name: originalFileName,
-            mime_type: existing.mime_type || null,
-            file_size_bytes: existing.size ?? null,
+            mime_type: existing.mime_type || mimeType,
+            file_size_bytes: buffer.length,
             drive_file_id: existing.file_id,
             drive_folder_id: destination.folderId,
             drive_file_name: existing.file_name || driveFileName,
@@ -146,31 +164,31 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const { data, error } = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(sourcePath);
-        if (error || !data) throw new Error(error?.message || 'Supabase Storage download returned no data.');
-        const buffer = Buffer.from(await data.arrayBuffer());
-        if (buffer.length > MAX_OBJECT_BYTES) {
-          throw new Error(`25MB上限を超えています: ${buffer.length} bytes`);
-        }
-
-        const hash = createHash('sha256').update(`${STORAGE_BUCKET}:${sourcePath}`).digest('hex');
-        const mimeType = data.type || 'application/octet-stream';
+        const pathHash = createHash('sha256').update(`${STORAGE_BUCKET}:${sourcePath}`).digest('hex');
         const drive = await backupImageToGoogleDrive({
           buffer,
           fileName: driveFileName,
           mimeType,
           batchId: `legacy-supabase-${STORAGE_BUCKET}`.slice(0, 120),
-          index: Number.parseInt(hash.slice(0, 8), 16),
+          index: Number.parseInt(pathHash.slice(0, 8), 16),
           folderId: destination.folderId,
-          description: `MJ Insight Vault legacy Supabase Storage copy. bucket=${STORAGE_BUCKET}; path=${sourcePath}. Source is retained in Supabase.`
+          description: `MJ Insight Vault legacy Supabase Storage copy. bucket=${STORAGE_BUCKET}; path=${sourcePath}; sha256=${sourceSha256}. Source is retained in Supabase.`
         });
         if (!drive.ok || !drive.file_id) throw new Error(drive.error || 'Google Drive upload failed.');
+
+        const verified = await hashGoogleDriveFile(drive.file_id);
+        if (verified.sha256 !== sourceSha256 || verified.size !== buffer.length) {
+          throw new Error('Uploaded Drive copy hash verification failed; Supabase source remains untouched.');
+        }
 
         results.push({
           ok: true,
           reused: false,
+          content_verified: true,
           source_path: sourcePath,
           source_bucket: STORAGE_BUCKET,
+          source_sha256: sourceSha256,
+          drive_sha256: verified.sha256,
           original_file_name: originalFileName,
           mime_type: mimeType,
           file_size_bytes: buffer.length,
@@ -192,6 +210,7 @@ export async function POST(req: NextRequest) {
       ok: results.every((row) => row.ok === true),
       copied: results.filter((row) => row.ok === true && row.reused !== true).length,
       reused: results.filter((row) => row.ok === true && row.reused === true).length,
+      verified: results.filter((row) => row.ok === true && row.content_verified === true).length,
       failed: results.filter((row) => row.ok !== true).length,
       source_deleted: false,
       downstream_started: false,

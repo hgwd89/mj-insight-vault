@@ -10,27 +10,35 @@ function forbidText(source, text, label) {
   if (source.includes(text)) throw new Error(`${label}: forbidden ${text}`);
 }
 
-const importRoute = read('app/api/cloud-stock/import-supabase/route.ts');
-const filesRoute = read('app/api/cloud-stock/files/route.ts');
-const legacyStatusRoute = read('app/api/cloud-stock/legacy-status/route.ts');
-const legacyUi = read('components/LegacySupabaseImport.tsx');
-const integrity = read('lib/googleDriveIntegrity.ts');
-const migration = read('neon/migrations/20260828214500_legacy_source_provenance_v37.sql');
+const route = read('app/api/cloud-stock/import-supabase/route.ts');
+const page = read('app/legacy-import/page.tsx');
 const proxy = read('proxy.ts');
+const legacyStatusRoute = read('app/api/cloud-stock/legacy-status/route.ts');
+const migration = read('neon/migrations/20260828214500_legacy_source_provenance_v37.sql');
 
 for (const text of [
-  "createHash('sha256').update(buffer).digest('hex')",
-  'hashGoogleDriveFile',
-  'verified.sha256 !== sourceSha256',
-  'verified.size !== buffer.length',
-  'content_verified: true',
-  'source_sha256: sourceSha256',
+  'Supabase integration is retired',
+  'status: 410',
+  "storage_mode: 'google_drive_neon'",
   'source_deleted: false',
   'downstream_started: false'
-]) requireText(importRoute, text, 'legacy import route');
-for (const forbidden of ['.remove(', '.delete(', "method: 'DELETE'", 'runDocumentOcr', 'segmentArticlesFromImage']) {
-  forbidText(importRoute, forbidden, 'legacy import must remain read-only at source and downstream-closed');
-}
+]) requireText(route, text, 'retired Supabase Storage route');
+for (const forbidden of [
+  'supabaseAdmin',
+  '@supabase/',
+  '.download(',
+  '.list(',
+  '.remove(',
+  'runDocumentOcr',
+  'segmentArticlesFromImage'
+]) forbidText(route, forbidden, 'retired Supabase Storage route must be inert');
+
+requireText(page, 'Supabase連携は退役しました', 'legacy page retirement notice');
+requireText(page, 'Google Drive + Neon', 'canonical runtime notice');
+
+requireText(proxy, "path === '/api/cloud-stock/import-supabase'", 'proxy must pass retired route to its 410 tombstone');
+requireText(proxy, "path === '/api/cloud-stock/legacy-status'", 'historical Neon-only rescue status remains readable');
+forbidText(legacyStatusRoute, 'supabaseAdmin', 'legacy status must remain Neon-only');
 
 for (const text of [
   'legacy_source_provider',
@@ -38,49 +46,8 @@ for (const text of [
   'legacy_source_path',
   'legacy_source_sha256',
   'legacy_copy_verified_at',
-  'on_conflict=drive_file_id',
-  'resolution=merge-duplicates,return=representation',
-  'Legacy source provenance is incomplete or unverified.'
-]) requireText(filesRoute, text, 'Neon provenance upsert');
+  'legacy_source_deleted_at'
+]) requireText(migration, text, 'historical provenance schema remains preserved');
+forbidText(migration.toLowerCase(), 'drop table', 'historical provenance migration must remain additive');
 
-for (const text of [
-  'legacy_source_provider=eq.supabase_storage',
-  'legacy_copy_verified_at',
-  'legacy_source_deleted_at',
-  'deletion_released: false',
-  'retained_in_supabase'
-]) requireText(legacyStatusRoute, text, 'persistent rescue status');
-forbidText(legacyStatusRoute, 'supabaseAdmin', 'legacy status must be Neon-only');
-
-for (const text of [
-  "row.content_verified !== true",
-  'row.drive_sha256 !== row.source_sha256',
-  "legacy_source_provider: 'supabase_storage'",
-  'legacy_copy_verified: true',
-  '/api/cloud-stock/legacy-status',
-  'Neon退避状況を確認',
-  '削除release:',
-  'SHA-256'
-]) requireText(legacyUi, text, 'legacy rescue UI');
-
-for (const text of [
-  'alt=media',
-  "createHash('sha256').update(buffer).digest('hex')",
-  'GOOGLE_CLOUD_CREDENTIALS'
-]) requireText(integrity, text, 'Drive integrity verifier');
-
-for (const text of [
-  'legacy_source_provider',
-  'legacy_source_bucket',
-  'legacy_source_path',
-  'legacy_source_sha256',
-  'legacy_copy_verified_at',
-  'legacy_source_deleted_at',
-  'vault_source_files_legacy_source_uidx'
-]) requireText(migration, text, 'Neon legacy provenance migration');
-forbidText(migration.toLowerCase(), 'drop table', 'legacy provenance migration must be additive');
-
-requireText(proxy, "path === '/api/cloud-stock/legacy-status'", 'low-cost proxy must allow read-only rescue status');
-forbidText(proxy, "path === '/api/chat'", 'full pipeline must remain locked');
-
-console.log('Legacy Supabase rescue v37 invariants passed');
+console.log('Supabase Storage retirement invariants passed');

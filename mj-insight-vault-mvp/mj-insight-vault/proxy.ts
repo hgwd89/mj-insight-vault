@@ -6,17 +6,13 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/status') return method === 'GET';
   if (path === '/api/cloud-stock/auth') return method === 'GET' || method === 'POST' || method === 'DELETE';
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';
-  if (path === '/api/cloud-stock/upload') return method === 'POST';
-  if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
-  if (path === '/api/cloud-stock/import-supabase-db') return method === 'GET' || method === 'POST';
-  if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
+  if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
+  if (path === '/api/cloud-stock/ocr') return method === 'POST';
   return false;
 }
 
 function allowedLowCostStockRequest(request: NextRequest) {
-  const method = request.method.toUpperCase();
-  const path = request.nextUrl.pathname;
-  return allowedCloudStockRequest(method, path);
+  return allowedCloudStockRequest(request.method.toUpperCase(), request.nextUrl.pathname);
 }
 
 export function proxy(request: NextRequest) {
@@ -25,12 +21,14 @@ export function proxy(request: NextRequest) {
 
   return NextResponse.json({
     ok: false,
-    error: 'MJ Insight Vault is running in free cloud-stock mode. Only Google Drive + Neon stock APIs and read-only legacy Supabase rescue APIs are enabled. Supabase writes, OCR, classification, analysis, reports, and full rollout remain locked.',
-    mode: 'ocr_only',
-    storage_mode: 'google_drive_neon',
-    supabase_mode: 'legacy_frozen',
-    ocr_execution_locked: true,
-    full_pipeline_locked: true
+    error: '現在はGoogleドライブ＋Neon運用です。このAPIは停止中です。資料同期・手動OCR・検索のみ利用できます。',
+    mode: 'google_drive_neon',
+    manual_ocr_enabled: true,
+    automatic_processing_locked: true,
+    classification_locked: true,
+    theme_analysis_locked: true,
+    report_locked: true,
+    bulk_processing_locked: true
   }, { status: 423 });
 }
 

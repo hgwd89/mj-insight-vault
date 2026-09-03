@@ -1,4 +1,5 @@
-import { getGoogleDriveBackupConfig, resolveWritableGoogleDriveFolder } from '@/lib/googleDriveBackup';
+import { getGoogleDriveBackupConfig } from '@/lib/googleDriveBackup';
+import { probeGoogleDriveFolderRead } from '@/lib/googleDriveRead';
 import { GOOGLE_DRIVE_ORIGINALS_FOLDER_ID, NEON_DATA_API_URL } from '@/lib/neonCloud';
 
 export const runtime = 'nodejs';
@@ -6,21 +7,24 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const config = getGoogleDriveBackupConfig();
-  const destination = await resolveWritableGoogleDriveFolder(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID);
+  const driveProbe = await probeGoogleDriveFolderRead(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID);
+  const neonConfigured = Boolean(NEON_DATA_API_URL);
+  const ready = driveProbe.ok && neonConfigured;
 
   return Response.json({
-    ok: destination.ok && Boolean(NEON_DATA_API_URL),
+    ok: ready,
     storage_mode: 'google_drive_neon',
     drive: {
       configured: true,
       originals_folder_id: GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
-      readable_and_syncable: destination.ok,
-      active_folder_id: destination.ok ? destination.folderId : null,
+      readable_and_syncable: driveProbe.ok,
+      visible_file_count: driveProbe.fileCount,
+      file_content_readable: driveProbe.firstFileReadable,
       service_account_email: config.clientEmail || null,
-      error: destination.ok ? null : destination.error
+      error: driveProbe.error
     },
     neon: {
-      data_api_configured: Boolean(NEON_DATA_API_URL),
+      data_api_configured: neonConfigured,
       schema_managed_separately: true
     },
     execution: {
@@ -32,7 +36,7 @@ export async function GET() {
       bulk_processing: false
     }
   }, {
-    status: destination.ok && NEON_DATA_API_URL ? 200 : 503,
+    status: ready ? 200 : 503,
     headers: { 'cache-control': 'no-store' }
   });
 }

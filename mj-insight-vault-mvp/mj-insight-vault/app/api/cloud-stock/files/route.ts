@@ -19,10 +19,37 @@ function nullableDate(value: unknown) {
   return /^\d{4}-\d{2}-\d{2}$/.test(valueText) ? valueText : null;
 }
 
+function contentRangeTotal(value: string | null) {
+  if (!value) return null;
+  const match = /\/(\d+)$/.exec(value);
+  return match ? Number(match[1]) : null;
+}
+
 export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
     const jwt = await requireNeonJwt(req);
+    const mode = text(req.nextUrl.searchParams.get('mode'), 64);
+
+    if (mode === 'pending_ocr') {
+      const response = await neonDataFetch(
+        'vault_source_files?select=id,drive_file_id,file_name,mime_type,file_size_bytes,ocr_status,created_at&ocr_status=in.(not_started,failed)&mime_type=in.(image/jpeg,image/png,image/webp)&source_status=neq.e2e_test&order=created_at.asc&limit=500',
+        jwt,
+        {
+          method: 'GET',
+          headers: { prefer: 'count=exact' }
+        }
+      );
+      const rows = await parseUpstreamJson(response, '未OCR資料の取得に失敗しました。');
+      const list = Array.isArray(rows) ? rows : [];
+      return Response.json({
+        ok: true,
+        mode,
+        total: contentRangeTotal(response.headers.get('content-range')) ?? list.length,
+        rows: list
+      });
+    }
+
     const query = text(req.nextUrl.searchParams.get('q'), 500);
     const response = await neonDataFetch('rpc/vault_search_v1', jwt, {
       method: 'POST',

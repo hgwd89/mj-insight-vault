@@ -3,13 +3,13 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { Cloud, Home, Upload } from 'lucide-react';
+import { Newspaper, Home, Upload } from 'lucide-react';
 import { useClearAppPassword } from '@/components/PasswordGate';
 
 const nav = [
   { href: '/', label: 'ホーム', icon: Home },
   { href: '/upload', label: '資料追加', icon: Upload },
-  { href: '/cloud-stock', label: '資料一覧・検索', icon: Cloud }
+  { href: '/cloud-stock', label: '記事一覧・検索', icon: Newspaper }
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

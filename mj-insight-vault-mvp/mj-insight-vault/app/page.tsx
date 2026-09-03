@@ -5,13 +5,13 @@ const tiles = [
   {
     href: '/upload',
     title: '資料を追加',
-    body: '画像やPDFをGoogle Driveへ保存し、Neonへ検索用の情報を登録します。',
+    body: '画像やPDFをGoogleドライブへ保存し、検索用の情報をデータベースへ登録します。',
     icon: Upload
   },
   {
     href: '/cloud-stock',
     title: '資料一覧・検索',
-    body: '保存済み資料を確認し、Neonの登録データを検索します。',
+    body: '保存済み資料を確認し、登録済みデータを検索します。',
     icon: Cloud
   }
 ];
@@ -20,11 +20,11 @@ export default function HomePage() {
   return (
     <div className="space-y-5">
       <div className="card p-5 sm:p-6">
-        <p className="text-sm font-semibold text-emerald-700">Google Drive + Neon</p>
+        <p className="text-sm font-semibold text-emerald-700">原本保管：Googleドライブ ／ データベース：Neon</p>
         <h1 className="mt-2 text-2xl font-black tracking-tight">MJ Insight Vault</h1>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-600">
-          原本はGoogle Drive、検索・OCR本文・Inventory・レポート用データはNeonで管理します。
-          現在は安全のため、OCR・分類・テーマ分析・レポート生成の自動実行は停止しています。
+          原本はGoogleドライブ、検索・OCR本文・記事インベントリ・レポート用データはNeonで管理します。
+          現在は安全のため、OCR・分類・テーマ分析・レポート生成の自動実行を停止しています。
         </p>
       </div>
 

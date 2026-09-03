@@ -1,5 +1,5 @@
-import { CloudStockAutoBootstrap } from '@/components/CloudStockAutoBootstrap';
+import { DriveNeonSimpleVault } from '@/components/DriveNeonSimpleVault';
 
 export default function CloudStockPage() {
-  return <CloudStockAutoBootstrap />;
+  return <DriveNeonSimpleVault />;
 }

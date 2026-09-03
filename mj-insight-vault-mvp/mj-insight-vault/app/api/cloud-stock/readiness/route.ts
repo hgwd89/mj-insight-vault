@@ -1,4 +1,4 @@
-import { getGoogleDriveBackupConfig } from '@/lib/googleDriveBackup';
+import { getGoogleDriveBackupConfig, inspectGoogleDriveFolder } from '@/lib/googleDriveBackup';
 import { probeGoogleDriveFolderRead } from '@/lib/googleDriveRead';
 import { GOOGLE_DRIVE_ORIGINALS_FOLDER_ID, NEON_DATA_API_URL } from '@/lib/neonCloud';
 
@@ -7,9 +7,12 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const config = getGoogleDriveBackupConfig();
-  const driveProbe = await probeGoogleDriveFolderRead(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID);
+  const [driveReadProbe, driveWriteProbe] = await Promise.all([
+    probeGoogleDriveFolderRead(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID),
+    inspectGoogleDriveFolder(GOOGLE_DRIVE_ORIGINALS_FOLDER_ID)
+  ]);
   const neonConfigured = Boolean(NEON_DATA_API_URL);
-  const ready = driveProbe.ok && neonConfigured;
+  const ready = driveReadProbe.ok && driveWriteProbe.ok && neonConfigured;
 
   return Response.json({
     ok: ready,
@@ -17,11 +20,14 @@ export async function GET() {
     drive: {
       configured: true,
       originals_folder_id: GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
-      readable_and_syncable: driveProbe.ok,
-      visible_file_count: driveProbe.fileCount,
-      file_content_readable: driveProbe.firstFileReadable,
+      readable_and_syncable: driveReadProbe.ok,
+      writable: driveWriteProbe.ok,
+      writable_check: 'drive_capability_canAddChildren',
+      can_add_children: driveWriteProbe.canAddChildren ?? false,
+      visible_file_count: driveReadProbe.fileCount,
+      file_content_readable: driveReadProbe.firstFileReadable,
       service_account_email: config.clientEmail || null,
-      error: driveProbe.error
+      error: driveReadProbe.error || driveWriteProbe.error
     },
     neon: {
       data_api_configured: neonConfigured,

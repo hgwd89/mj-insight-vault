@@ -10,7 +10,9 @@ type Row = {
   id?: string;
   drive_file_id: string;
   file_name: string;
+  mime_type?: string | null;
   file_size_bytes?: number | null;
+  ocr_status?: string | null;
   created_at?: string | null;
   matched_article_title?: string | null;
   matched_text_preview?: string | null;
@@ -43,11 +45,23 @@ async function readJson(res: Response) {
   return json;
 }
 
+function ocrLabel(status?: string | null) {
+  if (status === 'done') return 'OCR済み';
+  if (status === 'processing') return 'OCR処理中';
+  if (status === 'failed') return 'OCR失敗';
+  return '未OCR';
+}
+
+function canOcr(row: Row) {
+  return ['image/jpeg', 'image/png', 'image/webp'].includes(String(row.mime_type || '').toLowerCase());
+}
+
 export function DriveNeonSimpleVault() {
   const appPassword = useAppPassword();
   const [ready, setReady] = useState(false);
   const [message, setMessage] = useState('接続を確認しています…');
   const [syncing, setSyncing] = useState(false);
+  const [ocrRunningId, setOcrRunningId] = useState('');
   const [query, setQuery] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
 
@@ -105,6 +119,28 @@ export function DriveNeonSimpleVault() {
     }
   }
 
+  async function runOcr(row: Row) {
+    const sourceFileId = row.source_file_id || row.id || '';
+    if (!sourceFileId || ocrRunningId) return;
+    setOcrRunningId(sourceFileId);
+    setMessage(`「${row.file_name}」をOCRしています…`);
+    try {
+      const res = await fetch('/api/cloud-stock/ocr', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
+        body: JSON.stringify({ source_file_id: sourceFileId })
+      });
+      const json = await readJson(res);
+      await loadRows(query);
+      setMessage(`OCR完了：「${row.file_name}」 ${Number(json.ocr_char_count || 0).toLocaleString()}文字。OCR本文を検索できます。`);
+    } catch (error) {
+      await loadRows(query).catch(() => []);
+      setMessage(japaneseError(error instanceof Error ? error.message : 'OCRに失敗しました。'));
+    } finally {
+      setOcrRunningId('');
+    }
+  }
+
   async function search() {
     try {
       const current = await loadRows(query);
@@ -120,7 +156,7 @@ export function DriveNeonSimpleVault() {
         <p className="text-sm font-bold text-emerald-700">資料を追加</p>
         <h1 className="mt-1 text-xl font-black">Googleドライブに保存して、MJに登録</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          原本はGoogleドライブの「01 Originals」に保存します。資料を追加した後、この画面に戻って「MJに同期する」を押してください。検索用の情報がデータベースに登録されます。
+          原本はGoogleドライブの「01 Originals」に保存します。資料を追加した後、この画面に戻って「MJに同期する」を押してください。
         </p>
         <div className="mt-4 grid gap-3">
           <a className="btn btn-primary flex min-h-12 items-center justify-center text-center" href={DRIVE_URL} target="_blank" rel="noreferrer">
@@ -135,6 +171,7 @@ export function DriveNeonSimpleVault() {
 
       <div className="card p-5">
         <p className="text-sm font-bold text-zinc-500">資料一覧・検索</p>
+        <p className="mt-1 text-xs leading-5 text-zinc-500">画像は一覧からOCRできます。OCR済みの本文もこの検索欄から探せます。</p>
         <div className="mt-3 flex gap-2">
           <input
             className="input min-w-0 flex-1"
@@ -151,23 +188,44 @@ export function DriveNeonSimpleVault() {
             <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-500">
               まだ登録された資料はありません。
             </div>
-          ) : rows.map((row) => (
-            <a
-              key={row.source_file_id || row.id || row.drive_file_id}
-              href={`https://drive.google.com/file/d/${encodeURIComponent(row.drive_file_id)}/view`}
-              target="_blank"
-              rel="noreferrer"
-              className="block rounded-xl border border-zinc-200 p-3 hover:border-zinc-400"
-            >
-              <div className="break-words text-sm font-bold text-zinc-900">{row.file_name}</div>
-              <div className="mt-1 text-xs text-zinc-500">
-                {[formatBytes(row.file_size_bytes), row.matched_article_title || ''].filter(Boolean).join(' · ')}
+          ) : rows.map((row) => {
+            const sourceFileId = row.source_file_id || row.id || '';
+            const running = ocrRunningId === sourceFileId;
+            return (
+              <div key={sourceFileId || row.drive_file_id} className="rounded-xl border border-zinc-200 p-3">
+                <a
+                  href={`https://drive.google.com/file/d/${encodeURIComponent(row.drive_file_id)}/view`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block hover:opacity-70"
+                >
+                  <div className="break-words text-sm font-bold text-zinc-900">{row.file_name}</div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    {[formatBytes(row.file_size_bytes), ocrLabel(row.ocr_status)].filter(Boolean).join(' · ')}
+                  </div>
+                </a>
+
+                {row.matched_text_preview && (
+                  <p className="mt-2 line-clamp-4 rounded-lg bg-zinc-50 p-2 text-xs leading-5 text-zinc-600">{row.matched_text_preview}</p>
+                )}
+
+                <div className="mt-3 flex gap-2">
+                  {canOcr(row) ? (
+                    <button
+                      className="btn min-h-10 flex-1"
+                      type="button"
+                      disabled={!ready || Boolean(ocrRunningId) || row.ocr_status === 'done'}
+                      onClick={() => void runOcr(row)}
+                    >
+                      {running ? 'OCRしています…' : row.ocr_status === 'done' ? 'OCR済み' : row.ocr_status === 'failed' ? 'OCRを再実行' : 'OCRする'}
+                    </button>
+                  ) : (
+                    <div className="flex-1 rounded-lg bg-zinc-100 px-3 py-2 text-center text-xs text-zinc-500">PDFのOCRは未対応</div>
+                  )}
+                </div>
               </div>
-              {row.matched_text_preview && (
-                <p className="mt-2 line-clamp-3 text-xs leading-5 text-zinc-600">{row.matched_text_preview}</p>
-              )}
-            </a>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

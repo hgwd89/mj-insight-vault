@@ -5,13 +5,13 @@ const tiles = [
   {
     href: '/upload',
     title: '資料を追加',
-    body: '画像やPDFをGoogleドライブへ保存し、検索用の情報をデータベースへ登録します。',
+    body: '画像やPDFをGoogleドライブへ保存し、MJへ同期します。',
     icon: Upload
   },
   {
     href: '/cloud-stock',
     title: '資料一覧・検索',
-    body: '保存済み資料を確認し、登録済みデータを検索します。',
+    body: '保存済み資料を確認し、画像のOCR実行とOCR本文検索ができます。',
     icon: Cloud
   }
 ];
@@ -24,7 +24,7 @@ export default function HomePage() {
         <h1 className="mt-2 text-2xl font-black tracking-tight">MJ Insight Vault</h1>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-600">
           原本はGoogleドライブ、検索・OCR本文・記事インベントリ・レポート用データはNeonで管理します。
-          現在は安全のため、OCR・分類・テーマ分析・レポート生成の自動実行を停止しています。
+          画像OCRは資料一覧から1件ずつ実行できます。分類・テーマ分析・レポート生成・一括処理はまだ自動実行しません。
         </p>
       </div>
 

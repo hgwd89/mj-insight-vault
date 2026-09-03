@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     return Response.json({
       ok: true,
       storage_mode: 'google_drive_neon',
-      supabase_mode: 'legacy_frozen',
+      supabase_mode: 'retired',
       drive: {
         originals_folder_id: GOOGLE_DRIVE_ORIGINALS_FOLDER_ID,
         configured_fallback_folder_id: drive.folderId || null,

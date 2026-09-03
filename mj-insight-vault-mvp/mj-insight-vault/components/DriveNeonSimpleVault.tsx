@@ -1,45 +1,35 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useAppPassword } from '@/components/PasswordGate';
 
 const DRIVE_URL = 'https://drive.google.com/drive/folders/1C6LBMMZmrP6hdRoOmomz7BMoFXxPZ1QQ';
-const OCR_CONCURRENCY = 3;
+const PROCESS_CONCURRENCY = 2;
 
-type Row = {
+type QueueRow = {
   source_file_id?: string;
   id?: string;
-  drive_file_id: string;
-  file_name: string;
-  mime_type?: string | null;
-  file_size_bytes?: number | null;
-  ocr_status?: string | null;
-  created_at?: string | null;
-  matched_article_title?: string | null;
-  matched_text_preview?: string | null;
+  file_name?: string;
 };
 
-type BulkProgress = {
+type Progress = {
   completed: number;
   total: number;
   failed: number;
 };
 
-function formatBytes(value?: number | null) {
-  const bytes = Number(value || 0);
-  if (!bytes) return '';
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+function sourceId(row: QueueRow) {
+  return row.source_file_id || row.id || '';
 }
 
 function japaneseError(message: string) {
   const text = message.trim();
   if (!text) return '処理に失敗しました。';
-  if (/missing or null origin/i.test(text)) return '認証情報の確認に失敗しました。ページを再読み込みしてください。';
-  if (/origin header is required/i.test(text)) return '認証情報の確認に失敗しました。ページを再読み込みしてください。';
+  if (/missing or null origin/i.test(text) || /origin header is required/i.test(text)) return '認証情報の確認に失敗しました。ページを再読み込みしてください。';
   if (/google oauth/i.test(text)) return 'Googleドライブへの接続に失敗しました。';
-  if (/google drive list failed/i.test(text)) return 'Googleドライブの資料一覧を取得できませんでした。';
-  if (/credentials are not configured/i.test(text)) return 'Googleドライブの接続設定が完了していません。';
+  if (/google drive/i.test(text) && /(failed|error|取得できません)/i.test(text)) return 'Googleドライブの資料を取得できませんでした。';
+  if (/quota|rate limit|insufficient_quota/i.test(text)) return 'AI処理の利用上限に達しました。時間をおいて再実行してください。';
   if (/neon/i.test(text) && /(failed|error)/i.test(text)) return 'データベースへの登録または検索に失敗しました。';
   if (/http\s*4\d\d/i.test(text)) return '入力内容または認証状態を確認してください。';
   if (/http\s*5\d\d/i.test(text)) return 'サーバー側の処理に失敗しました。時間をおいて再度実行してください。';
@@ -52,68 +42,56 @@ async function readJson(res: Response) {
   return json;
 }
 
-function ocrLabel(status?: string | null) {
-  if (status === 'done') return 'OCR済み';
-  if (status === 'processing') return 'OCR処理中';
-  if (status === 'failed') return 'OCR失敗';
-  return '未OCR';
-}
-
-function canOcr(row: Row) {
-  return ['image/jpeg', 'image/png', 'image/webp'].includes(String(row.mime_type || '').toLowerCase());
-}
-
-function sourceId(row: Row) {
-  return row.source_file_id || row.id || '';
-}
-
 export function DriveNeonSimpleVault() {
   const appPassword = useAppPassword();
   const [ready, setReady] = useState(false);
   const [message, setMessage] = useState('接続を確認しています…');
   const [syncing, setSyncing] = useState(false);
-  const [bulkOcrRunning, setBulkOcrRunning] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState<BulkProgress>({ completed: 0, total: 0, failed: 0 });
-  const [pendingOcrCount, setPendingOcrCount] = useState(0);
-  const [query, setQuery] = useState('');
-  const [rows, setRows] = useState<Row[]>([]);
-
-  async function loadRows(q = '') {
-    const res = await fetch(`/api/cloud-stock/files?q=${encodeURIComponent(q.trim())}`, {
-      headers: { 'x-app-password': appPassword }
-    });
-    const json = await readJson(res);
-    const next = Array.isArray(json.rows) ? json.rows as Row[] : [];
-    setRows(next);
-    return next;
-  }
+  const [processing, setProcessing] = useState(false);
+  const [pendingOcr, setPendingOcr] = useState(0);
+  const [pendingOrganize, setPendingOrganize] = useState(0);
+  const [progress, setProgress] = useState<Progress>({ completed: 0, total: 0, failed: 0 });
 
   async function loadPendingOcr() {
     const res = await fetch('/api/cloud-stock/files?mode=pending_ocr', {
       headers: { 'x-app-password': appPassword }
     });
     const json = await readJson(res);
-    const next = Array.isArray(json.rows) ? json.rows as Row[] : [];
-    const total = Number.isFinite(Number(json.total)) ? Math.max(0, Number(json.total)) : next.length;
-    setPendingOcrCount(total);
-    return { rows: next, total };
+    const rows = Array.isArray(json.rows) ? json.rows as QueueRow[] : [];
+    const total = Number.isFinite(Number(json.total)) ? Math.max(0, Number(json.total)) : rows.length;
+    setPendingOcr(total);
+    return { rows, total };
+  }
+
+  async function loadPendingOrganize() {
+    const res = await fetch('/api/cloud-stock/organize', {
+      headers: { 'x-app-password': appPassword }
+    });
+    const json = await readJson(res);
+    const rows = Array.isArray(json.rows) ? json.rows as QueueRow[] : [];
+    const total = Number.isFinite(Number(json.total)) ? Math.max(0, Number(json.total)) : rows.length;
+    setPendingOrganize(total);
+    return { rows, total };
+  }
+
+  async function refreshQueues() {
+    const [ocr, organize] = await Promise.all([loadPendingOcr(), loadPendingOrganize()]);
+    return { ocr, organize };
   }
 
   useEffect(() => {
     if (!appPassword) return;
     void (async () => {
       try {
-        // This is a single-user vault. Always establish the deterministic owner
-        // session so stale/manual Neon sessions cannot split data by user_id.
         const auth = await fetch('/api/cloud-stock/auth', {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
           body: JSON.stringify({ action: 'auto' })
         });
         await readJson(auth);
-        const [initial, pending] = await Promise.all([loadRows(''), loadPendingOcr()]);
+        const queues = await refreshQueues();
         setReady(true);
-        setMessage(`登録済み資料：${initial.length}件／未OCR画像：${pending.total}件`);
+        setMessage(`未OCR ${queues.ocr.total}件／記事整理待ち ${queues.organize.total}件`);
       } catch (error) {
         setReady(false);
         setMessage(japaneseError(error instanceof Error ? error.message : '接続に失敗しました。'));
@@ -123,7 +101,7 @@ export function DriveNeonSimpleVault() {
   }, [appPassword]);
 
   async function syncDrive() {
-    if (!ready || syncing || bulkOcrRunning) return;
+    if (!ready || syncing || processing) return;
     setSyncing(true);
     setMessage('Googleドライブの資料を確認しています…');
     try {
@@ -132,8 +110,8 @@ export function DriveNeonSimpleVault() {
         headers: { 'x-app-password': appPassword }
       });
       const json = await readJson(res);
-      const [current, pending] = await Promise.all([loadRows(query), loadPendingOcr()]);
-      setMessage(`同期完了：新規登録 ${Number(json.newly_registered || 0)}件／ドライブ内 ${Number(json.drive_files || 0)}件／未OCR画像 ${pending.total}件／現在表示 ${current.length}件`);
+      const queues = await refreshQueues();
+      setMessage(`同期完了：新規 ${Number(json.newly_registered || 0)}件／未OCR ${queues.ocr.total}件／記事整理待ち ${queues.organize.total}件`);
     } catch (error) {
       setMessage(japaneseError(error instanceof Error ? error.message : '同期に失敗しました。'));
     } finally {
@@ -141,50 +119,50 @@ export function DriveNeonSimpleVault() {
     }
   }
 
-  async function runBulkOcr() {
-    if (!ready || syncing || bulkOcrRunning) return;
+  async function organizeOne(id: string) {
+    const res = await fetch('/api/cloud-stock/organize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
+      body: JSON.stringify({ source_file_id: id })
+    });
+    return readJson(res);
+  }
 
-    setBulkOcrRunning(true);
-    setBulkProgress({ completed: 0, total: 0, failed: 0 });
+  async function ocrAndOrganizeOne(id: string) {
+    const ocrRes = await fetch('/api/cloud-stock/ocr', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
+      body: JSON.stringify({ source_file_id: id })
+    });
+    await readJson(ocrRes);
+    await organizeOne(id);
+  }
 
-    const attempted = new Set<string>();
+  async function runBatch() {
+    if (!ready || syncing || processing) return;
+    setProcessing(true);
     let completed = 0;
     let succeeded = 0;
     let failed = 0;
-    let initialTotal = 0;
 
     try {
-      let queue = await loadPendingOcr();
-      initialTotal = queue.total;
-      setBulkProgress({ completed: 0, total: initialTotal, failed: 0 });
-
+      const initial = await refreshQueues();
+      const initialTotal = initial.ocr.total + initial.organize.total;
+      setProgress({ completed: 0, total: initialTotal, failed: 0 });
       if (initialTotal === 0) {
-        setMessage('一括OCR対象はありません。');
+        setMessage('処理待ちの資料はありません。');
         return;
       }
 
-      setMessage(`一括OCRを開始します：0/${initialTotal}件`);
-
-      while (true) {
-        const candidates = queue.rows.filter((row) => {
-          const id = sourceId(row);
-          return Boolean(id) && !attempted.has(id);
-        });
-
-        if (candidates.length === 0) break;
-
-        for (let index = 0; index < candidates.length; index += OCR_CONCURRENCY) {
-          const chunk = candidates.slice(index, index + OCR_CONCURRENCY);
+      const processRows = async (rows: QueueRow[], mode: 'ocr' | 'organize') => {
+        for (let index = 0; index < rows.length; index += PROCESS_CONCURRENCY) {
+          const chunk = rows.slice(index, index + PROCESS_CONCURRENCY);
           const results = await Promise.all(chunk.map(async (row) => {
             const id = sourceId(row);
-            attempted.add(id);
+            if (!id) return false;
             try {
-              const res = await fetch('/api/cloud-stock/ocr', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
-                body: JSON.stringify({ source_file_id: id })
-              });
-              await readJson(res);
+              if (mode === 'ocr') await ocrAndOrganizeOne(id);
+              else await organizeOne(id);
               return true;
             } catch {
               return false;
@@ -196,126 +174,82 @@ export function DriveNeonSimpleVault() {
             if (ok) succeeded += 1;
             else failed += 1;
           }
-
-          setBulkProgress({ completed, total: initialTotal, failed });
-          setMessage(`一括OCR中：${completed}/${initialTotal}件（成功 ${succeeded}／失敗 ${failed}）`);
+          setProgress({ completed, total: initialTotal, failed });
+          setMessage(`OCR・記事整理中：${completed}/${initialTotal}件（成功 ${succeeded}／失敗 ${failed}）`);
         }
+      };
 
-        queue = await loadPendingOcr();
-        const hasUnattempted = queue.rows.some((row) => {
-          const id = sourceId(row);
-          return Boolean(id) && !attempted.has(id);
-        });
-        if (!hasUnattempted) break;
-      }
+      await processRows(initial.ocr.rows, 'ocr');
 
-      const [current, remaining] = await Promise.all([loadRows(query), loadPendingOcr()]);
+      // OCR後に新たに記事整理待ちになったものは、上で連続処理済み。
+      // 開始時点ですでにOCR済みだった資料だけをここで整理する。
+      const initialOcrIds = new Set(initial.ocr.rows.map(sourceId).filter(Boolean));
+      const organizeOnly = initial.organize.rows.filter((row) => !initialOcrIds.has(sourceId(row)));
+      await processRows(organizeOnly, 'organize');
+
+      const remaining = await refreshQueues();
       setMessage(
-        `一括OCR完了：成功 ${succeeded}件／失敗 ${failed}件／対象 ${completed}件` +
-        (remaining.total > 0 ? `／再試行対象 ${remaining.total}件` : '') +
-        `／現在表示 ${current.length}件`
+        `処理完了：成功 ${succeeded}件／失敗 ${failed}件` +
+        (remaining.ocr.total + remaining.organize.total > 0
+          ? `／再試行待ち ${remaining.ocr.total + remaining.organize.total}件`
+          : '／すべて記事閲覧可能です。')
       );
     } catch (error) {
-      await Promise.all([loadRows(query).catch(() => []), loadPendingOcr().catch(() => ({ rows: [], total: pendingOcrCount }))]);
-      setMessage(japaneseError(error instanceof Error ? error.message : '一括OCRに失敗しました。'));
+      await refreshQueues().catch(() => null);
+      setMessage(japaneseError(error instanceof Error ? error.message : '一括処理に失敗しました。'));
     } finally {
-      setBulkOcrRunning(false);
+      setProcessing(false);
     }
   }
 
-  async function search() {
-    try {
-      const current = await loadRows(query);
-      setMessage(`検索結果：${current.length}件`);
-    } catch (error) {
-      setMessage(japaneseError(error instanceof Error ? error.message : '検索に失敗しました。'));
-    }
-  }
+  const pendingTotal = pendingOcr + pendingOrganize;
 
   return (
     <div className="space-y-4">
       <div className="card p-5">
         <p className="text-sm font-bold text-emerald-700">資料を追加</p>
-        <h1 className="mt-1 text-xl font-black">Googleドライブに保存して、MJに登録</h1>
+        <h1 className="mt-1 text-xl font-black">原本を追加して、記事として読める状態にする</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          原本はGoogleドライブの「01 Originals」に保存します。資料を追加した後、この画面に戻って同期し、未OCR画像をまとめて処理します。
+          原本はGoogleドライブの「01 Originals」に保存します。MJへ同期した後、一括処理するとOCRから記事分割・本文再構成まで続けて実行します。
         </p>
+
         <div className="mt-4 grid gap-3">
           <a className="btn btn-primary flex min-h-12 items-center justify-center text-center" href={DRIVE_URL} target="_blank" rel="noreferrer">
-            1. Googleドライブを開いて資料を追加
+            1. Googleドライブに原本を追加
           </a>
-          <button className="btn min-h-12" type="button" onClick={syncDrive} disabled={!ready || syncing || bulkOcrRunning}>
-            {syncing ? '同期しています…' : '2. 追加した資料をMJに同期する'}
+          <button className="btn min-h-12" type="button" onClick={syncDrive} disabled={!ready || syncing || processing}>
+            {syncing ? '同期しています…' : '2. 追加した原本をMJに同期'}
           </button>
-          <button
-            className="btn min-h-12"
-            type="button"
-            onClick={() => void runBulkOcr()}
-            disabled={!ready || syncing || bulkOcrRunning || pendingOcrCount === 0}
-          >
-            {bulkOcrRunning
-              ? `OCR中 ${bulkProgress.completed}/${bulkProgress.total}件`
-              : pendingOcrCount > 0
-                ? `3. 未OCR画像を一括OCR（${pendingOcrCount}件）`
-                : '3. OCR対象なし'}
+          <button className="btn min-h-12" type="button" onClick={() => void runBatch()} disabled={!ready || syncing || processing || pendingTotal === 0}>
+            {processing
+              ? `処理中 ${progress.completed}/${progress.total}件`
+              : pendingTotal > 0
+                ? `3. OCR・記事整理を一括実行（${pendingTotal}件）`
+                : '3. 未処理資料なし'}
           </button>
+          <Link className="btn min-h-12 flex items-center justify-center" href="/cloud-stock">
+            記事一覧を見る
+          </Link>
         </div>
-        {bulkOcrRunning && bulkProgress.total > 0 && (
+
+        {processing && progress.total > 0 && (
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200">
             <div
               className="h-full bg-zinc-800 transition-all"
-              style={{ width: `${Math.min(100, Math.round((bulkProgress.completed / bulkProgress.total) * 100))}%` }}
+              style={{ width: `${Math.min(100, Math.round((progress.completed / progress.total) * 100))}%` }}
             />
           </div>
         )}
+
         <p className="mt-3 text-sm font-semibold text-zinc-700">{message}</p>
       </div>
 
       <div className="card p-5">
-        <p className="text-sm font-bold text-zinc-500">資料一覧・検索</p>
-        <p className="mt-1 text-xs leading-5 text-zinc-500">OCRは上の「未OCR画像を一括OCR」でまとめて実行します。OCR済み本文もこの検索欄から探せます。</p>
-        <div className="mt-3 flex gap-2">
-          <input
-            className="input min-w-0 flex-1"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void search(); }}
-            placeholder="ファイル名・OCR本文を検索"
-          />
-          <button className="btn shrink-0" type="button" onClick={search} disabled={!ready || bulkOcrRunning}>検索</button>
-        </div>
-
-        <div className="mt-4 space-y-2">
-          {rows.length === 0 ? (
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-500">
-              まだ登録された資料はありません。
-            </div>
-          ) : rows.map((row) => {
-            const id = sourceId(row);
-            return (
-              <div key={id || row.drive_file_id} className="rounded-xl border border-zinc-200 p-3">
-                <a
-                  href={`https://drive.google.com/file/d/${encodeURIComponent(row.drive_file_id)}/view`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block hover:opacity-70"
-                >
-                  <div className="break-words text-sm font-bold text-zinc-900">{row.file_name}</div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    {[formatBytes(row.file_size_bytes), ocrLabel(row.ocr_status)].filter(Boolean).join(' · ')}
-                  </div>
-                </a>
-
-                {row.matched_text_preview && (
-                  <p className="mt-2 line-clamp-4 rounded-lg bg-zinc-50 p-2 text-xs leading-5 text-zinc-600">{row.matched_text_preview}</p>
-                )}
-
-                {!canOcr(row) && (
-                  <div className="mt-2 rounded-lg bg-zinc-100 px-3 py-2 text-center text-xs text-zinc-500">PDFのOCRは未対応</div>
-                )}
-              </div>
-            );
-          })}
+        <p className="text-sm font-bold text-zinc-500">保存の役割</p>
+        <div className="mt-3 space-y-2 text-sm leading-6 text-zinc-700">
+          <p><strong>Googleドライブ：</strong>原本画像・PDFを保管</p>
+          <p><strong>Neon：</strong>OCR本文、整理済み記事、検索データを保管</p>
+          <p><strong>閲覧：</strong>原本ファイルではなく、整理済みの記事を「資料一覧・検索」から読みます。</p>
         </div>
       </div>
     </div>

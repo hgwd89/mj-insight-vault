@@ -6,8 +6,13 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/status') return method === 'GET';
   if (path === '/api/cloud-stock/auth') return method === 'GET' || method === 'POST' || method === 'DELETE';
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';
+  if (path === '/api/cloud-stock/upload') return method === 'POST';
   if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
+  if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
+  // Retired Supabase routes are allow-listed only so their handlers can return HTTP 410 Gone.
+  if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
+  if (path === '/api/cloud-stock/import-supabase-db') return method === 'GET' || method === 'POST';
   return false;
 }
 

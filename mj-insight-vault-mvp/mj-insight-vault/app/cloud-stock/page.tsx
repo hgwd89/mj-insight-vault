@@ -1,5 +1,5 @@
-import { DriveNeonSimpleVault } from '@/components/DriveNeonSimpleVault';
+import { NeonArticleVault } from '@/components/NeonArticleVault';
 
 export default function CloudStockPage() {
-  return <DriveNeonSimpleVault />;
+  return <NeonArticleVault />;
 }

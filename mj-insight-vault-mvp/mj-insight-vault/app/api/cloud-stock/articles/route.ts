@@ -17,9 +17,16 @@ function previewFromArticleText(value: unknown) {
     const after = text.slice(start + bodyMarker.length).trim();
     const next = after.search(/\n【[^】]+】/);
     const body = (next >= 0 ? after.slice(0, next) : after).trim();
-    if (body) return body.slice(0, 360);
+    if (body && body !== '本文再構成なし') return body.slice(0, 360);
   }
   return text.replace(/【[^】]+】/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 360);
+}
+
+function isReadableArticle(title: string, fullText: string) {
+  if (!fullText.trim()) return false;
+  if (title === '無題の記事候補' && fullText.includes('本文再構成なし')) return false;
+  const preview = previewFromArticleText(fullText);
+  return preview.length >= 40;
 }
 
 async function fetchAllArticles(jwt: string) {
@@ -68,18 +75,20 @@ export async function GET(req: NextRequest) {
         const source = sourceMap.get(clean(article.source_file_id, 100));
         if (!source) return null;
         const fullText = clean(article.ocr_text_verified, 100000) || clean(article.ocr_text_raw, 100000);
+        const title = clean(article.title, 1000) || '無題の記事';
+        if (!isReadableArticle(title, fullText)) return null;
         return {
           id: article.id,
           source_file_id: article.source_file_id,
           article_sequence: article.article_sequence,
-          title: clean(article.title, 1000) || '無題の記事',
+          title,
           preview: previewFromArticleText(fullText),
           article_date: clean(source.article_date, 32) || null,
           source_file_name: clean(source.file_name, 500),
           verification_status: article.verification_status,
           confidence: article.confidence,
           updated_at: article.updated_at,
-          _search: `${clean(article.title, 2000)}\n${fullText}\n${clean(source.file_name, 500)}`.toLowerCase()
+          _search: `${title}\n${fullText}\n${clean(source.file_name, 500)}`.toLowerCase()
         };
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row))

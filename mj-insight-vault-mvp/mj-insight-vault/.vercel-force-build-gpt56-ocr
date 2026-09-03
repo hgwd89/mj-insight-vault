@@ -1,2 +1,3 @@
 Force production rebuild after blockwise OCR completion.
 2026-08-25 GPT-5.6 OCR verifier/critic deployment trigger.
+2026-09-03 canonical Google Drive + Neon rebuild trigger; Supabase remains legacy-frozen and no OCR/classification/theme/report/full-rollout execution is enabled.

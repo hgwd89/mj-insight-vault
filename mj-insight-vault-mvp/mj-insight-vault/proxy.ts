@@ -8,7 +8,6 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
-  if (path === '/api/cloud-stock/e2e-probe') return method === 'GET';
   return false;
 }
 

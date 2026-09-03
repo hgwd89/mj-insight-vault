@@ -79,21 +79,19 @@ export function DriveNeonSimpleVault() {
     if (!appPassword) return;
     void (async () => {
       try {
-        let auth = await fetch('/api/cloud-stock/auth', {
-          headers: { 'x-app-password': appPassword }
+        // This is a single-user vault. Always establish the deterministic owner
+        // session so stale/manual Neon sessions cannot split data by user_id.
+        const auth = await fetch('/api/cloud-stock/auth', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
+          body: JSON.stringify({ action: 'auto' })
         });
-        if (!auth.ok) {
-          auth = await fetch('/api/cloud-stock/auth', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-app-password': appPassword },
-            body: JSON.stringify({ action: 'auto' })
-          });
-        }
         await readJson(auth);
         const initial = await loadRows('');
         setReady(true);
         setMessage(`登録済み資料：${initial.length}件`);
       } catch (error) {
+        setReady(false);
         setMessage(japaneseError(error instanceof Error ? error.message : '接続に失敗しました。'));
       }
     })();

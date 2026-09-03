@@ -23,16 +23,30 @@ function formatBytes(value?: number | null) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function japaneseError(message: string) {
+  const text = message.trim();
+  if (!text) return '処理に失敗しました。';
+  if (/missing or null origin/i.test(text)) return '認証情報の確認に失敗しました。ページを再読み込みしてください。';
+  if (/origin header is required/i.test(text)) return '認証情報の確認に失敗しました。ページを再読み込みしてください。';
+  if (/google oauth/i.test(text)) return 'Googleドライブへの接続に失敗しました。';
+  if (/google drive list failed/i.test(text)) return 'Googleドライブの資料一覧を取得できませんでした。';
+  if (/credentials are not configured/i.test(text)) return 'Googleドライブの接続設定が完了していません。';
+  if (/neon/i.test(text) && /(failed|error)/i.test(text)) return 'データベースへの登録または検索に失敗しました。';
+  if (/http\s*4\d\d/i.test(text)) return '入力内容または認証状態を確認してください。';
+  if (/http\s*5\d\d/i.test(text)) return 'サーバー側の処理に失敗しました。時間をおいて再度実行してください。';
+  return text;
+}
+
 async function readJson(res: Response) {
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(String(json.error || `HTTP ${res.status}`));
+  if (!res.ok) throw new Error(japaneseError(String(json.error || `HTTP ${res.status}`)));
   return json;
 }
 
 export function DriveNeonSimpleVault() {
   const appPassword = useAppPassword();
   const [ready, setReady] = useState(false);
-  const [message, setMessage] = useState('接続中…');
+  const [message, setMessage] = useState('接続を確認しています…');
   const [syncing, setSyncing] = useState(false);
   const [query, setQuery] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
@@ -64,9 +78,9 @@ export function DriveNeonSimpleVault() {
         await readJson(auth);
         const initial = await loadRows('');
         setReady(true);
-        setMessage(`登録済み ${initial.length}件`);
+        setMessage(`登録済み資料：${initial.length}件`);
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : '接続に失敗しました。');
+        setMessage(japaneseError(error instanceof Error ? error.message : '接続に失敗しました。'));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -75,7 +89,7 @@ export function DriveNeonSimpleVault() {
   async function syncDrive() {
     if (!ready || syncing) return;
     setSyncing(true);
-    setMessage('Google Driveを確認中…');
+    setMessage('Googleドライブの資料を確認しています…');
     try {
       const res = await fetch('/api/cloud-stock/sync-drive', {
         method: 'POST',
@@ -83,9 +97,9 @@ export function DriveNeonSimpleVault() {
       });
       const json = await readJson(res);
       const current = await loadRows(query);
-      setMessage(`同期完了：新規 ${Number(json.newly_registered || 0)}件 / Drive ${Number(json.drive_files || 0)}件 / 表示 ${current.length}件`);
+      setMessage(`同期完了：新規登録 ${Number(json.newly_registered || 0)}件／ドライブ内 ${Number(json.drive_files || 0)}件／現在表示 ${current.length}件`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '同期に失敗しました。');
+      setMessage(japaneseError(error instanceof Error ? error.message : '同期に失敗しました。'));
     } finally {
       setSyncing(false);
     }
@@ -94,26 +108,26 @@ export function DriveNeonSimpleVault() {
   async function search() {
     try {
       const current = await loadRows(query);
-      setMessage(`${current.length}件`);
+      setMessage(`検索結果：${current.length}件`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '検索に失敗しました。');
+      setMessage(japaneseError(error instanceof Error ? error.message : '検索に失敗しました。'));
     }
   }
 
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <p className="text-sm font-bold text-emerald-700">資料追加</p>
-        <h1 className="mt-1 text-xl font-black">Google Driveへ追加 → MJに同期</h1>
+        <p className="text-sm font-bold text-emerald-700">資料を追加</p>
+        <h1 className="mt-1 text-xl font-black">Googleドライブに保存して、MJに登録</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          原本はGoogle Driveに保存します。Driveで追加した後、この画面に戻って「同期する」を押すとNeonへ検索用情報を登録します。
+          原本はGoogleドライブの「01 Originals」に保存します。資料を追加した後、この画面に戻って「MJに同期する」を押してください。検索用の情報がデータベースに登録されます。
         </p>
         <div className="mt-4 grid gap-3">
           <a className="btn btn-primary flex min-h-12 items-center justify-center text-center" href={DRIVE_URL} target="_blank" rel="noreferrer">
-            1. Google Driveを開いて資料を追加
+            1. Googleドライブを開いて資料を追加
           </a>
           <button className="btn min-h-12" type="button" onClick={syncDrive} disabled={!ready || syncing}>
-            {syncing ? '同期中…' : '2. Driveの資料をMJに同期する'}
+            {syncing ? '同期しています…' : '2. 追加した資料をMJに同期する'}
           </button>
         </div>
         <p className="mt-3 text-sm font-semibold text-zinc-700">{message}</p>

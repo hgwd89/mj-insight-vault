@@ -43,6 +43,7 @@ function getCredentials(): ServiceAccount {
 
 async function getDriveToken() {
   const credentials = getCredentials();
+  const privateKey = credentials.private_key!;
   const now = Math.floor(Date.now() / 1000);
   const tokenUri = credentials.token_uri || 'https://oauth2.googleapis.com/token';
   const unsigned = `${base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${base64Url(JSON.stringify({
@@ -54,7 +55,7 @@ async function getDriveToken() {
   }))}`;
   const signature = createSign('RSA-SHA256')
     .update(unsigned)
-    .sign(credentials.private_key.replace(/\\n/g, '\n'));
+    .sign(privateKey.replace(/\\n/g, '\n'));
   const assertion = `${unsigned}.${base64Url(signature)}`;
   const response = await fetch(tokenUri, {
     method: 'POST',

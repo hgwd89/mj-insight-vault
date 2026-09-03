@@ -7,7 +7,9 @@ function retired() {
     retired: true,
     provider: 'supabase',
     storage_mode: 'google_drive_neon',
-    error: 'Supabase has been retired from MJ Insight Vault. Google Drive + Neon are the only active storage path.'
+    source_deleted: false,
+    downstream_started: false,
+    error: 'Supabase integration is retired from MJ Insight Vault. Google Drive + Neon are the only active storage path.'
   }, {
     status: 410,
     headers: { 'cache-control': 'no-store' }

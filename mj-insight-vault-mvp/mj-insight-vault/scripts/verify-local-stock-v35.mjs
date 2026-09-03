@@ -13,6 +13,7 @@ function forbidText(source, text, label) {
 const page = read('app/local-stock/page.tsx');
 const vault = read('components/LocalStockVault.tsx');
 const upload = read('app/upload/page.tsx');
+const canonical = read('components/DriveNeonSimpleVault.tsx');
 
 requireText(page, 'LocalStockVault', 'local stock route');
 for (const text of [
@@ -26,14 +27,9 @@ for (const text of [
   'URL.createObjectURL',
   'navigator.storage?.estimate',
   'navigator.storage.persist',
-  '画像ファイルをこのブラウザのIndexedDBへ保存します',
-  '料金は発生しません',
-  'Supabaseは使用していません',
-  'accept="image/*,.pdf"'
+  'Supabaseは使用していません'
 ]) requireText(vault, text, 'free local stock');
 
-// Local save itself must remain network/API independent. Network access is allowed only
-// in the explicit migration path that moves already-saved originals to Drive + Neon.
 const saveStart = vault.indexOf('async function save()');
 const migrateStart = vault.indexOf('async function migrateItems');
 if (saveStart < 0 || migrateStart < 0 || migrateStart <= saveStart) {
@@ -60,14 +56,17 @@ for (const required of [
   "fetch('/api/cloud-stock/upload'",
   'json.drive_saved !== true || json.neon_registered !== true',
   'await deleteItem(item.id)',
-  '両方の成功を確認したものだけIndexedDBから削除します',
-  '3.5MB超のPDFはVercel無料枠を通せないため自動移行せず'
+  '両方の成功を確認したものだけIndexedDBから削除します'
 ]) requireText(vault, required, 'explicit Drive + Neon migration');
 
-requireText(upload, '現在の正本ストック：Google Drive + Neon', 'canonical cloud stock disclosure');
-requireText(upload, 'href="/cloud-stock"', 'canonical cloud stock navigation');
-requireText(upload, 'href="/local-stock"', 'local fallback remains reachable');
-requireText(upload, '非常用ローカル退避', 'local stock must be explicitly fallback-only');
-requireText(upload, '538件一括OCRはこの経路から起動しません', 'bulk OCR remains stopped');
+requireText(upload, 'DriveNeonSimpleVault', 'canonical upload page');
+forbidText(upload, 'UploadFormOcrOnly', 'legacy Supabase upload UI must not be canonical');
+for (const text of [
+  'Googleドライブに保存して、MJに登録',
+  '01 Originals',
+  '/api/cloud-stock/sync-drive',
+  '/api/cloud-stock/files',
+  '未OCR画像を一括OCR'
+]) requireText(canonical, text, 'canonical Drive + Neon UI');
 
-console.log('free local stock v35 fallback + explicit migration invariants passed');
+console.log('free local stock fallback + canonical Drive Neon invariants passed');

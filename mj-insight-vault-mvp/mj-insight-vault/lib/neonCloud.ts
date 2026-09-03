@@ -7,6 +7,7 @@ export const GOOGLE_DRIVE_EXPORTS_FOLDER_ID = '1FZNZaPO9MTC147yNzinSY_bGvyFTUfnG
 
 const SESSION_COOKIE = 'mj_neon_session';
 const MAX_SESSION_COOKIE_BYTES = 12_000;
+const CANONICAL_APP_ORIGIN = 'https://hgwd89-mj-insight-vault-k5k2.vercel.app';
 
 type HeadersWithSetCookie = Headers & { getSetCookie?: () => string[] };
 
@@ -14,6 +15,22 @@ function errorWithStatus(message: string, status: number) {
   const error = new Error(message) as Error & { status?: number };
   error.status = status;
   return error;
+}
+
+function normalizeOrigin(value: string | undefined) {
+  const candidate = value?.trim();
+  if (!candidate) return '';
+  try {
+    return new URL(candidate.includes('://') ? candidate : `https://${candidate}`).origin;
+  } catch {
+    return '';
+  }
+}
+
+function resolveAppOrigin() {
+  return normalizeOrigin(process.env.NEXT_PUBLIC_APP_ORIGIN)
+    || normalizeOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL)
+    || CANONICAL_APP_ORIGIN;
 }
 
 function extractSetCookieValues(headers: Headers) {
@@ -74,6 +91,7 @@ export async function neonAuthFetch(path: string, init: RequestInit = {}) {
     cache: 'no-store',
     headers: {
       accept: 'application/json',
+      origin: resolveAppOrigin(),
       ...(init.body ? { 'content-type': 'application/json' } : {}),
       ...(init.headers || {})
     }

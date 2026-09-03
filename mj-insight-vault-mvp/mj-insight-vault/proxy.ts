@@ -10,10 +10,10 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
   if (path === '/api/cloud-stock/organize') return method === 'GET' || method === 'POST';
+  if (path === '/api/cloud-stock/organize-existing-preview') return method === 'GET';
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';
   if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
-  // Retired Supabase routes are allow-listed only so their handlers can return HTTP 410 Gone.
   if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/import-supabase-db') return method === 'GET' || method === 'POST';
   return false;

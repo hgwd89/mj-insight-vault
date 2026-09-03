@@ -9,7 +9,7 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/upload') return method === 'POST';
   if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
-  if (path === '/api/cloud-stock/organize') return method === 'POST';
+  if (path === '/api/cloud-stock/organize') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';
   if (path === '/api/cloud-stock/legacy-status') return method === 'GET';

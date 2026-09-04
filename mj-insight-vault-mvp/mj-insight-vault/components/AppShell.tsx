@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { Newspaper, Home, Upload } from 'lucide-react';
+import { FileText, Newspaper, Home, Upload } from 'lucide-react';
 import { useClearAppPassword } from '@/components/PasswordGate';
 
 const nav = [
   { href: '/', label: 'ホーム', icon: Home },
   { href: '/upload', label: '資料追加', icon: Upload },
-  { href: '/cloud-stock', label: '記事一覧・検索', icon: Newspaper }
+  { href: '/cloud-stock', label: '記事一覧・検索', icon: Newspaper },
+  { href: '/chat', label: 'レポート生成', icon: FileText }
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -26,7 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               パスコード変更
             </button>
           </div>
-          <nav className="mt-2 grid grid-cols-3 gap-1">
+          <nav className="mt-2 grid grid-cols-4 gap-1">
             {nav.map((item) => {
               const Icon = item.icon;
               const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));

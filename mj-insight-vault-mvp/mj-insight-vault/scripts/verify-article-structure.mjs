@@ -16,8 +16,10 @@ const text = read('lib/text.ts');
 const processRoute = read('app/api/source-images/[id]/process/route.ts');
 const reprocessRoute = read('app/api/source-images/[id]/reprocess/route.ts');
 const ocrOnlyRoute = read('app/api/source-images/[id]/ocr-only/route.ts');
-const articlesApi = read('app/api/articles/route.ts');
-const articleDetailApi = read('app/api/articles/[id]/route.ts');
+const articlesApi = read('app/api/cloud-stock/articles/route.ts');
+const articleDetailApi = read('app/api/cloud-stock/articles/[id]/route.ts');
+const originalContentApi = read('app/api/cloud-stock/files/[id]/content/route.ts');
+const retiredArticlesApi = read('app/api/articles/route.ts');
 const fixtures = JSON.parse(read('scripts/fixtures/article-structure-cases.json'));
 
 const allowedTypes = new Set(['article', 'table', 'chart', 'caption', 'unknown']);
@@ -70,8 +72,14 @@ assert(/raw_provider_json_written:\s*false/.test(ocrOnlyRoute), 'OCR-only respon
 assert(/articles_created:\s*0/.test(ocrOnlyRoute), 'OCR-only processing must not create articles.');
 assert(!/segmentArticlesFromImage|commitSourceImageArticles|enrichCommittedArticles/.test(ocrOnlyRoute), 'OCR-only route must not start formal downstream work.');
 
-assert(/source_images(?:![^(]+)?\(id, file_name, storage_path, mime_type\)/.test(articlesApi), 'Articles API should expose source image metadata.');
-assert(/article_tags/.test(articleDetailApi), 'Article detail API should preserve article tags.');
+// Canonical browsing is Google Drive + Neon. The list must resolve source metadata, the
+// detail must expose the linked Drive original, and original bytes must come from Drive.
+assert(/vault_articles/.test(articlesApi) && /vault_source_files/.test(articlesApi), 'Canonical Articles API must join Neon article/source metadata.');
+assert(/source_file_name/.test(articlesApi), 'Canonical Articles API must expose source filename metadata.');
+assert(/drive_file_id/.test(articleDetailApi) && /original_available/.test(articleDetailApi), 'Article detail API must expose linked Google Drive original metadata.');
+assert(/downloadGoogleDriveFile/.test(originalContentApi) && /requireNeonJwt/.test(originalContentApi), 'Original content API must resolve Neon metadata and read Google Drive bytes.');
+assert(!/supabaseAdmin|@supabase\//.test(articlesApi + articleDetailApi + originalContentApi), 'Canonical article/original APIs must not depend on Supabase.');
+assert(/status:\s*410/.test(retiredArticlesApi) && !/supabaseAdmin/.test(retiredArticlesApi), 'Legacy Supabase article API must stay retired.');
 
 for (const candidate of fixtures.valid || []) {
   assert(validateCandidate(candidate), `Expected valid article fixture to pass: ${JSON.stringify(candidate)}`);

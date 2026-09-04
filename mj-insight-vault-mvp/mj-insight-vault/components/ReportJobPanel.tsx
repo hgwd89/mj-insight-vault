@@ -6,29 +6,13 @@ import { useAppPassword } from '@/components/PasswordGate';
 
 const CHAT_RUN_STORAGE_KEY = 'mj-chat-active-run-v3';
 const CHAT_RUN_EVENT = 'mj-chat-run-state';
-const PIPELINE_VERSION = 'report_pipeline_v3';
+const PIPELINE_VERSION = 'neon_report_pipeline_v2_durable';
 
 const models = [
   { value: 'gpt-5', label: 'gpt-5｜AAAA詳細分析・推奨' },
   { value: 'gpt-5-mini', label: 'gpt-5-mini｜標準' },
   { value: 'gpt-4.1', label: 'gpt-4.1｜安定' },
   { value: 'gpt-4o-mini', label: 'gpt-4o-mini｜低コスト' }
-] as const;
-
-const categories = [
-  { value: 'beauty_cosmetics', label: '化粧品・美容' },
-  { value: 'food_beverage', label: '食品・飲料' },
-  { value: 'retail_channel', label: '小売・流通・店頭' },
-  { value: 'health_wellness', label: '健康・ウェルネス' },
-  { value: 'digital_ai', label: 'デジタル・AI・アプリ' },
-  { value: 'fashion_apparel', label: 'ファッション・アパレル' },
-  { value: 'household_daily', label: '日用品・家庭生活' },
-  { value: 'mobility_travel', label: '移動・旅行・レジャー' },
-  { value: 'finance_value', label: '価格・節約・金融' },
-  { value: 'sustainability', label: '環境・サステナビリティ' },
-  { value: 'youth_sns', label: '若者・Z世代・SNS文化' },
-  { value: 'senior_family', label: 'シニア・家族・ライフステージ' },
-  { value: 'experience_personalization', label: '体験・診断・パーソナライズ' }
 ] as const;
 
 const outputTemplates = [
@@ -43,8 +27,6 @@ const REPORT_REQUIREMENTS = `目的は、MJ記事群から生活者インサイ�
 AAAAレベルの詳細分析として、answer_textを必須とし、エグゼクティブサマリー、分析対象・読み方、主要な観察事実、生活者動向のナラティブ、緊張・矛盾・トレードオフ、WHY3段階の説明仮説、競合する複数仮説の比較、セグメント・状況差、弱い兆候、マーケティング・事業への示唆、追加調査で検証すべき論点、根拠マトリクス、反証・別解釈、限界・言えないこと、品質評価を含めてください。
 重要主張には根拠記事IDと記事リンクを付け、事実・横断観察・解釈・仮説・未検証を分離してください。記事にないことを断定せず、弱い推論は調査が必要と明記してください。`;
 
-type ScopeMode = 'all' | 'category';
-type CategoryId = typeof categories[number]['value'];
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -55,12 +37,7 @@ function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
 }
 
-function jobRunState(job: JsonRecord, fallback: {
-  query: string;
-  model: string;
-  target_scope: ScopeMode;
-  output_template: string;
-}) {
+function jobRunState(job: JsonRecord, fallback: { query: string; model: string; output_template: string }) {
   const request = isRecord(job.request_json) ? job.request_json : {};
   const createdAt = text(job.created_at);
   const createdMs = createdAt ? Date.parse(createdAt) : Date.now();
@@ -68,12 +45,12 @@ function jobRunState(job: JsonRecord, fallback: {
     status: text(job.status) === 'running' ? 'running' : 'queued',
     query: text(job.user_query || request.query) || fallback.query,
     model: text(request.model) || fallback.model,
-    target_scope: text(request.target_scope) || fallback.target_scope,
+    target_scope: 'all',
     output_template: text(request.output_template) || fallback.output_template,
     started_at: Number.isNaN(createdMs) ? Date.now() : createdMs,
     updated_at: Date.now(),
-    progress: Number(job.progress || 3),
-    stage: text(job.stage) || 'ジョブを作成しました',
+    progress: Number(job.progress || 5),
+    stage: text(job.stage) || 'Durable Workflowを開始しました',
     job_id: text(job.id),
     next_retry_at: text(job.next_retry_at) || undefined
   };
@@ -89,8 +66,6 @@ export function ReportJobPanel() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [model, setModel] = useState('gpt-5');
-  const [scopeMode, setScopeMode] = useState<ScopeMode>('all');
-  const [categoryId, setCategoryId] = useState<CategoryId>(categories[0].value);
   const [outputTemplate, setOutputTemplate] = useState('auto');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -104,15 +79,11 @@ export function ReportJobPanel() {
     try {
       const response = await fetch('/api/chat/jobs', {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-app-password': password
-        },
+        headers: { 'content-type': 'application/json', 'x-app-password': password },
         body: JSON.stringify({
           query: trimmed,
           model,
-          target_scope: scopeMode,
-          category_id: scopeMode === 'category' ? categoryId : undefined,
+          target_scope: 'all',
           output_template: outputTemplate,
           report_requirements: REPORT_REQUIREMENTS,
           require_full_corpus: true,
@@ -124,26 +95,15 @@ export function ReportJobPanel() {
       const jobId = text(job.id);
 
       if (response.status === 409 && jobId) {
-        saveRun(jobRunState(job, {
-          query: trimmed,
-          model,
-          target_scope: scopeMode,
-          output_template: outputTemplate
-        }));
+        saveRun(jobRunState(job, { query: trimmed, model, output_template: outputTemplate }));
         router.push('/reports');
         return;
       }
-
       if (!response.ok || !jobId) {
         throw new Error(text(isRecord(json) ? json.error : '') || response.statusText || 'ジョブ作成に失敗しました');
       }
 
-      saveRun(jobRunState(job, {
-        query: trimmed,
-        model,
-        target_scope: scopeMode,
-        output_template: outputTemplate
-      }));
+      saveRun(jobRunState(job, { query: trimmed, model, output_template: outputTemplate }));
       router.push('/reports');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'ジョブ作成に失敗しました');
@@ -156,7 +116,7 @@ export function ReportJobPanel() {
       <div>
         <h1 className="text-xl font-black">レポート生成｜AAAA詳細分析</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          Neonに保存されたOCR済み記事を根拠に、観察事実から生活者ナラティブ、WHY、競合仮説、示唆、反証・限界まで統合した詳細レポートを生成します。
+          Neonに保存されたOCR済み記事を全件読み、観察事実から生活者ナラティブ、WHY、競合仮説、示唆、反証・限界まで統合します。処理はDurable Workflowで継続するため、開始後はアプリを閉じても構いません。
         </p>
       </div>
 
@@ -167,37 +127,26 @@ export function ReportJobPanel() {
             className="input mt-2 min-h-36"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="例：全期間の記事から、価格上昇下で生活者が何を維持し、何を削っているかを根拠付きで分析"
+            placeholder="例：化粧品のトレンドを、生活者の行動・感情・価値観の変化まで含めて分析"
             disabled={busy}
           />
         </label>
 
-        <label className="block">
+        <div className="block">
           <span className="text-sm font-bold text-zinc-700">分析対象</span>
-          <select className="input mt-2" value={scopeMode} onChange={(event) => setScopeMode(event.target.value as ScopeMode)} disabled={busy}>
-            <option value="all">全記事</option>
-            <option value="category">カテゴリ限定</option>
-          </select>
-        </label>
-
-        {scopeMode === 'category' && (
-          <label className="block">
-            <span className="text-sm font-bold text-zinc-700">カテゴリ</span>
-            <select className="input mt-2" value={categoryId} onChange={(event) => setCategoryId(event.target.value as CategoryId)} disabled={busy}>
-              {categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
-            </select>
-          </label>
-        )}
+          <div className="input mt-2 flex items-center">全記事（Neon canonical）</div>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">カテゴリ分類はcanonicalデータに未搭載のため、テーマは分析指示で指定します。存在しないカテゴリ分類で絞ったふりはしません。</p>
+        </div>
 
         <label className="block">
           <span className="text-sm font-bold text-zinc-700">最終レポートモデル</span>
           <select className="input mt-2" value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>
             {models.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">AAAA詳細分析では gpt-5 を推奨・デフォルトにしています。本文読解バッチは低コストモデルを使用し、ここでは最終統合モデルだけを選びます。</p>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">本文読解は gpt-5-mini、最終統合はここで選んだモデルを使用します。AAAA詳細分析のデフォルトは gpt-5 です。</p>
         </label>
 
-        <label className="block">
+        <label className="block md:col-span-2">
           <span className="text-sm font-bold text-zinc-700">出力形式</span>
           <select className="input mt-2" value={outputTemplate} onChange={(event) => setOutputTemplate(event.target.value)} disabled={busy}>
             {outputTemplates.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
@@ -209,9 +158,9 @@ export function ReportJobPanel() {
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <button className="btn btn-primary" type="button" onClick={submit} disabled={busy || !query.trim()}>
-          {busy ? 'ジョブを作成中' : 'AAAA詳細レポート生成を開始'}
+          {busy ? 'ジョブを開始中' : 'AAAA詳細レポート生成を開始'}
         </button>
-        <p className="text-xs leading-5 text-zinc-500">処理状態はDBとこのブラウザに保存されます。タブやブラウザを閉じても、次回表示時に未完了ジョブを再開します。</p>
+        <p className="text-xs leading-5 text-zinc-500">ジョブ状態はNeonに保存されます。ページやアプリを閉じてもサーバー側で処理が続き、再度開けば進捗を復元します。</p>
       </div>
     </div>
   );

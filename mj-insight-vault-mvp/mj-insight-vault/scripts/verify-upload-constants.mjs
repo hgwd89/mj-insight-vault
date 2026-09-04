@@ -13,7 +13,8 @@ function assert(condition, message) {
 
 const stable = read('components/UploadFormStable.tsx');
 const draftStore = read('lib/uploadDraftStore.ts');
-const articlesApi = read('app/api/articles/route.ts');
+const articlesApi = read('app/api/cloud-stock/articles/route.ts');
+const retiredArticlesApi = read('app/api/articles/route.ts');
 const chatNo160 = read('lib/chatRouteNo160.ts');
 const chatCore = read('lib/chatRouteCore.ts');
 const wide = read('lib/wideArticleRetrieval.ts');
@@ -33,9 +34,12 @@ assert(/失敗分だけ/.test(stable), 'Failed-only recovery UI text is missing.
 assert(/readUploadDraft/.test(stable) && /writeUploadDraft/.test(stable), 'Upload form must use IndexedDB draft recovery helpers.');
 assert(/mj-upload-draft-v1/.test(draftStore), 'Upload draft DB key changed unexpectedly.');
 
-assert(!/\.limit\(300\)/.test(articlesApi), '/api/articles must not use a fixed 300 row limit.');
-assert(/PAGE_SIZE = 1000/.test(articlesApi) && /\.range\(from, from \+ PAGE_SIZE - 1\)/.test(articlesApi), '/api/articles must page through articles.');
-assert(/limit_removed:\s*true/.test(articlesApi), '/api/articles should expose that fixed limits were removed.');
+// Canonical article pagination now lives in the Neon cloud-stock API. Do not reintroduce
+// the old Supabase /api/articles path merely to preserve this historical guard.
+assert(!/limit=300|\.limit\(300\)/.test(articlesApi), 'Canonical Neon article API must not use a fixed 300 row limit.');
+assert(/const pageSize = 500/.test(articlesApi) && /offset=\$\{offset\}/.test(articlesApi), 'Canonical Neon article API must page through articles.');
+assert(/for \(let offset = 0; offset < 5000; offset \+= pageSize\)/.test(articlesApi), 'Canonical Neon article API must iterate paged results.');
+assert(/status:\s*410/.test(retiredArticlesApi), 'Legacy Supabase /api/articles must stay retired.');
 
 for (const [file, source] of [['lib/chatRouteNo160.ts', chatNo160], ['lib/chatRouteCore.ts', chatCore], ['lib/wideArticleRetrieval.ts', wide]]) {
   assert(!/\.limit\(160\)/.test(source), `${file} must not use .limit(160).`);

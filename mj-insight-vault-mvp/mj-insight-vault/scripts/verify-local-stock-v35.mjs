@@ -62,11 +62,18 @@ for (const required of [
 requireText(upload, 'DriveNeonSimpleVault', 'canonical upload page');
 forbidText(upload, 'UploadFormOcrOnly', 'legacy Supabase upload UI must not be canonical');
 for (const text of [
-  'Googleドライブに保存して、MJに登録',
-  '01 Originals',
-  '/api/cloud-stock/sync-drive',
-  '/api/cloud-stock/files',
-  '未OCR画像を一括OCR'
+  '原本を追加して、記事として読める状態にする',
+  'Googleドライブの「01 Originals」',
+  "fetch('/api/cloud-stock/sync-drive'",
+  "fetch('/api/cloud-stock/files?mode=pending_ocr'",
+  "fetch('/api/cloud-stock/ocr'",
+  "fetch('/api/cloud-stock/organize'",
+  '追加した原本をMJに同期',
+  'OCR・記事整理を一括実行',
+  'href="/cloud-stock"'
 ]) requireText(canonical, text, 'canonical Drive + Neon UI');
+for (const forbidden of ['@supabase/', 'createClient(', '/api/articles', '/api/signed-url']) {
+  forbidText(canonical, forbidden, 'canonical Drive + Neon UI must not fall back to Supabase');
+}
 
 console.log('free local stock fallback + canonical Drive Neon invariants passed');

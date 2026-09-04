@@ -15,6 +15,15 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';
   if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
+
+  // Neon-native report generation and report history.
+  if (path === '/api/chat/jobs') return method === 'GET' || method === 'POST';
+  if (/^\/api\/chat\/jobs\/[^/]+$/.test(path)) return method === 'GET';
+  if (/^\/api\/chat\/jobs\/[^/]+\/run$/.test(path)) return method === 'POST';
+  if (path === '/api/reports') return method === 'GET';
+  if (/^\/api\/reports\/[^/]+$/.test(path)) return method === 'GET' || method === 'PATCH' || method === 'DELETE';
+  if (path === '/api/diagnostics/latest-report') return method === 'GET';
+
   // Retired Supabase import routes are reachable only so the handlers can return HTTP 410 Gone.
   if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/import-supabase-db') return method === 'GET' || method === 'POST';
@@ -36,7 +45,7 @@ export function proxy(request: NextRequest) {
     article_organization_enabled: true,
     classification_locked: true,
     theme_analysis_locked: true,
-    report_locked: true,
+    report_locked: false,
     bulk_processing_locked: false
   }, { status: 423 });
 }

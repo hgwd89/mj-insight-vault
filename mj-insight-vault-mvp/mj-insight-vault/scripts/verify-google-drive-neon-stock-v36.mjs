@@ -11,6 +11,7 @@ function forbidText(source, text, label) {
 }
 
 const cloudUi = read('components/CloudStockVault.tsx');
+const simpleVault = read('components/DriveNeonSimpleVault.tsx');
 const statusRoute = read('app/api/cloud-stock/status/route.ts');
 const readinessRoute = read('app/api/cloud-stock/readiness/route.ts');
 const authRoute = read('app/api/cloud-stock/auth/route.ts');
@@ -38,6 +39,19 @@ for (const text of [
   'neon_registered: true',
   'downstream_started: false'
 ]) requireText(uploadRoute, text, 'Drive -> Neon ingest contract');
+
+for (const text of [
+  'const MAX_UPLOAD_FILES = 100;',
+  'const UPLOAD_CONCURRENCY = 3;',
+  "fetch('/api/cloud-stock/upload'",
+  'selectedFiles.slice(index, index + UPLOAD_CONCURRENCY)',
+  'setSelectedFiles(failedFiles)',
+  '最大100件',
+  'multiple'
+]) requireText(simpleVault, text, '100-file direct upload contract');
+for (const forbidden of ['@supabase/', 'supabaseAdmin']) {
+  forbidText(simpleVault, forbidden, 'direct upload UI must remain Supabase-free');
+}
 
 for (const text of [
   "neonDataFetch('rpc/vault_search_v1'",

@@ -1,97 +1,48 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
-import { sanitizeReportForDisplay } from '@/lib/reportSafety';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { requireNeonJwt } from '@/lib/neonCloud';
+import { getReport, listReportArticles, patchReport } from '@/lib/neonReportStore';
 
-function mergeAnswerJson(current: unknown, patch: Record<string, unknown>) {
-  const base = current && typeof current === 'object' && !Array.isArray(current)
-    ? current as Record<string, unknown>
-    : {};
-
-  return { ...base, ...patch };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function usesFormalCorpusEvidence(report: Record<string, unknown>) {
-  if (report.is_formal_report === true) return true;
-
-  const answerJson = report.answer_json;
-  if (!answerJson || typeof answerJson !== 'object' || Array.isArray(answerJson)) return false;
-
-  const metadata = answerJson as Record<string, unknown>;
-  return metadata.formal_corpus_only === true
-    && metadata.evidence_source === 'formal_corpus_articles_v1';
+function text(value: unknown) {
+  return value === undefined || value === null ? '' : String(value).trim();
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
-
+    const jwt = await requireNeonJwt(req);
     const { id } = await params;
+    const report = await getReport(jwt, id);
+    if (!report) return Response.json({ error: 'report not found' }, { status: 404 });
+
     const url = new URL(req.url);
     const includeOcr = url.searchParams.get('include_ocr') === '1';
     const limit = Math.max(0, Math.min(200, Number(url.searchParams.get('related_limit') || 80)));
-
-    const { data: report, error } = await supabaseAdmin
-      .from('chat_reports')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error) throw error;
-
-    let related_articles: unknown[] = [];
-    const allArticleIds = Array.isArray(report.related_article_ids) ? report.related_article_ids : [];
-    const articleIds = allArticleIds.slice(0, limit);
-    const formalCorpusOnly = usesFormalCorpusEvidence(report as Record<string, unknown>);
-
-    if (articleIds.length > 0) {
-      // Formal reports and their saved follow-ups must resolve evidence from the same
-      // verified corpus contract. Reading mutable raw `articles` here can make a saved
-      // formal proof or a downstream follow-up point at evidence that no longer belongs
-      // to the verified corpus.
-      const result = formalCorpusOnly
-        ? includeOcr
-          ? await supabaseAdmin
-            .from('formal_corpus_articles_v1')
-            .select('id, headline, article_date, ocr_text, status, created_at')
-            .in('id', articleIds)
-          : await supabaseAdmin
-            .from('formal_corpus_articles_v1')
-            .select('id, headline, article_date, status, created_at')
-            .in('id', articleIds)
-        : includeOcr
-          ? await supabaseAdmin
-            .from('articles')
-            .select('id, headline, article_date, ocr_text, status, created_at, article_tags(tag_type, tag_name)')
-            .in('id', articleIds)
-          : await supabaseAdmin
-            .from('articles')
-            .select('id, headline, article_date, status, created_at, article_tags(tag_type, tag_name)')
-            .in('id', articleIds);
-
-      if (result.error) throw result.error;
-
-      const rows = (result.data || []) as Array<{ id: string }>;
-      const byId = new Map(rows.map((article) => [article.id, article]));
-      related_articles = articleIds.map((articleId: string) => byId.get(articleId)).filter(Boolean);
-
-      if (formalCorpusOnly && related_articles.length !== articleIds.length) {
-        const resolvedIds = new Set(rows.map((article) => String(article.id)));
-        const missingIds = articleIds.filter((articleId: string) => !resolvedIds.has(articleId));
-        throw new Error(`formal-corpus report evidence is no longer present in formal_corpus_articles_v1: ${missingIds.join(',')}`);
-      }
-    }
+    const allIds = Array.isArray(report.related_article_ids) ? report.related_article_ids.map(text).filter(Boolean) : [];
+    const ids = allIds.slice(0, limit);
+    const rows = await listReportArticles(jwt, ids, includeOcr);
+    const related_articles = rows.map((row) => ({
+      ...row,
+      headline: text(row.title) || '無題',
+      article_date: text(row.created_at),
+      ocr_text: includeOcr ? text(row.ocr_text_verified || row.ocr_text_raw) : undefined,
+      status: text(row.verification_status)
+    }));
 
     return Response.json({
-      report: sanitizeReportForDisplay(report),
+      report,
       related_articles,
       related_articles_meta: {
-        total_related_ids: allArticleIds.length,
+        total_related_ids: allIds.length,
         returned: related_articles.length,
         include_ocr: includeOcr,
         limit,
-        evidence_source: formalCorpusOnly ? 'formal_corpus_articles_v1' : 'articles',
-        formal_corpus_only: formalCorpusOnly
+        evidence_source: 'vault_articles',
+        formal_corpus_only: false
       }
     });
   } catch (error) {
@@ -102,42 +53,29 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
-
+    const jwt = await requireNeonJwt(req);
     const { id } = await params;
-    const body = await req.json();
+    const body = await req.json() as Record<string, unknown>;
+    const current = await getReport(jwt, id);
+    if (!current) return Response.json({ error: 'report not found' }, { status: 404 });
+    const answer = isRecord(current.answer_json) ? { ...current.answer_json } : {};
+    const patch: Record<string, unknown> = {};
 
-    const { data: currentReport, error: currentError } = await supabaseAdmin
-      .from('chat_reports')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (currentError) throw currentError;
-
-    const metadataPatch: Record<string, unknown> = {};
-
-    if ('report_title' in body) metadataPatch.report_title = String(body.report_title || '').trim();
+    if ('report_title' in body) answer.report_title = text(body.report_title);
     if ('pinned' in body) {
-      metadataPatch.pinned = Boolean(body.pinned);
-      metadataPatch.pinned_at = body.pinned ? new Date().toISOString() : null;
+      patch.pinned = Boolean(body.pinned);
+      answer.pinned = Boolean(body.pinned);
+      answer.pinned_at = body.pinned ? new Date().toISOString() : null;
     }
     if ('hidden' in body) {
-      metadataPatch.hidden = Boolean(body.hidden);
-      metadataPatch.hidden_at = body.hidden ? new Date().toISOString() : null;
+      patch.hidden = Boolean(body.hidden);
+      answer.hidden = Boolean(body.hidden);
+      answer.hidden_at = body.hidden ? new Date().toISOString() : null;
     }
-
-    const answerJson = mergeAnswerJson(currentReport.answer_json, metadataPatch);
-
-    const { data: report, error } = await supabaseAdmin
-      .from('chat_reports')
-      .update({ answer_json: answerJson })
-      .eq('id', id)
-      .select('*')
-      .single();
-
-    if (error) throw error;
-
-    return Response.json({ report: sanitizeReportForDisplay(report) });
+    patch.answer_json = answer;
+    const report = await patchReport(jwt, id, patch);
+    if (!report) return Response.json({ error: 'report not found' }, { status: 404 });
+    return Response.json({ report });
   } catch (error) {
     return jsonError(error);
   }
@@ -146,32 +84,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireAppPassword(req);
-
+    const jwt = await requireNeonJwt(req);
     const { id } = await params;
-
-    const { data: currentReport, error: currentError } = await supabaseAdmin
-      .from('chat_reports')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (currentError) throw currentError;
-
-    const answerJson = mergeAnswerJson(currentReport.answer_json, {
-      hidden: true,
-      hidden_at: new Date().toISOString()
-    });
-
-    const { data: report, error } = await supabaseAdmin
-      .from('chat_reports')
-      .update({ answer_json: answerJson })
-      .eq('id', id)
-      .select('*')
-      .single();
-
-    if (error) throw error;
-
-    return Response.json({ report: sanitizeReportForDisplay(report) });
+    const current = await getReport(jwt, id);
+    if (!current) return Response.json({ error: 'report not found' }, { status: 404 });
+    const answer = isRecord(current.answer_json) ? { ...current.answer_json } : {};
+    answer.hidden = true;
+    answer.hidden_at = new Date().toISOString();
+    const report = await patchReport(jwt, id, { hidden: true, answer_json: answer });
+    return Response.json({ report });
   } catch (error) {
     return jsonError(error);
   }

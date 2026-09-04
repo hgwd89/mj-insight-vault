@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isOcrOnlyMode } from './lib/pipelineMode';
 
 function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/readiness') return method === 'GET';
   if (path === '/api/cloud-stock/status') return method === 'GET';
   if (path === '/api/cloud-stock/auth') return method === 'GET' || method === 'POST' || method === 'DELETE';
   if (path === '/api/cloud-stock/files') return method === 'GET' || method === 'POST';
+  if (path.startsWith('/api/cloud-stock/files/')) return method === 'GET';
   if (path === '/api/cloud-stock/upload') return method === 'POST';
   if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
@@ -13,23 +13,21 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';
   if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
-  // Retired Supabase routes are allow-listed only so their handlers can return HTTP 410 Gone.
+  // Retired Supabase import routes are reachable only so the handlers can return HTTP 410 Gone.
   if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/import-supabase-db') return method === 'GET' || method === 'POST';
   return false;
 }
 
-function allowedLowCostStockRequest(request: NextRequest) {
-  return allowedCloudStockRequest(request.method.toUpperCase(), request.nextUrl.pathname);
-}
-
 export function proxy(request: NextRequest) {
-  if (!isOcrOnlyMode()) return NextResponse.next();
-  if (allowedLowCostStockRequest(request)) return NextResponse.next();
+  if (allowedCloudStockRequest(request.method.toUpperCase(), request.nextUrl.pathname)) {
+    return NextResponse.next();
+  }
 
   return NextResponse.json({
     ok: false,
-    error: '現在はGoogleドライブ＋Neon運用です。このAPIは停止中です。資料同期・OCR・記事整理・記事検索のみ利用できます。',
+    retired: true,
+    error: 'Supabase系を含む旧APIは退役済みです。Google Drive＋Neonのcanonical APIのみ利用できます。',
     mode: 'google_drive_neon',
     manual_ocr_enabled: true,
     article_organization_enabled: true,

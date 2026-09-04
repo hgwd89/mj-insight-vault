@@ -9,6 +9,8 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/upload') return method === 'POST';
   if (path === '/api/cloud-stock/sync-drive') return method === 'POST';
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
+  if (path === '/api/cloud-stock/background') return method === 'GET' || method === 'POST';
+  if (path === '/api/internal/cloud-stock-background-worker') return method === 'POST';
   if (path === '/api/cloud-stock/organize') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';
@@ -30,11 +32,12 @@ export function proxy(request: NextRequest) {
     error: 'Supabase系を含む旧APIは退役済みです。Google Drive＋Neonのcanonical APIのみ利用できます。',
     mode: 'google_drive_neon',
     manual_ocr_enabled: true,
+    background_ocr_enabled: true,
     article_organization_enabled: true,
     classification_locked: true,
     theme_analysis_locked: true,
     report_locked: true,
-    bulk_processing_locked: true
+    bulk_processing_locked: false
   }, { status: 423 });
 }
 

@@ -6,6 +6,7 @@ export const REPORT_BATCH_SIZE = 24;
 export const REPORT_GROUP_SIZE = 4;
 export const REPORT_GROUP_ARTICLE_LIMIT = REPORT_BATCH_SIZE * REPORT_GROUP_SIZE;
 const BATCH_MODEL = 'gpt-5-mini';
+const ID_PAGE_SIZE = 500;
 
 function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
@@ -31,28 +32,47 @@ function articleBlock(row: JsonRecord) {
   return `ARTICLE_ID: ${text(row.id)}\nTITLE: ${text(row.title) || '無題'}\nVERIFICATION: ${text(row.verification_status) || 'unknown'}\nTEXT: ${body}`;
 }
 
-export async function countReportArticles(jwt: string) {
-  const response = await neonDataFetch(
-    'vault_articles?select=id&or=(ocr_text_verified.not.is.null,ocr_text_raw.not.is.null)&limit=1',
-    jwt,
-    { method: 'GET', headers: { prefer: 'count=exact' } }
-  );
-  const range = response.headers.get('content-range') || '';
-  const json = await parseUpstreamJson(response, 'レポート対象記事数を取得できませんでした。');
-  const totalPart = range.includes('/') ? range.split('/').pop() || '' : '';
-  const total = Number(totalPart);
-  if (Number.isFinite(total) && total >= 0) return total;
-  return Array.isArray(json) ? json.length : 0;
+export async function listReportArticleIds(jwt: string) {
+  const snapshotAt = new Date().toISOString();
+  const ids: string[] = [];
+  let offset = 0;
+
+  while (true) {
+    const response = await neonDataFetch(
+      `vault_articles?select=id&or=(ocr_text_verified.not.is.null,ocr_text_raw.not.is.null)&created_at=lte.${encodeURIComponent(snapshotAt)}&updated_at=lte.${encodeURIComponent(snapshotAt)}&order=created_at.asc,id.asc&limit=${ID_PAGE_SIZE}&offset=${offset}`,
+      jwt,
+      { method: 'GET' }
+    );
+    const json = await parseUpstreamJson(response, 'レポート対象記事IDを取得できませんでした。');
+    const rows = (Array.isArray(json) ? json : []).filter(record);
+    for (const row of rows) {
+      const id = text(row.id);
+      if (id) ids.push(id);
+    }
+    if (rows.length < ID_PAGE_SIZE) break;
+    offset += rows.length;
+  }
+
+  return Array.from(new Set(ids));
 }
 
-export async function loadReportArticleGroup(jwt: string, offset: number, limit = REPORT_GROUP_ARTICLE_LIMIT) {
+export async function countReportArticles(jwt: string) {
+  return (await listReportArticleIds(jwt)).length;
+}
+
+async function loadReportArticlesByIds(jwt: string, ids: string[]) {
+  if (!ids.length) return [] as JsonRecord[];
+  const encodedIds = ids.map((id) => id.replace(/[^0-9a-fA-F-]/g, '')).filter(Boolean);
+  if (!encodedIds.length) return [] as JsonRecord[];
   const response = await neonDataFetch(
-    `vault_articles?select=id,title,ocr_text_verified,ocr_text_raw,verification_status,created_at&or=(ocr_text_verified.not.is.null,ocr_text_raw.not.is.null)&order=created_at.asc,id.asc&limit=${Math.max(1, Math.min(200, limit))}&offset=${Math.max(0, offset)}`,
+    `vault_articles?id=in.(${encodedIds.join(',')})&select=id,title,ocr_text_verified,ocr_text_raw,verification_status,created_at&limit=${encodedIds.length}`,
     jwt,
     { method: 'GET' }
   );
   const json = await parseUpstreamJson(response, 'レポート用の記事本文を取得できませんでした。');
-  return (Array.isArray(json) ? json : []).filter(record);
+  const rows = (Array.isArray(json) ? json : []).filter(record);
+  const byId = new Map(rows.map((row) => [text(row.id), row]));
+  return encodedIds.map((id) => byId.get(id)).filter(Boolean) as JsonRecord[];
 }
 
 async function summarizeOneBatch(query: string, batch: JsonRecord[], index: number) {
@@ -75,10 +95,13 @@ async function summarizeOneBatch(query: string, batch: JsonRecord[], index: numb
   return text(response.choices[0]?.message?.content);
 }
 
-export async function summarizeReportGroup(jwt: string, request: JsonRecord, offset: number, groupIndex: number) {
+export async function summarizeReportGroup(jwt: string, request: JsonRecord, articleIds: string[], groupIndex: number) {
   const query = text(request.query || request.user_query);
   if (!query) throw new Error('分析指示がありません。');
-  const rows = await loadReportArticleGroup(jwt, offset, REPORT_GROUP_ARTICLE_LIMIT);
+  const rows = await loadReportArticlesByIds(jwt, articleIds);
+  if (rows.length !== articleIds.length) {
+    throw new Error(`記事スナップショット読込エラー: expected=${articleIds.length}, loaded=${rows.length}`);
+  }
   if (!rows.length) return { rowCount: 0, summaries: [] as string[], articleIds: [] as string[] };
   const batches = chunks(rows, REPORT_BATCH_SIZE);
   const summaries = await Promise.all(
@@ -152,14 +175,14 @@ export async function synthesizeReport(
         final_context_represented_article_count: analyzedArticleCount,
         final_context_represented_batches: summaries.length,
         final_context_omitted_batches: 0,
-        full_corpus_prompt_version: 'neon_report_aaaa_v2'
+        full_corpus_prompt_version: 'neon_report_aaaa_v3_snapshot'
       },
       full_corpus_analyzed_article_count: analyzedArticleCount,
       final_context_represented_article_count: analyzedArticleCount,
       final_context_represented_batches: summaries.length,
       final_context_omitted_batches: 0,
-      full_corpus_prompt_version: 'neon_report_aaaa_v2',
-      full_corpus_integrity_gate: 'neon_native_full_corpus'
+      full_corpus_prompt_version: 'neon_report_aaaa_v3_snapshot',
+      full_corpus_integrity_gate: 'neon_native_full_corpus_snapshot'
     },
     relatedArticleIds,
     analyzedArticleCount,

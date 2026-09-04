@@ -14,6 +14,7 @@ const mode = read('lib/pipelineMode.ts');
 const proxy = read('proxy.ts');
 const statusRoute = read('app/api/cloud-stock/status/route.ts');
 const uploadPage = read('app/upload/page.tsx');
+const articleVault = read('components/NeonArticleVault.tsx');
 const retiredStorageRoute = read('app/api/cloud-stock/import-supabase/route.ts');
 const retiredDbRoute = read('app/api/cloud-stock/import-supabase-db/route.ts');
 const retiredArticlesRoute = read('app/api/articles/route.ts');
@@ -58,6 +59,10 @@ requireText(statusRoute, 'full_rollout_538: false', '538 rollout lock');
 
 requireText(uploadPage, 'DriveNeonSimpleVault', 'canonical upload page');
 forbidText(uploadPage, 'UploadFormOcrOnly', 'legacy Supabase upload UI must not be canonical');
+
+requireText(articleVault, '/api/cloud-stock/articles', 'article UI must use canonical Neon article API');
+forbidText(articleVault, "fetch(`/api/articles", 'article UI must never query legacy Supabase articles');
+forbidText(articleVault, 'legacyRows', 'article UI must not maintain a legacy Supabase fallback collection');
 
 for (const route of [retiredStorageRoute, retiredDbRoute, retiredArticlesRoute]) {
   requireText(route, 'status: 410', 'retired Supabase route must be a tombstone');

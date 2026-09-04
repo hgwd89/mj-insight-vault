@@ -1,65 +1,56 @@
 # CLAUDE.md
 
-## Current MJ Completion Mission — Read First
+## Current Production Rule — Read First
 
-For the current MJ Insight Vault historical-freeze completion work, **read and follow `docs/MJ_CURRENT_FREEZE_COMPLETION_RUNBOOK.md` before doing any production work.**
+MJ Insight Vault has moved to a Google Drive + Neon canonical architecture.
 
-The mission is not finished at partial Inventory progress. The final goal is: finish the authoritative current freeze through **Article Inventory 540/540 with Inventory gate passed -> OCR Verification -> Classification -> Full Article Review -> Theme Candidate -> Full Census -> Theme Analysis -> formal Report**, then verify that the saved report is accessible in canonical Vercel Production and its article/evidence links work.
+Use:
 
-Use Supabase project `wqbjtvepnavkqdshppau` as the authoritative production DB for this mission. Never use `umecmthqvvdcmwqfhgqf`. Always fetch fresh current-freeze state before acting; the checkpoint values in the runbook can become stale.
+- repository `hgwd89/mj-insight-vault`
+- app root `mj-insight-vault-mvp/mj-insight-vault`
+- canonical Vercel project `hgwd89-mj-insight-vault-k5k2`
+- Google Drive `01 Originals` for original files
+- Neon project `round-glitter-99489346` for article/source metadata and searchable text
+- `/cloud-stock` as the canonical article browsing/search UI
 
-## Claude Code Working Rules
+## Supabase Is Retired
 
-Use `mj-insight-vault-mvp/mj-insight-vault` as the app root. Do not assume `package.json` exists at the repository root.
+Do **not** follow older repository instructions that name Supabase project `wqbjtvepnavkqdshppau` as the authoritative database. Those instructions are superseded as of 2026-09-04.
 
-Before changing code:
+Do not:
 
-1. Inspect the relevant files.
-2. Identify the responsibility boundary.
-3. Explain the impact area if the change is non-trivial.
-4. Keep the patch small.
+- reconnect production features to Supabase;
+- use Supabase as a fallback when Neon data is missing;
+- wait for Supabase service recovery;
+- call legacy Supabase article/search/storage/report APIs to make the current application work;
+- restart the old 540-page historical completion mission merely because its runbook still exists;
+- claim old articles are available unless they exist in Neon or have been imported from a verified non-Supabase archive.
 
-Large changes must be split into smaller tasks. Do not combine unrelated UI work, schema work, OCR behavior, and report behavior in one patch.
+`docs/MJ_CURRENT_FREEZE_COMPLETION_RUNBOOK.md` is a historical handoff document for the retired Supabase architecture. It is not the current production runbook.
 
-## Responsibility Boundaries
+## Current Responsibility Boundaries
 
-Read these areas separately:
+- Article list/search: `components/NeonArticleVault.tsx` + `app/api/cloud-stock/articles/route.ts`
+- Article detail: `components/NeonArticleDetail.tsx` + `app/api/cloud-stock/articles/[id]/route.ts`
+- Original preview: `app/api/cloud-stock/files/[id]/content/route.ts` + Google Drive
+- Readiness: `app/api/cloud-stock/readiness/route.ts`
+- Neon access: `lib/neonCloud.ts`
+- Google Drive read: `lib/googleDriveRead.ts`
+- Google Drive write/probe: `lib/googleDriveBackup.ts`
 
-- Upload UI and recovery: `components/UploadFormStable.tsx`, `lib/uploadDraftStore.ts`
-- OCR call and raw OCR handling: `lib/vision.ts`
-- Article structuring: `lib/articleSegmentation.ts`
-- Image processing APIs: `app/api/source-images/[id]/process/route.ts`, `app/api/source-images/[id]/reprocess/route.ts`
-- Article retrieval and listing: `app/api/articles/route.ts`, `lib/wideArticleRetrieval.ts`
-- Monthly rollups: `lib/monthlyRollups.ts`, `lib/monthlyRollupContext.ts`, `app/api/rollups/monthly/route.ts`
-- Chat/report generation: `lib/chatRouteNo160.ts`, `app/api/chat/jobs/[id]/run/route.ts`, `lib/reportPrompt.ts`
-- Report quality guard: `lib/chatAnalysisQualityGate.ts`
+Legacy `/articles` and `/api/articles*` are retired compatibility paths and must not become active Supabase paths again.
 
-## Do Not Guess
+## Historical Data Rule
 
-If a behavior depends on Supabase schema, production data, Vercel settings, Google Vision, or OpenAI quota, do not infer success from code alone. Mark it as unverified unless it was actually checked.
+The historical Supabase corpus is not considered recovered merely because legacy schema/code remains in GitHub.
 
-Do not invent fields, tables, npm scripts, or directories. Verify first.
+Before claiming past articles can be searched, prove that their records exist in Neon or in a verified non-Supabase backup/export and have been migrated. If no such copy can be found, state that the historical records are currently unavailable rather than silently querying Supabase.
 
-## Data and Secret Safety
+## Operational Safety
 
-- Do not log environment variable values.
-- Do not commit `.env` files or credentials.
-- Do not add scripts that delete or update production data.
-- Do not change Supabase schema or saved data format without explicit approval.
-- Do not change storage bucket names or environment variable names without explicit approval.
+During recovery or architecture maintenance, do not initiate OCR, Classification, Theme Analysis, Report generation, or bulk corpus processing unless explicitly requested.
 
-## Quality Requirements
-
-Preserve the following:
-
-- OCR must not fabricate unreadable text.
-- Article structuring must not create facts not present in the image/OCR context.
-- OpenAI quota or API failures must not be hidden as article content.
-- Upload failures must leave recoverable failure state where possible.
-- Article listing must not regress to fixed 270/300 item behavior.
-- Full analysis must not regress to a hidden 160 article cap.
-- Monthly rollups must support stale detection and stale-only regeneration.
-- Reports must include evidence links, refutation, evidence grading, and research needs.
+Do not delete production originals or database rows as part of recovery work.
 
 ## Required Commands
 
@@ -71,6 +62,6 @@ npm run build
 npm run test:local
 ```
 
-If a command cannot run because of local environment issues, report the exact reason and do not claim it passed.
+Do not weaken tests to obtain a green result. If a test encodes the retired Supabase architecture, update the test to the current Google Drive + Neon contract only when the production architecture has genuinely changed accordingly.
 
 This file must remain consistent with `AGENTS.md`.

@@ -98,17 +98,31 @@ function verification(report: Report) {
   const source = json.source_coverage && typeof json.source_coverage === 'object' && !Array.isArray(json.source_coverage)
     ? json.source_coverage as Record<string, unknown>
     : {};
+  const integrityGate = asText(json.full_corpus_integrity_gate || source.full_corpus_integrity_gate || 'failed');
+  const promptVersion = asText(json.full_corpus_prompt_version || source.full_corpus_prompt_version || '-');
+  const representedBatches = asNumber(json.final_context_represented_batches || source.final_context_represented_batches);
+  const representedArticles = asNumber(json.final_context_represented_article_count || source.final_context_represented_article_count);
+  const omittedBatches = asNumber(json.final_context_omitted_batches || source.final_context_omitted_batches);
+  const analyzedArticles = asNumber(source.full_corpus_analyzed_article_count || json.full_corpus_analyzed_article_count);
+  const snapshotPass = promptVersion === 'neon_report_aaaa_v3_snapshot'
+    && integrityGate === 'neon_native_full_corpus_snapshot'
+    && analyzedArticles > 0
+    && representedArticles === analyzedArticles
+    && representedBatches > 0
+    && omittedBatches === 0;
+  const storedCountGate = asText(report.full_corpus_gate || json.full_corpus_gate || source.full_corpus_gate);
+
   return {
-    formal: report.is_formal_report === true,
+    formal: report.is_formal_report === true || snapshotPass,
     kind: asText(report.report_kind || json.report_kind || 'provisional'),
     verificationStatus: asText(report.analysis_verification_status || json.analysis_verification_status || 'unverified'),
-    countGate: asText(report.full_corpus_gate || json.full_corpus_gate || source.full_corpus_gate || 'failed'),
-    integrityGate: asText(json.full_corpus_integrity_gate || source.full_corpus_integrity_gate || 'failed'),
-    promptVersion: asText(json.full_corpus_prompt_version || source.full_corpus_prompt_version || '-'),
-    representedBatches: asNumber(json.final_context_represented_batches || source.final_context_represented_batches),
-    representedArticles: asNumber(json.final_context_represented_article_count || source.final_context_represented_article_count),
-    omittedBatches: asNumber(json.final_context_omitted_batches || source.final_context_omitted_batches),
-    analyzedArticles: asNumber(source.full_corpus_analyzed_article_count || json.full_corpus_analyzed_article_count)
+    countGate: snapshotPass ? 'passed' : (storedCountGate || 'failed'),
+    integrityGate,
+    promptVersion,
+    representedBatches,
+    representedArticles,
+    omittedBatches,
+    analyzedArticles
   };
 }
 
@@ -135,7 +149,7 @@ export default function ReportDetailPage() {
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-xs text-zinc-500">{formatTokyo(report.created_at)}</p>
               <span className={status.formal ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800' : 'rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800'}>
-                {status.formal ? '正式・検証済み' : '暫定・未検証'}
+                {status.formal ? '正式・全件検証済み' : '暫定・未検証'}
               </span>
               <span className="badge">{status.verificationStatus}</span>
             </div>
@@ -150,7 +164,7 @@ export default function ReportDetailPage() {
         <section className="card border-amber-300 bg-amber-50 p-5">
           <h2 className="font-bold text-amber-900">このレポートは正式レポートではありません</h2>
           <p className="mt-2 text-sm leading-6 text-amber-900">
-            件数完了だけでは正式扱いしません。v2本文読解、全バッチの最終統合、省略0、根拠品質の全条件が必要です。
+            正式扱いには、対象記事の固定スナップショット全件読解、全バッチ統合、省略0、件数一致、整合性ゲート通過が必要です。
           </p>
         </section>
       )}

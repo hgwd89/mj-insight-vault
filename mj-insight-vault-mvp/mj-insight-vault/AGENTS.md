@@ -1,51 +1,74 @@
 # AGENTS.md
 
-## App Purpose
+## Current Canonical Architecture — 2026-09-04
 
-MJ Insight Vault is a Next.js app for capturing Nikkei MJ article images, uploading them, running OCR, structuring article candidates, storing them in Supabase, generating monthly rollups, and producing evidence-audited research reports.
+MJ Insight Vault is a Next.js application for preserving Nikkei MJ originals and searchable article text.
 
-The objective is not generic summarization. The app preserves article evidence and supports consumer-change hypothesis generation with refutation, evidence grading, and research-need extraction.
+The only active production data path is:
+
+- GitHub repository: `hgwd89/mj-insight-vault`
+- Canonical Vercel project: `hgwd89-mj-insight-vault-k5k2`
+- Originals: Google Drive `01 Originals`
+- Structured/searchable data: Neon project `round-glitter-99489346`
+- Article UI: `/cloud-stock`
+- Article APIs: `/api/cloud-stock/articles` and `/api/cloud-stock/articles/[id]`
+
+## Supabase Is Retired — Non-Negotiable
+
+Supabase project `wqbjtvepnavkqdshppau` is retired from MJ Insight Vault runtime and is **not** an authoritative source anymore.
+
+Never:
+
+- reconnect active UI or APIs to Supabase;
+- wait for Supabase recovery before making the app usable;
+- treat `ACTIVE_HEALTHY` as a reason to restore Supabase dependencies;
+- read or write Supabase as a fallback for article search, originals, Inventory, reports, or any other product function;
+- revive `/api/articles`, legacy signed URLs, Supabase Storage, or legacy Supabase database routes as an active path;
+- claim historical Supabase data has been recovered unless a verified non-Supabase copy has actually been imported into Neon/Drive.
+
+Legacy Supabase code, migrations, tests, and historical runbooks may remain in the repository as archaeology only. They do not define current production architecture.
 
 ## App Root
 
-Always treat this directory as the app root:
+Always use:
 
 ```text
 mj-insight-vault-mvp/mj-insight-vault
 ```
 
-The repository root may not contain `package.json`. Run npm commands from the app root only.
+Run npm commands from this directory.
 
-## Important Directories
+## Current Data Responsibilities
 
-- `app/`: Next.js App Router pages and API routes.
-- `components/`: Client UI components, upload flows, chat status UI, markdown rendering.
-- `lib/`: OCR, article structuring, OpenAI, Supabase, rollup, report prompt, and analysis logic.
-- `supabase/migrations/`: Database migrations. Do not change schema casually.
-- `scripts/`: Local verification scripts. These must not call external APIs unless explicitly named as such.
-- `docs/`: Architecture and testing documentation.
+- Google Drive: original files and durable file identity.
+- Neon `vault_source_files`: original metadata and Drive linkage.
+- Neon `vault_articles`: searchable article text linked to `vault_source_files`.
+- Article detail must preserve the link back to the Google Drive original and allow in-app original preview where supported.
+- Historical articles are searchable only if their data exists in Neon or another verified non-Supabase archive that has been explicitly migrated into Neon.
 
-## Important Files
+Do not fabricate missing historical corpus. If no non-Supabase copy exists, report that fact plainly.
 
-- `components/UploadFormStable.tsx`: Main upload UI, image compression, retry, failed-file retention, draft recovery.
-- `lib/uploadDraftStore.ts`: IndexedDB upload draft persistence.
-- `lib/vision.ts`: Google Vision OCR access and response handling.
-- `lib/articleSegmentation.ts`: OpenAI image/article structuring and OCR fallback handling.
-- `app/api/source-images/[id]/process/route.ts`: OCR processing for uploaded images.
-- `app/api/source-images/[id]/reprocess/route.ts`: Reprocessing for old source images.
-- `app/api/articles/route.ts`: Article listing API; must not regress to fixed low limits.
-- `lib/wideArticleRetrieval.ts`: Paged article retrieval for full corpus analysis.
-- `lib/monthlyRollups.ts`: Monthly rollup generation and stale handling.
-- `lib/monthlyRollupContext.ts`: Rollup context used by full analysis.
-- `app/api/rollups/monthly/route.ts`: Monthly rollup API.
-- `lib/chatRouteNo160.ts`: Full-corpus chat analysis without the previous 160 article cap.
-- `app/api/chat/jobs/[id]/run/route.ts`: Persistent chat job runner and rollup context attachment.
-- `lib/reportPrompt.ts`: Report prompt, evidence audit, refutation, and output schema.
-- `lib/chatAnalysisQualityGate.ts`: Post-generation report quality guard.
+## Operational Safety
 
-## Required Verification Commands
+During recovery/maintenance work, do not start OCR, Classification, Theme Analysis, Report generation, or bulk corpus processing unless the user explicitly requests that processing.
 
-Run from `mj-insight-vault-mvp/mj-insight-vault`:
+Never delete production originals or data merely to complete a migration. Prefer additive, verified changes.
+
+## Important Active Files
+
+- `components/NeonArticleVault.tsx`: article list/search UI.
+- `components/NeonArticleDetail.tsx`: article detail and linked-original preview.
+- `app/api/cloud-stock/articles/route.ts`: Neon article search/list.
+- `app/api/cloud-stock/articles/[id]/route.ts`: Neon article detail.
+- `app/api/cloud-stock/files/[id]/content/route.ts`: authenticated Google Drive original streaming.
+- `app/api/cloud-stock/readiness/route.ts`: Drive read/write capability + Neon readiness.
+- `lib/neonCloud.ts`: Neon Data API/auth configuration.
+- `lib/googleDriveRead.ts`: Google Drive reads.
+- `lib/googleDriveBackup.ts`: Google Drive write capability/upload helpers.
+
+## Required Verification
+
+Run from the app root:
 
 ```bash
 npm run lint
@@ -53,49 +76,6 @@ npm run build
 npm run test:local
 ```
 
-`npm run test:local` is external-API-free. It performs static/local guard checks only.
+Default CI/local tests must not make external production writes.
 
-## External API Test Policy
-
-External API calls are not allowed in default local tests.
-
-Do not make these mandatory in CI or local guard scripts:
-
-- Google Vision OCR calls
-- OpenAI Responses or Chat Completions calls
-- Supabase production reads/writes
-- Storage bucket writes/deletes
-
-Manual verification with real credentials is allowed only when explicitly requested and must not log secrets.
-
-## Rules for Codex Work
-
-- Read relevant code before changing it.
-- Keep changes scoped. Do not do broad UI rewrites or unrelated refactors.
-- Do not change DB schema, storage bucket names, environment variable names, or saved data shapes unless explicitly requested.
-- Do not delete or mutate production data from scripts.
-- Do not weaken tests to make them pass.
-- Do not hide OCR, OpenAI, Supabase, quota, or schema failures.
-- Do not fabricate unreadable OCR content or article details.
-- Preserve separation between:
-  - raw OCR text
-  - OpenAI article structuring
-  - article storage
-  - monthly rollup generation
-  - report generation
-  - report quality gate
-- Preserve upload recovery behavior: failed files and unfinished drafts must remain recoverable where possible.
-- Preserve article corpus behavior: no accidental 270/300 article cap, no accidental 160 article analysis cap.
-- Preserve report evidence behavior: article-title links, refutation audit, evidence matrix, and research-need framing.
-
-## Completion Conditions
-
-A change is complete only when:
-
-- Relevant source files have been checked.
-- `npm run lint` passes, or any pre-existing tooling limitation is explicitly reported.
-- `npm run build` passes.
-- `npm run test:local` passes.
-- Changed files and remaining risks are reported.
-- No test was relaxed to pass.
-
+A change is complete only when relevant source has been checked, lint/build/local tests pass (or an exact pre-existing tooling failure is reported), Preview/Production state is verified where applicable, and no test is weakened merely to pass.

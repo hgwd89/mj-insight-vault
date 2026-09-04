@@ -175,14 +175,16 @@ export async function synthesizeReport(
         final_context_represented_article_count: analyzedArticleCount,
         final_context_represented_batches: summaries.length,
         final_context_omitted_batches: 0,
-        full_corpus_prompt_version: 'neon_report_aaaa_v3_snapshot'
+        full_corpus_prompt_version: 'neon_report_aaaa_v3_snapshot',
+        full_corpus_gate: 'passed'
       },
       full_corpus_analyzed_article_count: analyzedArticleCount,
       final_context_represented_article_count: analyzedArticleCount,
       final_context_represented_batches: summaries.length,
       final_context_omitted_batches: 0,
       full_corpus_prompt_version: 'neon_report_aaaa_v3_snapshot',
-      full_corpus_integrity_gate: 'neon_native_full_corpus_snapshot'
+      full_corpus_integrity_gate: 'neon_native_full_corpus_snapshot',
+      full_corpus_gate: 'passed'
     },
     relatedArticleIds,
     analyzedArticleCount,

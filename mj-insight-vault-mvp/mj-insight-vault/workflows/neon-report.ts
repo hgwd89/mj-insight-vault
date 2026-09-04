@@ -71,7 +71,7 @@ async function finalizeReportJob(jobId: string, request: JsonRecord, summaries: 
     answer_json: result.answer,
     related_article_ids: result.relatedArticleIds,
     report_kind: 'neon_native',
-    is_formal_report: false,
+    is_formal_report: true,
     analysis_verification_status: 'neon_native_full_corpus_snapshot',
     hidden: false,
     pinned: false

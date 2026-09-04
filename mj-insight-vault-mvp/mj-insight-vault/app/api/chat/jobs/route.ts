@@ -1,58 +1,16 @@
 import { NextRequest } from 'next/server';
 import { requireAppPassword, jsonError } from '@/lib/auth';
-import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { createJob, latestActiveJob } from '@/lib/neonReportStore';
+import { requireNeonJwt } from '@/lib/neonCloud';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-type JobPayload = Record<string, unknown>;
-
-const ALL_SCOPE_WORDS = /全データ|全記事|今ある全|全部|トータル|全体傾向|全体|全件|すべて|全て/i;
-const PIPELINE_VERSION = 'verified_report_pipeline_v15';
 const MAX_QUERY_CHARS = 12_000;
+const PIPELINE_VERSION = 'neon_report_pipeline_v1';
 
 function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function stripReportInstruction(query: string) {
-  return query.split('\n\n【レポート要件】')[0].trim() || query.trim();
-}
-
-function normalizeChatJobRequest(rawBody: JobPayload) {
-  const query = text(rawBody.query);
-  const targetScope = text(rawBody.target_scope);
-  const body = { ...rawBody, pipeline_version: PIPELINE_VERSION };
-
-  if (targetScope !== 'all' || ALL_SCOPE_WORDS.test(query)) {
-    return { body, query };
-  }
-
-  const normalizedQuery = `全記事を対象に、全データを広域スキャンしたうえで分析してください。\n${query}`;
-  return {
-    body: {
-      ...body,
-      query: normalizedQuery
-    },
-    query: normalizedQuery
-  };
-}
-
-async function latestActiveJob() {
-  const { data, error } = await supabaseAdmin
-    .from('chat_jobs')
-    .select('*')
-    .in('status', ['queued', 'running'])
-    .eq('request_json->>pipeline_version', PIPELINE_VERSION)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
 }
 
 function activeJobResponse(job: unknown) {
@@ -66,11 +24,10 @@ function activeJobResponse(job: unknown) {
 export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
+    const jwt = await requireNeonJwt(req);
     const url = new URL(req.url);
-    if (url.searchParams.get('active') !== '1') {
-      return Response.json({ error: 'active=1 is required' }, { status: 400 });
-    }
-    return Response.json({ job: await latestActiveJob() });
+    if (url.searchParams.get('active') !== '1') return Response.json({ error: 'active=1 is required' }, { status: 400 });
+    return Response.json({ job: await latestActiveJob(jwt) || null });
   } catch (error) {
     return jsonError(error);
   }
@@ -79,47 +36,20 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     requireAppPassword(req);
-    const rawBody = await req.json() as JobPayload;
-    const { body, query } = normalizeChatJobRequest(rawBody);
+    const jwt = await requireNeonJwt(req);
+    const raw = await req.json() as Record<string, unknown>;
+    const query = text(raw.query);
     if (!query) return Response.json({ error: 'query is required' }, { status: 400 });
-    if (query.length > MAX_QUERY_CHARS) {
-      return Response.json({ error: `query is too long; maximum is ${MAX_QUERY_CHARS} characters` }, { status: 413 });
-    }
+    if (query.length > MAX_QUERY_CHARS) return Response.json({ error: `query is too long; maximum is ${MAX_QUERY_CHARS} characters` }, { status: 413 });
 
-    const active = await latestActiveJob();
+    const active = await latestActiveJob(jwt);
     if (active) return activeJobResponse(active);
 
-    const now = new Date().toISOString();
-    const inserted = await supabaseAdmin.from('chat_jobs').insert({
-      status: 'queued',
-      progress: 3,
-      stage: 'ジョブを作成しました',
-      user_query: stripReportInstruction(query),
-      request_json: body,
-      result_json: null,
-      report_id: null,
-      error_message: null,
-      attempt_count: 0,
-      started_at: null,
-      finished_at: null,
-      heartbeat_at: now,
-      next_retry_at: null
-    }).select('*').single();
-
-    if (inserted.error) {
-      if (inserted.error.code === '23505') {
-        const raced = await latestActiveJob();
-        if (raced) return activeJobResponse(raced);
-      }
-      throw inserted.error;
-    }
-    return Response.json({ job: inserted.data });
+    const request = { ...raw, query, pipeline_version: PIPELINE_VERSION, source_store: 'neon' };
+    const job = await createJob(jwt, request, query);
+    if (!job) throw new Error('レポートジョブを作成できませんでした。');
+    return Response.json({ job });
   } catch (error) {
-    const record = isRecord(error) ? error : {};
-    if (text(record.code) === '23505') {
-      const active = await latestActiveJob().catch(() => null);
-      if (active) return activeJobResponse(active);
-    }
     return jsonError(error);
   }
 }

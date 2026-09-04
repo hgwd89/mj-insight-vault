@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
 
     const sourceFileId = clean(article.source_file_id, 100);
     const sourceResponse = await neonDataFetch(
-      `vault_source_files?id=eq.${encodeURIComponent(sourceFileId)}&source_status=neq.e2e_test&select=id,file_name,article_date,memo,ocr_status,created_at&limit=1`,
+      `vault_source_files?id=eq.${encodeURIComponent(sourceFileId)}&source_status=neq.e2e_test&select=id,drive_file_id,file_name,mime_type,file_size_bytes,article_date,memo,ocr_status,created_at&limit=1`,
       jwt,
       { method: 'GET' }
     );
@@ -50,6 +50,10 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
         updated_at: article.updated_at,
         article_date: clean(source.article_date, 32) || null,
         source_file_name: clean(source.file_name, 500),
+        source_mime_type: clean(source.mime_type, 200) || null,
+        source_file_size_bytes: source.file_size_bytes ?? null,
+        drive_file_id: clean(source.drive_file_id, 500) || null,
+        original_available: Boolean(clean(source.drive_file_id, 500)),
         memo: clean(source.memo, 4000) || null
       }
     });

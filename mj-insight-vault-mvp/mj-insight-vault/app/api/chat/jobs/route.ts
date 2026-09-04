@@ -1,13 +1,15 @@
 import { NextRequest } from 'next/server';
+import { start } from 'workflow/api';
 import { requireAppPassword, jsonError } from '@/lib/auth';
-import { createJob, latestActiveJob } from '@/lib/neonReportStore';
+import { createJob, latestActiveJob, patchJob } from '@/lib/neonReportStore';
 import { requireNeonJwt } from '@/lib/neonCloud';
+import { neonReportWorkflow } from '@/workflows/neon-report';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const MAX_QUERY_CHARS = 12_000;
-const PIPELINE_VERSION = 'neon_report_pipeline_v1';
+const PIPELINE_VERSION = 'neon_report_pipeline_v2_durable';
 
 function text(value: unknown) {
   return value === undefined || value === null ? '' : String(value).trim();
@@ -45,10 +47,36 @@ export async function POST(req: NextRequest) {
     const active = await latestActiveJob(jwt);
     if (active) return activeJobResponse(active);
 
-    const request = { ...raw, query, pipeline_version: PIPELINE_VERSION, source_store: 'neon' };
-    const job = await createJob(jwt, request, query);
+    const request = {
+      ...raw,
+      query,
+      target_scope: 'all',
+      category_id: undefined,
+      pipeline_version: PIPELINE_VERSION,
+      source_store: 'neon',
+      durable_workflow: true
+    };
+    let job = await createJob(jwt, request, query);
     if (!job) throw new Error('レポートジョブを作成できませんでした。');
-    return Response.json({ job });
+
+    try {
+      job = await patchJob(jwt, text(job.id), {
+        status: 'running',
+        progress: 5,
+        stage: 'Durable Workflowを開始しています',
+        error_message: null,
+        started_at: new Date().toISOString(),
+        finished_at: null
+      }) || job;
+      const run = await start(neonReportWorkflow, [text(job.id)]);
+      return Response.json({ job, workflow_run_id: run.runId, durable_workflow: true, can_close_app: true }, { status: 202 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Durable Workflowを開始できませんでした。';
+      await patchJob(jwt, text(job.id), {
+        status: 'failed', progress: 100, stage: 'Workflow開始に失敗しました', error_message: message, finished_at: new Date().toISOString()
+      });
+      throw error;
+    }
   } catch (error) {
     return jsonError(error);
   }

@@ -1,11 +1,9 @@
 import { NextRequest } from 'next/server';
+import { start } from 'workflow/api';
 import { jsonError, requireAppPassword } from '@/lib/auth';
-import {
-  backgroundWorkerToken,
-  pendingOcrCount,
-  resetFailedOcr
-} from '@/lib/cloudStockBackgroundOcr';
+import { pendingOcrCount, resetFailedOcr } from '@/lib/cloudStockBackgroundOcr';
 import { neonDataFetch, parseUpstreamJson, requireNeonJwt } from '@/lib/neonCloud';
+import { cloudStockOcrWorkflow } from '@/workflows/cloud-stock-ocr';
 
 export const runtime = 'nodejs';
 
@@ -28,9 +26,11 @@ export async function GET(req: NextRequest) {
       countByStatus(jwt, 'processing'),
       countByStatus(jwt, 'failed')
     ]);
+
     return Response.json({
       ok: true,
       background_enabled: true,
+      durable_workflow: true,
       remaining,
       processing,
       failed,
@@ -47,27 +47,27 @@ export async function POST(req: NextRequest) {
     const jwt = await requireNeonJwt(req);
     await resetFailedOcr(jwt);
 
-    const workerUrl = new URL('/api/internal/cloud-stock-background-worker', req.url);
-    const workerResponse = await fetch(workerUrl, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${backgroundWorkerToken()}` },
-      cache: 'no-store'
-    });
-
-    if (!workerResponse.ok) {
-      const text = await workerResponse.text().catch(() => '');
-      throw new Error(`バックグラウンドOCRを開始できませんでした。${text.slice(0, 300)}`);
+    const remaining = await pendingOcrCount(jwt);
+    if (remaining === 0) {
+      return Response.json({
+        ok: true,
+        started: false,
+        remaining: 0,
+        can_close_app: true,
+        message: '未OCR資料はありません。'
+      });
     }
 
-    const remaining = await pendingOcrCount(jwt);
+    const run = await start(cloudStockOcrWorkflow, []);
+
     return Response.json({
       ok: true,
-      started: remaining > 0,
+      started: true,
+      run_id: run.runId,
       remaining,
       can_close_app: true,
-      message: remaining > 0
-        ? 'バックグラウンドOCRを開始しました。アプリを閉じても処理は継続します。'
-        : '未OCR資料はありません。'
+      durable_workflow: true,
+      message: 'バックグラウンドOCRを開始しました。アプリを閉じても処理は継続します。'
     }, { status: 202 });
   } catch (error) {
     return jsonError(error);

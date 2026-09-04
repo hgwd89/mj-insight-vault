@@ -9,8 +9,8 @@ const CHAT_RUN_EVENT = 'mj-chat-run-state';
 const PIPELINE_VERSION = 'report_pipeline_v3';
 
 const models = [
+  { value: 'gpt-5', label: 'gpt-5｜AAAA詳細分析・推奨' },
   { value: 'gpt-5-mini', label: 'gpt-5-mini｜標準' },
-  { value: 'gpt-5', label: 'gpt-5｜高品質・高コスト' },
   { value: 'gpt-4.1', label: 'gpt-4.1｜安定' },
   { value: 'gpt-4o-mini', label: 'gpt-4o-mini｜低コスト' }
 ] as const;
@@ -40,8 +40,8 @@ const outputTemplates = [
 ] as const;
 
 const REPORT_REQUIREMENTS = `目的は、MJ記事群から生活者インサイトとリサーチ課題を発見することです。
-answer_textを必須とし、結論、生活者動向のナラティブ、WHY3段階の説明仮説、複数仮説比較、調査論点、根拠マトリクス、反証・別解釈、品質評価を含めてください。
-重要主張には根拠記事IDと記事リンクを付け、事実・推論・仮説・未検証を分離してください。記事にないことを断定せず、弱い推論は調査が必要と明記してください。`;
+AAAAレベルの詳細分析として、answer_textを必須とし、エグゼクティブサマリー、分析対象・読み方、主要な観察事実、生活者動向のナラティブ、緊張・矛盾・トレードオフ、WHY3段階の説明仮説、競合する複数仮説の比較、セグメント・状況差、弱い兆候、マーケティング・事業への示唆、追加調査で検証すべき論点、根拠マトリクス、反証・別解釈、限界・言えないこと、品質評価を含めてください。
+重要主張には根拠記事IDと記事リンクを付け、事実・横断観察・解釈・仮説・未検証を分離してください。記事にないことを断定せず、弱い推論は調査が必要と明記してください。`;
 
 type ScopeMode = 'all' | 'category';
 type CategoryId = typeof categories[number]['value'];
@@ -88,7 +88,7 @@ export function ReportJobPanel() {
   const password = useAppPassword();
   const router = useRouter();
   const [query, setQuery] = useState('');
-  const [model, setModel] = useState('gpt-4o-mini');
+  const [model, setModel] = useState('gpt-5');
   const [scopeMode, setScopeMode] = useState<ScopeMode>('all');
   const [categoryId, setCategoryId] = useState<CategoryId>(categories[0].value);
   const [outputTemplate, setOutputTemplate] = useState('auto');
@@ -154,9 +154,9 @@ export function ReportJobPanel() {
   return (
     <div className="card p-5">
       <div>
-        <h1 className="text-xl font-black">レポート生成</h1>
+        <h1 className="text-xl font-black">レポート生成｜AAAA詳細分析</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          最新の記事母集団に合う本文読解runを自動作成し、バッチ処理を再開可能なジョブとして進めます。本文読解と品質ゲートを通過した結果だけを正式レポートとして保存します。
+          Neonに保存されたOCR済み記事を根拠に、観察事実から生活者ナラティブ、WHY、競合仮説、示唆、反証・限界まで統合した詳細レポートを生成します。
         </p>
       </div>
 
@@ -194,7 +194,7 @@ export function ReportJobPanel() {
           <select className="input mt-2" value={model} onChange={(event) => setModel(event.target.value)} disabled={busy}>
             {models.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">本文読解バッチは低コストモデルを使用し、ここでは最終統合モデルだけを選びます。</p>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">AAAA詳細分析では gpt-5 を推奨・デフォルトにしています。本文読解バッチは低コストモデルを使用し、ここでは最終統合モデルだけを選びます。</p>
         </label>
 
         <label className="block">
@@ -209,7 +209,7 @@ export function ReportJobPanel() {
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <button className="btn btn-primary" type="button" onClick={submit} disabled={busy || !query.trim()}>
-          {busy ? 'ジョブを作成中' : 'レポート生成を開始'}
+          {busy ? 'ジョブを作成中' : 'AAAA詳細レポート生成を開始'}
         </button>
         <p className="text-xs leading-5 text-zinc-500">処理状態はDBとこのブラウザに保存されます。タブやブラウザを閉じても、次回表示時に未完了ジョブを再開します。</p>
       </div>

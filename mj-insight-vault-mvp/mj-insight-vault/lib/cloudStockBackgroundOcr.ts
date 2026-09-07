@@ -13,6 +13,7 @@ import {
 
 const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const STALE_PROCESSING_MS = 15 * 60 * 1000;
+const OCR_DEDUPE_PAGE_SIZE = 40;
 
 function clean(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -195,15 +196,26 @@ function ocrContentHash(value: unknown) {
   return createHash('sha256').update(normalized, 'utf8').digest('hex');
 }
 
-export async function pendingOrganizeSourceIds(jwt: string) {
-  const [sourceResponse, rawArticleResponse, organizedArticleResponse] = await Promise.all([
-    neonDataFetch(
-      'vault_source_files?ocr_status=eq.done&source_status=neq.e2e_test&mime_type=in.(image/jpeg,image/png,image/webp)&select=id&order=created_at.asc&limit=5000',
+async function fetchRawOcrArticlesPaged(jwt: string) {
+  const rows: Array<Record<string, unknown>> = [];
+  for (let offset = 0; offset < 5000; offset += OCR_DEDUPE_PAGE_SIZE) {
+    const response = await neonDataFetch(
+      `vault_articles?article_sequence=eq.0&select=source_file_id,ocr_text_raw,ocr_text_verified&order=source_file_id.asc&limit=${OCR_DEDUPE_PAGE_SIZE}&offset=${offset}`,
       jwt,
       { method: 'GET' }
-    ),
+    );
+    const json = await parseUpstreamJson(response, '記事整理待ち資料のOCR本文を取得できませんでした。');
+    const page = Array.isArray(json) ? json as Array<Record<string, unknown>> : [];
+    rows.push(...page);
+    if (page.length < OCR_DEDUPE_PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+export async function pendingOrganizeSourceIds(jwt: string) {
+  const [sourceResponse, organizedArticleResponse, rawArticles] = await Promise.all([
     neonDataFetch(
-      'vault_articles?article_sequence=eq.0&select=source_file_id,ocr_text_raw,ocr_text_verified&limit=5000',
+      'vault_source_files?ocr_status=eq.done&source_status=neq.e2e_test&mime_type=in.(image/jpeg,image/png,image/webp)&select=id&order=created_at.asc&limit=5000',
       jwt,
       { method: 'GET' }
     ),
@@ -211,15 +223,14 @@ export async function pendingOrganizeSourceIds(jwt: string) {
       'vault_articles?article_sequence=gt.0&select=source_file_id&limit=5000',
       jwt,
       { method: 'GET' }
-    )
+    ),
+    fetchRawOcrArticlesPaged(jwt)
   ]);
 
   const sourceJson = await parseUpstreamJson(sourceResponse, '記事整理待ち資料を取得できませんでした。');
-  const rawArticleJson = await parseUpstreamJson(rawArticleResponse, '記事整理待ち資料のOCR本文を取得できませんでした。');
   const organizedArticleJson = await parseUpstreamJson(organizedArticleResponse, '記事整理済み資料を確認できませんでした。');
 
   const sources = Array.isArray(sourceJson) ? sourceJson as Array<Record<string, unknown>> : [];
-  const rawArticles = Array.isArray(rawArticleJson) ? rawArticleJson as Array<Record<string, unknown>> : [];
   const organizedArticles = Array.isArray(organizedArticleJson) ? organizedArticleJson as Array<Record<string, unknown>> : [];
 
   const rawHashBySource = new Map<string, string>();

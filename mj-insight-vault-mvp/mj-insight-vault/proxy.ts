@@ -11,6 +11,7 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
   if (path === '/api/cloud-stock/background') return method === 'GET' || method === 'POST';
   if (path === '/api/internal/cloud-stock-background-worker') return method === 'POST';
+  if (path === '/api/internal/vertex-article-quality-canary') return method === 'GET';
   if (path === '/api/cloud-stock/organize') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';

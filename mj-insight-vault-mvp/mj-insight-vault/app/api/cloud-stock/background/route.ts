@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { start } from 'workflow/api';
 import { jsonError, requireAppPassword } from '@/lib/auth';
-import { pendingOcrCount, resetFailedOcr } from '@/lib/cloudStockBackgroundOcr';
+import { pendingOcrCount, pendingOrganizeCount, resetFailedOcr } from '@/lib/cloudStockBackgroundOcr';
 import { neonDataFetch, parseUpstreamJson, requireNeonJwt } from '@/lib/neonCloud';
 import { cloudStockOcrWorkflow } from '@/workflows/cloud-stock-ocr';
 
@@ -21,8 +21,9 @@ export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
     const jwt = await requireNeonJwt(req);
-    const [remaining, processing, failed] = await Promise.all([
+    const [remaining, organizeRemaining, processing, failed] = await Promise.all([
       pendingOcrCount(jwt),
+      pendingOrganizeCount(jwt),
       countByStatus(jwt, 'processing'),
       countByStatus(jwt, 'failed')
     ]);
@@ -32,6 +33,8 @@ export async function GET(req: NextRequest) {
       background_enabled: true,
       durable_workflow: true,
       remaining,
+      organize_remaining: organizeRemaining,
+      total_remaining: remaining + organizeRemaining,
       processing,
       failed,
       can_close_app: true
@@ -47,14 +50,21 @@ export async function POST(req: NextRequest) {
     const jwt = await requireNeonJwt(req);
     await resetFailedOcr(jwt);
 
-    const remaining = await pendingOcrCount(jwt);
-    if (remaining === 0) {
+    const [remaining, organizeRemaining] = await Promise.all([
+      pendingOcrCount(jwt),
+      pendingOrganizeCount(jwt)
+    ]);
+    const totalRemaining = remaining + organizeRemaining;
+
+    if (totalRemaining === 0) {
       return Response.json({
         ok: true,
         started: false,
         remaining: 0,
+        organize_remaining: 0,
+        total_remaining: 0,
         can_close_app: true,
-        message: '未OCR資料はありません。'
+        message: '未処理資料はありません。'
       });
     }
 
@@ -65,9 +75,11 @@ export async function POST(req: NextRequest) {
       started: true,
       run_id: run.runId,
       remaining,
+      organize_remaining: organizeRemaining,
+      total_remaining: totalRemaining,
       can_close_app: true,
       durable_workflow: true,
-      message: 'バックグラウンドOCRを開始しました。アプリを閉じても処理は継続します。'
+      message: `バックグラウンド処理を開始しました。未OCR ${remaining}件／記事整理待ち ${organizeRemaining}件。アプリを閉じても処理は継続します。`
     }, { status: 202 });
   } catch (error) {
     return jsonError(error);

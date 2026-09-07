@@ -188,3 +188,33 @@ export async function pendingOcrCount(jwt: string) {
   const json = await parseUpstreamJson(response, 'OCR進捗を取得できませんでした。');
   return Array.isArray(json) ? json.length : 0;
 }
+
+export async function pendingOrganizeSourceIds(jwt: string) {
+  const sourceResponse = await neonDataFetch(
+    'vault_source_files?ocr_status=eq.done&source_status=neq.e2e_test&mime_type=in.(image/jpeg,image/png,image/webp)&select=id&order=created_at.asc&limit=5000',
+    jwt,
+    { method: 'GET' }
+  );
+  const sourceJson = await parseUpstreamJson(sourceResponse, '記事整理待ち資料を取得できませんでした。');
+  const sources = Array.isArray(sourceJson) ? sourceJson as Array<Record<string, unknown>> : [];
+
+  const articleResponse = await neonDataFetch(
+    'vault_articles?article_sequence=gt.0&select=source_file_id&limit=5000',
+    jwt,
+    { method: 'GET' }
+  );
+  const articleJson = await parseUpstreamJson(articleResponse, '記事整理済み資料を確認できませんでした。');
+  const organized = new Set(
+    (Array.isArray(articleJson) ? articleJson as Array<Record<string, unknown>> : [])
+      .map((row) => clean(row.source_file_id, 100))
+      .filter(Boolean)
+  );
+
+  return sources
+    .map((source) => clean(source.id, 100))
+    .filter((sourceFileId) => Boolean(sourceFileId) && !organized.has(sourceFileId));
+}
+
+export async function pendingOrganizeCount(jwt: string) {
+  return (await pendingOrganizeSourceIds(jwt)).length;
+}

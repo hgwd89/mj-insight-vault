@@ -21,11 +21,19 @@ async function organizeSource(sourceFileId: string) {
   return lib.organizeOneSource(jwt, sourceFileId);
 }
 
+async function pendingOrganizeSources() {
+  'use step';
+  const lib = await import('@/lib/cloudStockBackgroundOcr');
+  const jwt = await lib.getOwnerNeonJwt();
+  return lib.pendingOrganizeSourceIds(jwt);
+}
+
 export async function cloudStockOcrWorkflow() {
   'use workflow';
 
   let completed = 0;
   let failed = 0;
+  let organizeCompleted = 0;
   let organizeFailed = 0;
 
   for (let index = 0; index < 5000; index += 1) {
@@ -45,11 +53,22 @@ export async function cloudStockOcrWorkflow() {
     if (sourceFileId) {
       try {
         await organizeSource(sourceFileId);
+        organizeCompleted += 1;
       } catch {
         organizeFailed += 1;
       }
     }
   }
 
-  return { completed, failed, organizeFailed };
+  const organizeBacklog = await pendingOrganizeSources();
+  for (const sourceFileId of organizeBacklog) {
+    try {
+      await organizeSource(sourceFileId);
+      organizeCompleted += 1;
+    } catch {
+      organizeFailed += 1;
+    }
+  }
+
+  return { completed, failed, organizeCompleted, organizeFailed };
 }

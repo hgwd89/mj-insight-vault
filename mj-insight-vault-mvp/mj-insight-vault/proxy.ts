@@ -11,12 +11,12 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (path === '/api/cloud-stock/ocr') return method === 'POST';
   if (path === '/api/cloud-stock/background') return method === 'GET' || method === 'POST';
   if (path === '/api/internal/cloud-stock-background-worker') return method === 'POST';
+  if (path === '/api/internal/vertex-article-canary') return method === 'GET';
   if (path === '/api/cloud-stock/organize') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/articles') return method === 'GET';
   if (path.startsWith('/api/cloud-stock/articles/')) return method === 'GET';
   if (path === '/api/cloud-stock/legacy-status') return method === 'GET';
 
-  // Neon-native durable report generation and report history.
   if (path === '/api/chat/jobs') return method === 'GET' || method === 'POST';
   if (/^\/api\/chat\/jobs\/[^/]+$/.test(path)) return method === 'GET';
   if (/^\/api\/chat\/jobs\/[^/]+\/run$/.test(path)) return method === 'POST';
@@ -24,10 +24,8 @@ function allowedCloudStockRequest(method: string, path: string) {
   if (/^\/api\/reports\/[^/]+$/.test(path)) return method === 'GET' || method === 'PATCH' || method === 'DELETE';
   if (path === '/api/diagnostics/latest-report') return method === 'GET';
 
-  // Preview-only end-to-end test route. The handler returns 404 in Production.
   if (path === '/api/internal/report-smoke') return method === 'GET';
 
-  // Retired Supabase import routes are reachable only so the handlers can return HTTP 410 Gone.
   if (path === '/api/cloud-stock/import-supabase') return method === 'GET' || method === 'POST';
   if (path === '/api/cloud-stock/import-supabase-db') return method === 'GET' || method === 'POST';
   return false;

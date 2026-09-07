@@ -189,30 +189,73 @@ export async function pendingOcrCount(jwt: string) {
   return Array.isArray(json) ? json.length : 0;
 }
 
-export async function pendingOrganizeSourceIds(jwt: string) {
-  const sourceResponse = await neonDataFetch(
-    'vault_source_files?ocr_status=eq.done&source_status=neq.e2e_test&mime_type=in.(image/jpeg,image/png,image/webp)&select=id&order=created_at.asc&limit=5000',
-    jwt,
-    { method: 'GET' }
-  );
-  const sourceJson = await parseUpstreamJson(sourceResponse, '記事整理待ち資料を取得できませんでした。');
-  const sources = Array.isArray(sourceJson) ? sourceJson as Array<Record<string, unknown>> : [];
+function ocrContentHash(value: unknown) {
+  const normalized = normalizeOcrText(clean(value, 200000));
+  if (!normalized) return '';
+  return createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
 
-  const articleResponse = await neonDataFetch(
-    'vault_articles?article_sequence=gt.0&select=source_file_id&limit=5000',
-    jwt,
-    { method: 'GET' }
-  );
-  const articleJson = await parseUpstreamJson(articleResponse, '記事整理済み資料を確認できませんでした。');
-  const organized = new Set(
-    (Array.isArray(articleJson) ? articleJson as Array<Record<string, unknown>> : [])
+export async function pendingOrganizeSourceIds(jwt: string) {
+  const [sourceResponse, rawArticleResponse, organizedArticleResponse] = await Promise.all([
+    neonDataFetch(
+      'vault_source_files?ocr_status=eq.done&source_status=neq.e2e_test&mime_type=in.(image/jpeg,image/png,image/webp)&select=id&order=created_at.asc&limit=5000',
+      jwt,
+      { method: 'GET' }
+    ),
+    neonDataFetch(
+      'vault_articles?article_sequence=eq.0&select=source_file_id,ocr_text_raw,ocr_text_verified&limit=5000',
+      jwt,
+      { method: 'GET' }
+    ),
+    neonDataFetch(
+      'vault_articles?article_sequence=gt.0&select=source_file_id&limit=5000',
+      jwt,
+      { method: 'GET' }
+    )
+  ]);
+
+  const sourceJson = await parseUpstreamJson(sourceResponse, '記事整理待ち資料を取得できませんでした。');
+  const rawArticleJson = await parseUpstreamJson(rawArticleResponse, '記事整理待ち資料のOCR本文を取得できませんでした。');
+  const organizedArticleJson = await parseUpstreamJson(organizedArticleResponse, '記事整理済み資料を確認できませんでした。');
+
+  const sources = Array.isArray(sourceJson) ? sourceJson as Array<Record<string, unknown>> : [];
+  const rawArticles = Array.isArray(rawArticleJson) ? rawArticleJson as Array<Record<string, unknown>> : [];
+  const organizedArticles = Array.isArray(organizedArticleJson) ? organizedArticleJson as Array<Record<string, unknown>> : [];
+
+  const rawHashBySource = new Map<string, string>();
+  for (const row of rawArticles) {
+    const sourceFileId = clean(row.source_file_id, 100);
+    if (!sourceFileId) continue;
+    const hash = ocrContentHash(row.ocr_text_verified) || ocrContentHash(row.ocr_text_raw);
+    if (hash) rawHashBySource.set(sourceFileId, hash);
+  }
+
+  const organizedSourceIds = new Set(
+    organizedArticles
       .map((row) => clean(row.source_file_id, 100))
       .filter(Boolean)
   );
+  const organizedHashes = new Set<string>();
+  for (const sourceFileId of organizedSourceIds) {
+    const hash = rawHashBySource.get(sourceFileId);
+    if (hash) organizedHashes.add(hash);
+  }
 
-  return sources
-    .map((source) => clean(source.id, 100))
-    .filter((sourceFileId) => Boolean(sourceFileId) && !organized.has(sourceFileId));
+  const seenPendingHashes = new Set<string>();
+  const pending: string[] = [];
+  for (const source of sources) {
+    const sourceFileId = clean(source.id, 100);
+    if (!sourceFileId || organizedSourceIds.has(sourceFileId)) continue;
+
+    const hash = rawHashBySource.get(sourceFileId) || '';
+    if (hash) {
+      if (organizedHashes.has(hash) || seenPendingHashes.has(hash)) continue;
+      seenPendingHashes.add(hash);
+    }
+    pending.push(sourceFileId);
+  }
+
+  return pending;
 }
 
 export async function pendingOrganizeCount(jwt: string) {

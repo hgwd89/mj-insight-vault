@@ -21,6 +21,19 @@ async function organizeSource(sourceFileId: string) {
   return lib.organizeOneSource(jwt, sourceFileId);
 }
 
+async function organizeSourcesBatch(sourceFileIds: string[]) {
+  'use step';
+  const lib = await import('@/lib/cloudStockBackgroundOcr');
+  const jwt = await lib.getOwnerNeonJwt();
+  const results = await Promise.allSettled(
+    sourceFileIds.map((sourceFileId) => lib.organizeOneSource(jwt, sourceFileId))
+  );
+  return {
+    completed: results.filter((result) => result.status === 'fulfilled').length,
+    failed: results.filter((result) => result.status === 'rejected').length
+  };
+}
+
 async function pendingOrganizeSources() {
   'use step';
   const lib = await import('@/lib/cloudStockBackgroundOcr');
@@ -61,13 +74,11 @@ export async function cloudStockOcrWorkflow() {
   }
 
   const organizeBacklog = await pendingOrganizeSources();
-  for (const sourceFileId of organizeBacklog) {
-    try {
-      await organizeSource(sourceFileId);
-      organizeCompleted += 1;
-    } catch {
-      organizeFailed += 1;
-    }
+  for (let index = 0; index < organizeBacklog.length; index += 3) {
+    const batch = organizeBacklog.slice(index, index + 3);
+    const result = await organizeSourcesBatch(batch);
+    organizeCompleted += result.completed;
+    organizeFailed += result.failed;
   }
 
   return { completed, failed, organizeCompleted, organizeFailed };

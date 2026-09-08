@@ -1,5 +1,5 @@
 import { downloadGoogleDriveFile } from '@/lib/googleDriveRead';
-import { segmentArticlesFromImage } from '@/lib/articleSegmentation';
+import { segmentArticlesWithVertexImage } from '@/lib/vertexArticleSegmentation';
 import { neonDataFetch, parseUpstreamJson } from '@/lib/neonCloud';
 
 function clean(value: unknown, max: number) {
@@ -62,7 +62,7 @@ export async function organizeNeonSourceArticles(input: {
   if (!pageOcr) throw new Error('先にOCRを実行してください。');
 
   const imageBuffer = await downloadGoogleDriveFile(clean(source.drive_file_id, 256));
-  const candidates = await segmentArticlesFromImage({
+  const candidates = await segmentArticlesWithVertexImage({
     ocrText: pageOcr,
     imageBuffer,
     mimeType
@@ -76,13 +76,13 @@ export async function organizeNeonSourceArticles(input: {
   if (!articles.length) throw new Error('記事候補を抽出できませんでした。');
 
   const now = new Date().toISOString();
-  const rows = articles.slice(0, 8).map((article, index) => ({
+  const rows = articles.slice(0, 4).map((article, index) => ({
     source_file_id: sourceFileId,
     article_sequence: index + 1,
     title: clean(article.headline, 1000) || `記事 ${index + 1}`,
     ocr_text_raw: article.ocr_text,
     ocr_text_verified: null,
-    verification_version: 'drive-neon-article-organization-v1',
+    verification_version: 'drive-neon-vertex-article-organization-v2',
     verification_status: 'article_organized',
     confidence: null,
     updated_at: now

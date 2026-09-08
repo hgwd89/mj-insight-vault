@@ -20,6 +20,7 @@ async function organizeSource(sourceFileId: string) {
   const jwt = await lib.getOwnerNeonJwt();
   return lib.organizeOneSource(jwt, sourceFileId);
 }
+organizeSource.maxRetries = 0;
 
 async function organizeSourcesBatch(sourceFileIds: string[]) {
   'use step';
@@ -33,6 +34,7 @@ async function organizeSourcesBatch(sourceFileIds: string[]) {
     failed: results.filter((result) => result.status === 'rejected').length
   };
 }
+organizeSourcesBatch.maxRetries = 0;
 
 async function pendingOrganizeSources() {
   'use step';

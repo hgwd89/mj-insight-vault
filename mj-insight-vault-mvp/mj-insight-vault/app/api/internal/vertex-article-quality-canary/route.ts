@@ -54,7 +54,7 @@ const responseSchema = {
     articles: {
       type: 'ARRAY',
       minItems: 1,
-      maxItems: 6,
+      maxItems: 4,
       items: {
         type: 'OBJECT',
         properties: {
@@ -128,8 +128,9 @@ export async function GET(req: NextRequest) {
 
     const prompt = [
       '日経MJ紙面を検索用ニュースDBの記事単位に整理してください。画像を主情報、OCRを補助に使います。',
-      '編集記事だけをarticlesへ入れ、広告・購読案内・イベント告知だけの枠・商品カタログは除外してください。',
-      '別見出し・別記事枠だけ分割し、同一記事を細切れにしないでください。図表は対応する記事に含めてください。',
+      'articlesには独立した編集記事だけを入れてください。広告・購読案内・イベント告知だけの枠・商品カタログは除外してください。',
+      '最重要: 図表・ランキング表・グラフ・写真キャプションは、それ自体を独立記事にしないでください。対応する本文記事へ内容を統合し、has_table / has_chart / has_imageで示してください。紙面全体が図表だけで本文記事が無い場合に限り、tableまたはchartとして1件にしてください。',
+      '別見出しと独立した本文枠がある場合だけ複数記事に分け、同一記事を細切れにしないでください。記事数は必要最小限にしてください。',
       '見出し、掲載日、企業名、サービス名、人物名、数字など検索・再分析に必要な事実を本文へ保持してください。',
       '記事にない解釈・評価・示唆は追加しないでください。原文の情報量を超えて水増ししないでください。',
       'article_dateは確実な場合のみYYYY-MM-DD、不明なら空文字。',
@@ -198,7 +199,10 @@ export async function GET(req: NextRequest) {
         article_type: a.article_type,
         body_chars: typeof a.body_reconstructed === 'string' ? a.body_reconstructed.length : 0,
         body_preview: typeof a.body_reconstructed === 'string' ? a.body_reconstructed.slice(0, 500) : '',
-        confidence: a.confidence
+        confidence: a.confidence,
+        has_table: a.has_table,
+        has_chart: a.has_chart,
+        has_image: a.has_image
       })),
       usage: vertexJson.usageMetadata || null
     }, { headers: { 'cache-control': 'no-store' } });

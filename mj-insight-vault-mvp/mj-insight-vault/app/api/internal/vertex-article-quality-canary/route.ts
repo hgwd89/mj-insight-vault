@@ -139,7 +139,7 @@ export async function GET(req: NextRequest) {
       ocr.slice(0, 8000)
     ].join('\n');
 
-    const model = 'gemini-2.5-flash-lite';
+    const model = 'gemini-2.5-flash';
     const endpoint = `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(credentials.project_id)}/locations/global/publishers/google/models/${model}:generateContent`;
     const vertexRes = await fetch(endpoint, {
       method: 'POST',

@@ -11,6 +11,12 @@ type GoogleServiceAccount = {
   token_uri?: string;
 };
 
+type ValidGoogleServiceAccount = {
+  client_email: string;
+  private_key: string;
+  token_uri?: string;
+};
+
 export type DriveGptArticleIndexRow = {
   articleId: string;
   sourceFileId: string;
@@ -37,7 +43,7 @@ function base64Url(input: string | Buffer) {
   return Buffer.from(input).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-function credentialsFromEnv(): GoogleServiceAccount {
+function credentialsFromEnv(): ValidGoogleServiceAccount {
   const raw = process.env.GOOGLE_CLOUD_CREDENTIALS || '';
   let credentials: GoogleServiceAccount;
   try {
@@ -48,7 +54,11 @@ function credentialsFromEnv(): GoogleServiceAccount {
   if (!credentials.client_email || !credentials.private_key) {
     throw new Error('GOOGLE_CLOUD_CREDENTIALS is incomplete.');
   }
-  return credentials;
+  return {
+    client_email: credentials.client_email,
+    private_key: credentials.private_key,
+    token_uri: credentials.token_uri
+  };
 }
 
 async function googleSheetsToken() {

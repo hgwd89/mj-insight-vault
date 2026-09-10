@@ -1,6 +1,7 @@
 import { downloadGoogleDriveFile } from '@/lib/googleDriveRead';
 import { segmentArticlesWithVertexImage } from '@/lib/vertexArticleSegmentation';
 import { neonDataFetch, parseUpstreamJson } from '@/lib/neonCloud';
+import { upsertDriveGptArticleIndex } from '@/lib/driveGptArticleIndex';
 
 function clean(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -89,7 +90,7 @@ export async function organizeNeonSourceArticles(input: {
   }));
 
   const insertResponse = await neonDataFetch(
-    'vault_articles?on_conflict=source_file_id,article_sequence&select=id,source_file_id,article_sequence,title,verification_status',
+    'vault_articles?on_conflict=source_file_id,article_sequence&select=id,source_file_id,article_sequence,title,verification_status,verification_version,updated_at',
     jwt,
     {
       method: 'POST',
@@ -101,6 +102,7 @@ export async function organizeNeonSourceArticles(input: {
   const inserted = Array.isArray(insertedJson) ? insertedJson as Array<Record<string, unknown>> : [];
 
   const inferredDate = articles.map((article) => validDate(article.article_date)).find(Boolean) || '';
+  const articleDate = inferredDate || validDate(source.article_date) || null;
   if (!validDate(source.article_date) && inferredDate) {
     const dateResponse = await neonDataFetch(`vault_source_files?id=eq.${encodeURIComponent(sourceFileId)}`, jwt, {
       method: 'PATCH',
@@ -110,11 +112,44 @@ export async function organizeNeonSourceArticles(input: {
     await parseUpstreamJson(dateResponse, '掲載日を保存できませんでした。');
   }
 
+  const insertedBySequence = new Map<number, Record<string, unknown>>();
+  for (const row of inserted) {
+    const sequence = Number(row.article_sequence || 0);
+    if (Number.isFinite(sequence) && sequence > 0) insertedBySequence.set(sequence, row);
+  }
+
+  let driveIndexSynced = false;
+  let driveIndexError: string | null = null;
+  try {
+    await upsertDriveGptArticleIndex(rows.map((row) => {
+      const insertedRow = insertedBySequence.get(row.article_sequence);
+      return {
+        articleId: clean(insertedRow?.id, 120),
+        sourceFileId,
+        articleSequence: row.article_sequence,
+        articleDate,
+        title: row.title,
+        articleText: row.ocr_text_raw,
+        originalFileName: clean(source.file_name, 1000),
+        originalDriveFileId: clean(source.drive_file_id, 256),
+        verificationStatus: row.verification_status,
+        verificationVersion: row.verification_version,
+        updatedAt: now
+      };
+    }));
+    driveIndexSynced = true;
+  } catch (error) {
+    driveIndexError = error instanceof Error ? error.message : String(error);
+    console.error('Drive GPT article index sync failed', sourceFileId, driveIndexError);
+  }
+
   return {
     source_file_id: sourceFileId,
     article_count: inserted.length || rows.length,
     already_organized: false,
-    article_date: inferredDate || validDate(source.article_date) || null,
+    article_date: articleDate,
+    drive_index_synced: driveIndexSynced,
+    drive_index_error: driveIndexError,
     articles: inserted.length ? inserted : rows
   };
 }

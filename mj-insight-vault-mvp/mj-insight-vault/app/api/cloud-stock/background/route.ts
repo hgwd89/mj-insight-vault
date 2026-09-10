@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   try {
     requireAppPassword(req);
     const jwt = await requireNeonJwt(req);
-    const [remaining, organizeRemaining, processing, failed] = await Promise.all([
+    const [remaining, optionalOrganizeRemaining, processing, failed] = await Promise.all([
       pendingOcrCount(jwt),
       pendingOrganizeCount(jwt),
       countByStatus(jwt, 'processing'),
@@ -32,12 +32,15 @@ export async function GET(req: NextRequest) {
       ok: true,
       background_enabled: true,
       durable_workflow: true,
+      mode: 'ocr_only_gpt_search',
       remaining,
-      organize_remaining: organizeRemaining,
-      total_remaining: remaining + organizeRemaining,
+      organize_remaining: optionalOrganizeRemaining,
+      optional_organize_remaining: optionalOrganizeRemaining,
+      total_remaining: remaining,
       processing,
       failed,
-      can_close_app: true
+      can_close_app: true,
+      article_organization_required_for_search: false
     });
   } catch (error) {
     return jsonError(error);
@@ -50,21 +53,23 @@ export async function POST(req: NextRequest) {
     const jwt = await requireNeonJwt(req);
     await resetFailedOcr(jwt);
 
-    const [remaining, organizeRemaining] = await Promise.all([
+    const [remaining, optionalOrganizeRemaining] = await Promise.all([
       pendingOcrCount(jwt),
       pendingOrganizeCount(jwt)
     ]);
-    const totalRemaining = remaining + organizeRemaining;
 
-    if (totalRemaining === 0) {
+    if (remaining === 0) {
       return Response.json({
         ok: true,
         started: false,
+        mode: 'ocr_only_gpt_search',
         remaining: 0,
-        organize_remaining: 0,
+        organize_remaining: optionalOrganizeRemaining,
+        optional_organize_remaining: optionalOrganizeRemaining,
         total_remaining: 0,
         can_close_app: true,
-        message: '未処理資料はありません。'
+        article_organization_required_for_search: false,
+        message: `未OCR資料はありません。記事分割未実施 ${optionalOrganizeRemaining}件は任意処理で、GPT検索には不要です。`
       });
     }
 
@@ -74,12 +79,15 @@ export async function POST(req: NextRequest) {
       ok: true,
       started: true,
       run_id: run.runId,
+      mode: 'ocr_only_gpt_search',
       remaining,
-      organize_remaining: organizeRemaining,
-      total_remaining: totalRemaining,
+      organize_remaining: optionalOrganizeRemaining,
+      optional_organize_remaining: optionalOrganizeRemaining,
+      total_remaining: remaining,
       can_close_app: true,
       durable_workflow: true,
-      message: `バックグラウンド処理を開始しました。未OCR ${remaining}件／記事整理待ち ${organizeRemaining}件。アプリを閉じても処理は継続します。`
+      article_organization_required_for_search: false,
+      message: `バックグラウンドOCRを開始しました。未OCR ${remaining}件。OCR完了後はGPT検索可能です。記事分割未実施 ${optionalOrganizeRemaining}件は自動実行しません。`
     }, { status: 202 });
   } catch (error) {
     return jsonError(error);

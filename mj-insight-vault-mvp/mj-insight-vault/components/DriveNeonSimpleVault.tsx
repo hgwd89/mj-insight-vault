@@ -58,7 +58,7 @@ export function DriveNeonSimpleVault() {
   const [processing, setProcessing] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [pendingOcr, setPendingOcr] = useState(0);
-  const [pendingOrganize, setPendingOrganize] = useState(0);
+  const [optionalOrganize, setOptionalOrganize] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Progress>({ completed: 0, total: 0, failed: 0 });
 
   async function loadPendingOcr() {
@@ -72,19 +72,19 @@ export function DriveNeonSimpleVault() {
     return { rows, total };
   }
 
-  async function loadPendingOrganize() {
+  async function loadOptionalOrganize() {
     const res = await fetch('/api/cloud-stock/organize', {
       headers: { 'x-app-password': appPassword }
     });
     const json = await readJson(res);
     const rows = Array.isArray(json.rows) ? json.rows as QueueRow[] : [];
     const total = Number.isFinite(Number(json.total)) ? Math.max(0, Number(json.total)) : rows.length;
-    setPendingOrganize(total);
+    setOptionalOrganize(total);
     return { rows, total };
   }
 
   async function refreshQueues() {
-    const [ocr, organize] = await Promise.all([loadPendingOcr(), loadPendingOrganize()]);
+    const [ocr, organize] = await Promise.all([loadPendingOcr(), loadOptionalOrganize()]);
     return { ocr, organize };
   }
 
@@ -100,7 +100,7 @@ export function DriveNeonSimpleVault() {
         await readJson(auth);
         const queues = await refreshQueues();
         setReady(true);
-        setMessage(`未OCR ${queues.ocr.total}件／記事整理待ち ${queues.organize.total}件`);
+        setMessage(`未OCR ${queues.ocr.total}件／記事分割未実施 ${queues.organize.total}件（任意・GPT検索には不要）`);
       } catch (error) {
         setReady(false);
         setMessage(japaneseError(error instanceof Error ? error.message : '接続に失敗しました。'));
@@ -182,7 +182,7 @@ export function DriveNeonSimpleVault() {
         `アップロード完了：成功 ${succeeded}件／失敗 ${failed}件` +
         (failed > 0
           ? '。失敗分だけ選択状態に残しています。再実行できます。'
-          : `。未OCR ${queues.ocr.total}件／記事整理待ち ${queues.organize.total}件`)
+          : `。未OCR ${queues.ocr.total}件／記事分割未実施 ${queues.organize.total}件（任意）`)
       );
     } catch (error) {
       setMessage(japaneseError(error instanceof Error ? error.message : 'アップロードに失敗しました。'));
@@ -202,7 +202,7 @@ export function DriveNeonSimpleVault() {
       });
       const json = await readJson(res);
       const queues = await refreshQueues();
-      setMessage(`同期完了：新規 ${Number(json.newly_registered || 0)}件／未OCR ${queues.ocr.total}件／記事整理待ち ${queues.organize.total}件`);
+      setMessage(`同期完了：新規 ${Number(json.newly_registered || 0)}件／未OCR ${queues.ocr.total}件／記事分割未実施 ${queues.organize.total}件（任意）`);
     } catch (error) {
       setMessage(japaneseError(error instanceof Error ? error.message : '同期に失敗しました。'));
     } finally {
@@ -211,7 +211,7 @@ export function DriveNeonSimpleVault() {
   }
 
   async function runBatch() {
-    if (!ready || syncing || uploading || processing) return;
+    if (!ready || syncing || uploading || processing || pendingOcr === 0) return;
     setProcessing(true);
     try {
       const response = await fetch('/api/cloud-stock/background', {
@@ -228,15 +228,13 @@ export function DriveNeonSimpleVault() {
     }
   }
 
-  const pendingTotal = pendingOcr + pendingOrganize;
-
   return (
     <div className="space-y-4">
       <div className="card p-5">
         <p className="text-sm font-bold text-emerald-700">資料を追加</p>
-        <h1 className="mt-1 text-xl font-black">原本を追加して、記事として読める状態にする</h1>
+        <h1 className="mt-1 text-xl font-black">原本を追加して、GPTから検索できる状態にする</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600">
-          アプリから最大100件まとめて追加できます。原本はGoogleドライブの「01 Originals」に保存し、Neonへ登録します。OCR開始後はサーバー側で処理を継続するため、アプリを閉じても構いません。
+          原本はGoogleドライブ「01 Originals」に保存し、Neonへ登録します。OCR完了時点でGPT検索可能です。記事単位へのAI分割は検索の前提ではなく、必要な場合だけ行う任意処理です。
         </p>
 
         <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
@@ -285,27 +283,33 @@ export function DriveNeonSimpleVault() {
           <button className="btn min-h-12" type="button" onClick={syncDrive} disabled={!ready || syncing || uploading || processing}>
             {syncing ? '同期しています…' : '2. 追加した原本をMJに同期'}
           </button>
-          <button className="btn min-h-12" type="button" onClick={() => void runBatch()} disabled={!ready || syncing || uploading || processing || pendingTotal === 0}>
+          <button className="btn min-h-12" type="button" onClick={() => void runBatch()} disabled={!ready || syncing || uploading || processing || pendingOcr === 0}>
             {processing
-              ? 'バックグラウンド処理を開始しています…'
-              : pendingTotal > 0
-                ? `3. OCR・記事整理をバックグラウンド実行（${pendingTotal}件）`
-                : '3. 未処理資料なし'}
+              ? 'バックグラウンドOCRを開始しています…'
+              : pendingOcr > 0
+                ? `3. OCRをバックグラウンド実行（${pendingOcr}件）`
+                : '3. 未OCR資料なし'}
           </button>
           <Link className="btn min-h-12 flex items-center justify-center" href="/cloud-stock">
-            記事一覧を見る
+            整理済み記事一覧を見る
           </Link>
         </div>
 
-        <p className="mt-3 text-sm font-semibold text-zinc-700">{message}</p>
+        <div className="mt-3 rounded-xl bg-zinc-50 px-3 py-2 text-sm leading-6 text-zinc-700">
+          <p className="font-semibold">{message}</p>
+          {optionalOrganize > 0 && (
+            <p className="mt-1 text-xs text-zinc-500">記事分割未実施 {optionalOrganize}件はエラーではありません。原本OCRはGPTから検索できます。</p>
+          )}
+        </div>
       </div>
 
       <div className="card p-5">
-        <p className="text-sm font-bold text-zinc-500">保存の役割</p>
+        <p className="text-sm font-bold text-zinc-500">保存と検索の役割</p>
         <div className="mt-3 space-y-2 text-sm leading-6 text-zinc-700">
-          <p><strong>Googleドライブ：</strong>原本画像・PDFを保管</p>
-          <p><strong>Neon：</strong>OCR本文、整理済み記事、検索データを保管</p>
-          <p><strong>閲覧：</strong>原本ファイルではなく、整理済みの記事を「資料一覧・検索」から読みます。</p>
+          <p><strong>Googleドライブ：</strong>「01 Originals」を原本の正本として保持</p>
+          <p><strong>Neon：</strong>OCR本文と検索索引を保持。OCR済み原本は記事分割前でも検索対象</p>
+          <p><strong>ChatGPT：</strong>記事検索、原本確認、横断分析、BOOK分析観点の選択、レポート作成</p>
+          <p><strong>記事分割：</strong>必要な紙面だけ後から実行する任意の高精度化処理</p>
         </div>
       </div>
     </div>
